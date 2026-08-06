@@ -22,7 +22,7 @@ why, not an edit to the old one.
 | 1 | Auth, roles, work session, app shell | ✅ Done — all §16 criteria verified |
 | 2 | Sales + customers | ✅ Done — all §16 criteria verified |
 | 3 | Marble & ticket ledgers | ✅ Done — all §16 criteria verified |
-| 4 | Prizes, FIFO inventory, redemption | ⬜ Next |
+| 4 | Prizes, FIFO inventory, redemption | 🟨 In progress — FIFO engine + §15 tests done |
 | 5 | Transfers and opname | ⬜ |
 | 6 | Attendance | ⬜ |
 | 7 | Expenses | ⬜ |
@@ -477,6 +477,130 @@ the gate for real.
 
 ---
 
+## Decisions taken during Phase 4
+
+> **Phase 4 is IN PROGRESS.** The FIFO engine and its §15 test suite are built;
+> catalog, stocking config, receiving, the redemption cart, cost DTOs and the
+> uncosted-batch queue are not. Do not mark this phase done.
+
+### D-26 · Vitest, running against the real development database
+
+§15 makes the FIFO engine the one module with a mandatory test suite, and §17's
+Phase 4 opener says to write those ten tests *first*. No runner existed, so:
+**Vitest 3**, `npm test` / `npm run test:watch`.
+
+**The tests hit real PostgreSQL rather than a mocked Prisma client.** FIFO is
+`ORDER BY receivedAt` plus conditional `UPDATE`s that the database arbitrates —
+mocking Prisma would test the mock and prove nothing about the invariant. The
+concurrency guard in particular only exists because PostgreSQL re-evaluates a
+WHERE clause under contention; there is no way to assert that against a fake.
+
+Two mechanisms keep this from accumulating junk the way `verify-phase*.sh` does:
+
+- `withRollback()` in `__tests__/helpers.ts` runs each test inside a transaction
+  and throws a private sentinel to force a rollback, returning the body's value
+  so assertions still work.
+- `inventory-concurrency.test.ts` deliberately does **not** use it — two racing
+  transactions cannot share one, and the commit boundary is the thing under
+  test — so it cleans up in `afterEach` instead.
+
+Verified: after a full run, every FIFO fixture table is back to zero rows.
+`fileParallelism` is off because the suite shares one database.
+
+`setup.ts` refuses to run unless `DATABASE_URL` names a `_dev` or `_test`
+database. The suite writes; a mistyped env var should not be able to reach
+production.
+
+### D-27 · Restore is refused twice, via a `VOID_RESTORE` marker movement
+
+§4.9 says a redemption void returns stock to the exact batches it came from.
+Nothing in the schema prevents that running twice, and a double restore invents
+stock out of nothing.
+
+`restoreConsumption()` therefore looks for an existing `VOID_RESTORE` movement
+whose `refType`/`refId` point at the original movement, and throws `CONFLICT` if
+one exists. No migration needed — `StockMovement` already carries the ref
+columns and the `VOID_RESTORE` enum member.
+
+**Consequence for Phase 5:** a cancelled transfer restores stock through this
+same function and so inherits the same guard. Do not add a second restore path.
+
+### D-28 · `toCostDTO()` / `toRestrictedDTO()` are the DTO builder names
+
+§7.5 names the pair twice in adjacent paragraphs and disagrees with itself:
+`toCostDTO()`/`toRestrictedDTO()` in one, `toOwnerDTO()`/`toRestrictedDTO()` in
+the next. CLAUDE.md's cost-visibility section says `toCostDTO()`, and the gate is
+`canSeeCost` — which a Purchasing **manager** also passes, so "owner" would
+actually be the wrong word for it.
+
+**`toCostDTO()` / `toRestrictedDTO()` wins.** The stray §7.5 line should be
+corrected when the Phase 4 DTOs land. Phase 2's `toCustomerDTO` /
+`toCustomerOwnerDTO` pair is a different gate (owner-only spend and visit
+history, not cost) and is left alone.
+
+### D-29 · §15's tests 8–10 are proven at the engine, not through Phase 5 routes
+
+Tests 8, 9 and 10 cover opname variance and void restore — behaviour whose
+*routes* are Phase 5 (transfers and opname) and Phase 4 (redemption void).
+Building those routes now would break the one-phase-at-a-time rule.
+
+The engine has to support all three regardless, so they are tested at the
+`inventory.ts` level now: `weightedAverageCost()` for §15.8, `consumeFifo()`
+with `type: "OPNAME_LOSS"` for §15.9, and `restoreConsumption()` for §15.10.
+When Phase 5 builds the opname and transfer routes, it wires them to these
+functions and adds route-level tests — it must not reimplement the arithmetic.
+
+### D-30 · The FIFO tests were verified by deliberately breaking the engine
+
+A green test proves nothing until it has been seen to fail. Two mutations were
+run against the finished engine:
+
+| Mutation | Result |
+|---|---|
+| Drop `qtyRemaining: { gte: take }` from the conditional update | Parallel test drove stock to **−10 units** — caught |
+| Sort batches by `createdAt` instead of `receivedAt` | §15.6 alone failed — caught |
+
+Both were reverted immediately. The second is the mistake §4.10 warns about: it
+only shows up *after* a branch transfer, so without that test it would have
+shipped and quietly inverted the cost basis. If you refactor `consumeFifo`,
+re-run these two mutations rather than trusting a green suite.
+
+---
+
+## What Phase 4 has built SO FAR
+
+```
+src/server/services/
+  inventory.ts           THE FIFO engine. The only file allowed to consume or
+                         restore stock. consumeFifo / restoreConsumption /
+                         onHand / weightedAverageCost / backfillBatchCost.
+
+src/server/services/__tests__/
+  setup.ts               Loads .env; refuses a non-_dev/_test database.
+  helpers.ts             withRollback + fixture builders.
+  inventory.test.ts      §15 tests 1–10, plus void-batch and Decimal cases.
+  inventory-concurrency.test.ts
+                         Real commit boundaries and racing transactions.
+
+vitest.config.ts         Node env, serial files, @ alias.
+```
+
+No routes, no UI, no DTOs yet — `inventory.ts` has no caller in the app. That is
+deliberate: §17's Phase 4 opener says to build the engine and its tests first.
+
+**Still to build for Phase 4:** the prize catalog with global `ticketCost`,
+`ShopPrizeConfig` stocking policy, batch receiving (with the Purchasing gate on
+the cost field), the redemption cart and its checkout transaction, low-stock
+flags, `toCostDTO()`/`toRestrictedDTO()` per D-28, the uncosted-batch queue UI,
+and `scripts/verify-phase4.sh`.
+
+The §16 acceptance criteria that are **not** yet proven: a plain manager cannot
+see a cost value anywhere, a Purchasing manager sees cost only for their own
+shops, and concurrent *redemptions* behave correctly (the engine is proven under
+concurrency; the redemption transaction around it does not exist yet).
+
+---
+
 ## What Phase 3 actually built
 
 ```
@@ -608,6 +732,7 @@ APIs: `/api/auth/{login,logout,me,change-password,[...all]}`,
 ```bash
 npm run typecheck                 # clean
 npm run lint                      # clean
+npm test                          # 17 FIFO tests (D-26) — safe to re-run, no residue
 docker compose build              # succeeds (catches Linux case-sensitivity)
 bash scripts/verify-phase1.sh     # 21/21 acceptance checks, needs npm run dev
 bash scripts/verify-phase2.sh     # 30/30 acceptance checks, needs npm run dev
@@ -657,7 +782,7 @@ OWNER can merge and the merged caches reconcile to the moved ledgers.
 | Prisma deprecation | `package.json#prisma` moves to `prisma.config.ts` in Prisma 7. Not urgent. |
 | Dependency audit | `npm audit --omit=dev` reports 6 high advisories through Prisma's `effect` dependency and Next's PostCSS/sharp dependencies. The offered automatic fix upgrades outside the pinned stack (Prisma 6.19 / Next 16), so Phase 3 did not force it. Reassess as an explicit dependency/hardening update. |
 | Edge Runtime build warning | From `jose` inside Better Auth. Harmless — we do not use the Edge Runtime (§5.2 forbids it) and nothing enables it. |
-| No automated test suite yet | Phases 1–2 are verified by `scripts/verify-phase{1,2}.sh` (integration, curl-based). §15 wants real unit tests; the FIFO engine in Phase 4 is where this becomes mandatory, not optional. |
+| Automated tests cover the FIFO engine only | Vitest landed in Phase 4 (D-26) and `npm test` covers §15's ten FIFO cases plus concurrency. Everything else is still verified only by the curl-based `scripts/verify-phase{1,2,3}.sh`. §15's other unit tests — business-date boundaries, lateness, phone normalisation — have no home yet; add them as their phases come up rather than in one late sweep. |
 | Red attendance banner | Deliberately NOT stubbed. Phase 6. A fake banner that does nothing trains staff to ignore the real one. |
 | Dashboard screen | Route + permission boundary only. Metrics are Phase 8. |
 | ~~`Shop.dayStartHour` still exists~~ | **Resolved same day — see D-18.** Dropped; the cutoff is global at 04:00. |

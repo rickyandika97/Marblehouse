@@ -7,7 +7,7 @@ every decision taken that the PRD does not contain or now contradicts. Where
 this file and the PRD disagree, **this file wins** — it was written later, with
 the code in front of it.
 
-**Update this file before calling any phase finished** — item 6 of *Before
+**Update this file before calling any phase finished** — item 7 of *Before
 finishing any phase* in `CLAUDE.md` lists exactly what to write. Append; do not
 rewrite history. A superseded decision gets a new entry saying what changed and
 why, not an edit to the old one.
@@ -467,6 +467,11 @@ and §6's `SystemAlert` model verified field-for-field against
 `prisma/schema.prisma` (it already matched — the Phase 3 migration was the only
 schema change and the PRD was reconciled when it was written).
 
+> **There were seven gates at the time.** CLAUDE.md now lists **eight** — a
+> `npm test` gate was added on 7 Aug 2026 (D-37), after Phase 3 closed. Phase 3
+> passed every gate that existed when it shipped; it has no automated tests of
+> its own, which is recorded under *Known issues / debts*.
+
 **Phase 4 is therefore unblocked.**
 
 Worth knowing for next time: `docker compose build` failed on first attempt with
@@ -650,6 +655,33 @@ would have stranded a working screen with no way in.
 Six tabs and a working Reports beats five tabs and an orphaned page. Phase 10's
 polish pass should fold Reports and Settings behind a single "More" tab rather
 than deleting either.
+
+### D-37 · `npm test` is now a phase gate — CLAUDE.md lists eight, not seven
+
+**Owner decision, 7 Aug 2026.**
+
+CLAUDE.md already made tests mandatory for the FIFO engine, but the seven-gate
+checklist never mentioned them. A session could therefore pass every gate
+without running `npm test` once. Now gate 3, placed with the other automated
+checks and ahead of the slow Docker build so it fails fast.
+
+The gate is deliberately **not** just "the suite is green" — it also requires
+that the phase's new logic is actually covered, and that anything enforcing an
+invariant has been **seen to fail**. Phase 4 is the evidence for that wording:
+three real defects were found by breaking guards on purpose (D-30, D-32), and a
+fourth by rendering pages role-by-role (D-34), none of which a green suite would
+have surfaced on its own.
+
+Gate 5 gained a matching requirement: if the phase ships a screen, boot the app
+and load every new page as each role. `typecheck` and `lint` both pass on a
+route tree Next refuses to start (D-33).
+
+Old gates 4–7 shifted to 5–8. The build-log gate is now **item 7**.
+
+**Phases 1–3 predate this** and have no unit tests of their own — they are
+covered by the curl-based `verify-phase{1,2,3}.sh` only. That debt is recorded
+below; the gate applies from Phase 4 onward rather than retroactively blocking
+work on already-closed phases.
 
 ---
 
@@ -920,7 +952,7 @@ OWNER can merge and the merged caches reconcile to the moved ledgers.
 | Prisma deprecation | `package.json#prisma` moves to `prisma.config.ts` in Prisma 7. Not urgent. |
 | Dependency audit | `npm audit --omit=dev` reports 6 high advisories through Prisma's `effect` dependency and Next's PostCSS/sharp dependencies. The offered automatic fix upgrades outside the pinned stack (Prisma 6.19 / Next 16), so Phase 3 did not force it. Reassess as an explicit dependency/hardening update. |
 | Edge Runtime build warning | From `jose` inside Better Auth. Harmless — we do not use the Edge Runtime (§5.2 forbids it) and nothing enables it. |
-| Automated tests cover the FIFO engine only | Vitest landed in Phase 4 (D-26) and `npm test` covers §15's ten FIFO cases plus concurrency. Everything else is still verified only by the curl-based `scripts/verify-phase{1,2,3}.sh`. §15's other unit tests — business-date boundaries, lateness, phone normalisation — have no home yet; add them as their phases come up rather than in one late sweep. |
+| Phases 1–3 have no unit tests | Vitest landed in Phase 4 (D-26), and `npm test` is a phase gate from Phase 4 onward (D-37). Phases 1–3 shipped before either existed and are covered only by the curl-based `verify-phase{1,2,3}.sh`. §15's remaining unit tests — business-date boundaries at 03:59/04:00/23:59, lateness at the grace boundary, phone normalisation — have no home yet. **Add each as its phase comes up** (lateness with Phase 6, for example) rather than in one late sweep; the business-date cases are the exception and are worth backfilling sooner, since every phase stamps `businessDate` and D-18 made the rule global. |
 | Red attendance banner | Deliberately NOT stubbed. Phase 6. A fake banner that does nothing trains staff to ignore the real one. |
 | Dashboard screen | Route + permission boundary only. Metrics are Phase 8. |
 | ~~`Shop.dayStartHour` still exists~~ | **Resolved same day — see D-18.** Dropped; the cutoff is global at 04:00. |

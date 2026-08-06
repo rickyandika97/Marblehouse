@@ -4,7 +4,8 @@ import { requireRolePage } from "@/server/auth/page-guard";
 import { resolveWorkSession } from "@/server/services/work-session";
 import { listPrizes } from "@/server/services/prizes";
 import { countUncostedBatches } from "@/server/services/stock";
-import { canSeeCostForShop } from "@/server/auth/context";
+import { canSeeCostForShop, selectableShops } from "@/server/auth/context";
+import { listTransfers } from "@/server/services/transfers";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatMoney } from "@/lib/money";
 import type { PrizeCostDTO } from "@/server/dto/prize";
@@ -16,10 +17,9 @@ export const dynamic = "force-dynamic";
 /**
  * Stock management (§8.7) — MANAGER and OWNER.
  *
- * §8.7 specifies five tabs: On hand · Receive · Transfers · Opname · Low stock.
- * **Transfers and Opname are Phase 5** and are deliberately NOT rendered as
- * empty tabs — the same reasoning that keeps the attendance banner unstubbed.
- * A tab that opens onto nothing teaches a manager the app is broken.
+ * §8.7's five tabs are all present as of Phase 5: On hand · Receive ·
+ * Transfers · Opname · Low stock. (Transfers and Opname were deliberately
+ * absent in Phase 4 rather than stubbed — see BUILD-LOG D-35.)
  *
  * Cost columns are decided HERE, server-side, and the client component is only
  * ever handed what the role may see (§7.5). `listPrizes` already returns the
@@ -32,9 +32,11 @@ export default async function StockPage() {
   const { session } = await resolveWorkSession(actor);
   if (!session) redirect("/select-shop");
 
-  const [prizes, uncostedCount] = await Promise.all([
+  const [prizes, uncostedCount, transfers, shops] = await Promise.all([
     listPrizes(actor, { shopId: session.shopId, includeUnstocked: true }),
     countUncostedBatches(actor),
+    listTransfers(actor, { shopId: session.shopId }),
+    selectableShops(actor),
   ]);
 
   const showCost = canSeeCostForShop(actor, session.shopId);
@@ -111,6 +113,11 @@ export default async function StockPage() {
         prizes={prizes}
         showCost={showCost}
         canReceive
+        transfers={transfers}
+        // Never offer the current shop as its own destination (§4.10).
+        destinations={shops
+          .filter((s) => s.id !== session.shopId)
+          .map((s) => ({ id: s.id, name: s.name, code: s.code }))}
       />
     </div>
   );

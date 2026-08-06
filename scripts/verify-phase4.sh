@@ -118,6 +118,8 @@ MGR_BATCHES=$(c -b "$M" "$B/api/stock/batches?shopId=$SHOP")
 chk "plain manager is refused the costed batch list" "$MGR_BATCHES" "403"
 MGR_UNCOSTED=$(c -b "$M" "$B/api/stock/uncosted?shopId=$SHOP")
 chk "plain manager is refused the uncosted queue" "$MGR_UNCOSTED" "403"
+MGR_UNCOSTED_ALL=$(c -b "$M" "$B/api/stock/uncosted")
+chk "plain manager is refused the queue unscoped too" "$MGR_UNCOSTED_ALL" "403"
 
 # §15: a unitCogs from a non-Purchasing manager is a 403, NOT a dropped field.
 MGR_COST_POST=$(c -b "$M" -X POST "$B/api/stock/batches" -H 'Content-Type: application/json' \
@@ -135,6 +137,11 @@ PURCH_RECEIVE=$(c -b "$P" -X POST "$B/api/stock/batches" -H 'Content-Type: appli
   -H "Idempotency-Key: $(key)" \
   -d "{\"shopId\":\"$SHOP\",\"prizeItemId\":\"$PID\",\"qtyReceived\":1,\"unitCogs\":2000}")
 chk "purchasing manager may price a delivery at their own shop" "$PURCH_RECEIVE" "200"
+
+# §7.5: "Purchasing managers see the queue for their own shops." The UN-scoped
+# form must therefore work for them, narrowed to their assignments — not 403.
+PURCH_QUEUE=$(c -b "$P" "$B/api/stock/uncosted")
+chk "purchasing manager sees the uncosted queue unscoped" "$PURCH_QUEUE" "200"
 
 # The permission unlocks cost ENTRY, not profitability (§7.5).
 PURCH_REPORT=$(c -b "$P" "$B/api/reports/tickets-awarded")

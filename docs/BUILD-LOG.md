@@ -22,7 +22,7 @@ why, not an edit to the old one.
 | 1 | Auth, roles, work session, app shell | ✅ Done — all §16 criteria verified |
 | 2 | Sales + customers | ✅ Done — all §16 criteria verified |
 | 3 | Marble & ticket ledgers | ✅ Done — all §16 criteria verified |
-| 4 | Prizes, FIFO inventory, redemption | 🟨 In progress — engine, API and cost gate done; UI outstanding |
+| 4 | Prizes, FIFO inventory, redemption | 🟨 Built + verified on dev — awaiting the on-device acceptance pass |
 | 5 | Transfers and opname | ⬜ |
 | 6 | Attendance | ⬜ |
 | 7 | Expenses | ⬜ |
@@ -590,6 +590,46 @@ the app simply fails to boot with *"You cannot use different slug names for the
 same dynamic path"*. It was caught by starting the dev server. If you add a
 route under an existing dynamic segment, boot the app before assuming it works.
 
+### D-34 · The uncosted queue was refusing Purchasing managers — fixed
+
+**A real bug, found by rendering the page rather than by any test.**
+
+`listUncostedBatches(actor)` with no `shopId` required `role === "OWNER"`, so a
+Purchasing manager got 403 on `/stock/uncosted` — exactly the screen §7.5 gives
+them ("Purchasing managers see the queue for their own shops"). The SQL filter
+underneath was already correct and narrowed to `assignedShopIds`; only the
+guard above it was wrong.
+
+Now gated on `canSeeCost(actor)`: owner sees every shop, a Purchasing manager
+sees their own, a plain manager is still refused.
+
+**Why the acceptance script missed it:** it only exercised the *scoped* form,
+`/api/stock/uncosted?shopId=…`, which took the other branch. `verify-phase4.sh`
+now checks both forms for both manager types. When an endpoint's permission
+depends on whether a parameter is present, test it **both ways** — one branch
+passing says nothing about the other.
+
+### D-35 · Transfers and Opname are absent from the stock screen, not stubbed
+
+§8.7 specifies five tabs: On hand · Receive · Transfers · Opname · Low stock.
+Phase 4 ships three. Transfers and Opname are Phase 5 and are **not** rendered
+as empty tabs — the same reasoning that keeps the attendance banner unstubbed
+(a control that does nothing teaches staff the app is broken).
+
+Phase 5 adds the two tabs to `stock-tabs.tsx`. The `StockTabs` array is built
+from a list, so adding them is additive.
+
+### D-36 · The owner keeps six bottom-nav tabs
+
+Adding Stock pushed the owner to six tabs, which is one more than sits
+comfortably on a phone. The alternative was dropping Reports — but the nav is
+currently the **only** route to `/reports/tickets-awarded`, so removing the tab
+would have stranded a working screen with no way in.
+
+Six tabs and a working Reports beats five tabs and an orphaned page. Phase 10's
+polish pass should fold Reports and Settings behind a single "More" tab rather
+than deleting either.
+
 ### D-30 · The FIFO tests were verified by deliberately breaking the engine
 
 A green test proves nothing until it has been seen to fail. Two mutations were
@@ -655,12 +695,40 @@ APIs: `/api/prizes`, `/api/prizes/[id]`,
 | A Purchasing manager sees cost only at their own shops | 200 at an assigned shop, 403 at an unassigned one, and still 403 on an owner report |
 | Concurrent redemptions behave correctly | Two racing checkouts with tickets for one → exactly one succeeds; same for the last unit of stock; a double-tap with one Idempotency-Key creates exactly one redemption |
 
-**Still to build for Phase 4:** the UI. There is no `/prizes` redemption screen
-(§8.6), no `/stock` manager screen (§8.7), and no owner-dashboard surface for
-the "batches awaiting cost" warning. The API and engine beneath all three are
-done and verified. **Do not mark Phase 4 done until the screens exist** — §8.6
-and §8.7 are part of the phase, and §16's "20 sales under 15 s" style
-device-level checks cannot be run against an API alone.
+All four are proven on a dev machine. The device-level half of §16 and §15's
+manual checklist — a real staff member, a real tablet, real shop wifi — is
+**still outstanding** and is the remaining gate on calling Phase 4 done.
+
+### Screens (added after the API layer)
+
+```
+src/app/(app)/customers/[id]/redeem/
+  page.tsx               Server: resolves the session, lists shop-stocked
+                         prizes, narrows to 4 fields before the client sees it.
+  redeem-cart.tsx        The §8.6 cart: live balance header, greyed-but-visible
+                         unaffordable prizes, one idempotency key per attempt.
+
+src/app/(app)/stock/
+  page.tsx               §8.7 shell + the uncosted warning banner.
+  stock-tabs.tsx         On hand · Receive · Low stock (see D-35).
+  uncosted/page.tsx      The §7.5 "batches awaiting cost" queue.
+  uncosted/uncosted-queue.tsx   Pricing a batch, with the backfill explained.
+```
+
+`/customers/[id]` gains a Redeem button, and OWNER/MANAGER gain a Stock tab
+(D-36). Verified by rendering every new page as all four roles: staff is 403 on
+`/stock`, plain managers are 403 on `/stock/uncosted`, and the rendered HTML for
+a manager and staff contains no cost string.
+
+**Still to build for Phase 4:** nothing structural — but the phase is **not
+signed off**. §16's acceptance is partly device-level, and §15's manual
+checklist wants a real staff member using the redemption flow on the actual
+tablet. That has not happened. Everything above is verified on a development
+machine only.
+
+Phase 5 (transfers and opname) inherits: the two missing §8.7 tabs (D-35), and
+`weightedAverageCost()` in `inventory.ts`, which is built and tested (§15.8) but
+has no caller yet.
 
 ---
 
@@ -800,7 +868,7 @@ docker compose build              # succeeds (catches Linux case-sensitivity)
 bash scripts/verify-phase1.sh     # 21/21 acceptance checks, needs npm run dev
 bash scripts/verify-phase2.sh     # 30/30 acceptance checks, needs npm run dev
 bash scripts/verify-phase3.sh     # Phase 3 PASS, needs npm run dev
-bash scripts/verify-phase4.sh     # 33 checks, needs npm run dev
+bash scripts/verify-phase4.sh     # 35 checks, needs npm run dev
 ```
 
 All four were last re-run green on **7 Aug 2026** when Phase 3's commit gate was

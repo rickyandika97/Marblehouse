@@ -20,7 +20,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { writeAudit } from "@/server/audit";
 import type { Actor } from "@/server/auth/context";
-import { canSeeCostForShop } from "@/server/auth/context";
+import { canSeeCost, canSeeCostForShop } from "@/server/auth/context";
 import { assertShopAccess } from "@/server/auth/guards";
 import { AppError, forbidden, notFound } from "@/server/errors";
 import { backfillBatchCost, consumeFifo, onHand } from "@/server/services/inventory";
@@ -209,8 +209,13 @@ export async function listUncostedBatches(actor: Actor, shopId?: string) {
     if (!canSeeCostForShop(actor, shopId)) {
       throw forbidden("You do not have permission to view stock costs.");
     }
-  } else if (actor.role !== "OWNER") {
-    throw forbidden("Only the owner can view the queue across every shop.");
+  } else if (!canSeeCost(actor)) {
+    // Un-scoped: the owner gets every shop, a Purchasing manager gets their
+    // own (the SQL filter below narrows it), and a plain manager is refused.
+    // Requiring OWNER here would have locked a Purchasing manager out of the
+    // queue §7.5 explicitly gives them — "Purchasing managers see the queue
+    // for their own shops".
+    throw forbidden("You do not have permission to view stock costs.");
   }
 
   const batches = await prisma.prizeBatch.findMany({

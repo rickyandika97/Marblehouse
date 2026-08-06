@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Gift } from "lucide-react";
 import { requireActorPage } from "@/server/auth/page-guard";
 import { getCustomerForActor } from "@/server/services/customers";
 import { listSales } from "@/server/services/sales";
@@ -27,8 +27,9 @@ export const dynamic = "force-dynamic";
  * check in the markup — a manager's response physically has no `totalSpend` on
  * it to render (§7.5).
  *
- * Phase 3 supplies Deposit, Withdraw and Award. Redeem remains absent until
- * Phase 4 because a dead button teaches staff to distrust working controls.
+ * Phase 3 supplied Deposit, Withdraw and Award; Phase 4 adds Redeem, which is
+ * a link to /redeem rather than a dialog — a cart is too big for a modal, and
+ * §8.6 wants a full screen with the balance pinned at the top.
  */
 export default async function CustomerDetailPage({
   params,
@@ -99,6 +100,15 @@ export default async function CustomerDetailPage({
           </CardContent>
         </Card>
       </div>
+
+      <Button
+        size="xl"
+        className="w-full"
+        render={<Link href={`/customers/${customer.id}/redeem`} />}
+      >
+        <Gift className="size-5" />
+        Redeem prizes
+      </Button>
 
       <BalanceActions
         customerId={customer.id}

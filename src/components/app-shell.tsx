@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   BarChart3,
   LogOut,
+  Package,
   Settings,
   ShoppingCart,
   Store,
@@ -21,15 +22,23 @@ import { cn } from "@/lib/utils";
  * These tabs are a convenience, NOT a permission. Every destination re-checks
  * the role server-side; hiding a tab only saves the user a pointless tap.
  *
- * Phase 1 ships Dashboard, Sale and Settings as real screens. The remaining
- * tabs belong to later phases and are deliberately absent rather than
- * rendered as dead links.
+ * Phase 1 shipped Dashboard, Sale and Settings; Phase 4 adds Stock for the
+ * roles that manage it. The remaining tabs belong to later phases and are
+ * deliberately absent rather than rendered as dead links.
+ *
+ * STAFF gets no Stock tab: §3.4 gives them redemption but not receiving or
+ * opname, and they reach the prize grid from a customer instead (§8.6).
  */
 const TABS: Record<Role, { href: string; label: string; icon: typeof User }[]> = {
+  // Six tabs is one more than is comfortable on a phone, but the nav is the
+  // ONLY route to Reports — dropping it to make room for Stock would strand a
+  // working screen. Phase 10's polish pass should fold Reports and Settings
+  // into a single "More" tab rather than removing either.
   OWNER: [
     { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
     { href: "/sale", label: "Sales", icon: ShoppingCart },
     { href: "/customers", label: "Customers", icon: Users },
+    { href: "/stock", label: "Stock", icon: Package },
     { href: "/reports/tickets-awarded", label: "Reports", icon: BarChart3 },
     { href: "/settings", label: "Settings", icon: Settings },
   ],
@@ -37,6 +46,7 @@ const TABS: Record<Role, { href: string; label: string; icon: typeof User }[]> =
     { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
     { href: "/sale", label: "Sale", icon: ShoppingCart },
     { href: "/customers", label: "Customers", icon: Users },
+    { href: "/stock", label: "Stock", icon: Package },
     { href: "/settings", label: "Settings", icon: Settings },
   ],
   STAFF: [

@@ -93,11 +93,34 @@ export async function adjustTickets(
   return result;
 }
 
+/**
+ * Spend or restore tickets on behalf of a redemption (§4.9, Phase 4).
+ *
+ * Redemption checkout and its void need the same negative-balance guard as
+ * every other ticket movement, so they go through `changeTickets` rather than
+ * writing their own `updateMany` — the invariant lives in ONE place and a
+ * future change to it cannot miss a caller.
+ *
+ * `delta` is negative to spend and positive to restore. The caller owns the
+ * transaction: the ledger row, the batches and the redemption must commit
+ * together or not at all.
+ */
+export async function applyRedemptionTickets(
+  actor: WorkingActor,
+  customerId: string,
+  delta: number,
+  type: "REDEEM" | "VOID_RESTORE",
+  reason: string | undefined,
+  tx: Prisma.TransactionClient
+): Promise<BalanceMutationDTO> {
+  return changeTickets(actor, customerId, delta, type, reason, tx);
+}
+
 async function changeTickets(
   actor: WorkingActor,
   customerId: string,
   delta: number,
-  type: "AWARD" | "ADJUST",
+  type: "AWARD" | "ADJUST" | "REDEEM" | "VOID_RESTORE",
   reason: string | undefined,
   tx: Prisma.TransactionClient
 ): Promise<BalanceMutationDTO> {
@@ -121,7 +144,9 @@ async function changeTickets(
     }
     throw new AppError(
       "INSUFFICIENT_TICKETS",
-      `Customer has ${customer.ticketBalance} tickets, but this correction removes ${-delta}.`,
+      type === "REDEEM"
+        ? `Customer has ${customer.ticketBalance} tickets, but this redemption needs ${-delta}.`
+        : `Customer has ${customer.ticketBalance} tickets, but this correction removes ${-delta}.`,
       { balance: customer.ticketBalance, requested: -delta }
     );
   }

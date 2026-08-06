@@ -22,7 +22,7 @@ why, not an edit to the old one.
 | 1 | Auth, roles, work session, app shell | ✅ Done — all §16 criteria verified |
 | 2 | Sales + customers | ✅ Done — all §16 criteria verified |
 | 3 | Marble & ticket ledgers | ✅ Done — all §16 criteria verified |
-| 4 | Prizes, FIFO inventory, redemption | 🟨 In progress — FIFO engine + §15 tests done |
+| 4 | Prizes, FIFO inventory, redemption | 🟨 In progress — engine, API and cost gate done; UI outstanding |
 | 5 | Transfers and opname | ⬜ |
 | 6 | Attendance | ⬜ |
 | 7 | Expenses | ⬜ |
@@ -550,6 +550,46 @@ with `type: "OPNAME_LOSS"` for §15.9, and `restoreConsumption()` for §15.10.
 When Phase 5 builds the opname and transfer routes, it wires them to these
 functions and adds route-level tests — it must not reimplement the arithmetic.
 
+### D-31 · A positive manual stock adjustment is priced at zero, not guessed
+
+`adjustStock` with a positive delta creates an adjustment batch at
+`unitCogs = 0, needsCosting = true`, landing it in the owner's queue.
+
+The alternative was to price it at the weighted average, which is what §4.11
+specifies for a positive **opname** variance. Rejected here because the two are
+different events: an opname variance is found stock reconciled against a
+physical count, where the average is the best available estimate. A manual
+adjustment has no such basis — inventing a cost would quietly distort prize
+expense with a number nobody entered.
+
+`weightedAverageCost()` exists in `inventory.ts` and is tested (§15.8), but it
+is **only** for opname. Phase 5 wires it up.
+
+### D-32 · Redemption tickets go through the Phase 3 ticket service
+
+Checkout and void call `applyRedemptionTickets()` in `services/tickets.ts`
+rather than writing their own `customer.updateMany`. That function is a thin
+wrapper over the existing private `changeTickets`, widened to accept `REDEEM`
+and `VOID_RESTORE`.
+
+The negative-balance guard (D-20's conditional update) therefore exists in
+exactly ONE place. A redemption that wrote its own update would be a second
+copy of the invariant, and the next change to it would miss one — which is the
+failure mode this avoids. Verified by mutation: removing the guard let two
+concurrent redemptions both spend the same 100 tickets.
+
+### D-33 · `/api/shops/[id]/prizes/...`, not `[shopId]`
+
+Next requires ONE slug name per path segment across the whole route tree.
+Phase 2 shipped `/api/shops/[id]/presets`, so the new stocking-config route had
+to use `[id]` too. The handler destructures `{ id: shopId }` so the service
+still reads clearly.
+
+**This is worth knowing because neither `typecheck` nor `lint` catches it** —
+the app simply fails to boot with *"You cannot use different slug names for the
+same dynamic path"*. It was caught by starting the dev server. If you add a
+route under an existing dynamic segment, boot the app before assuming it works.
+
 ### D-30 · The FIFO tests were verified by deliberately breaking the engine
 
 A green test proves nothing until it has been seen to fail. Two mutations were
@@ -574,6 +614,18 @@ src/server/services/
   inventory.ts           THE FIFO engine. The only file allowed to consume or
                          restore stock. consumeFifo / restoreConsumption /
                          onHand / weightedAverageCost / backfillBatchCost.
+  prizes.ts              Global catalog + per-shop stocking policy. Ticket-cost
+                         changes audit-log and raise an owner alert (§4.8).
+  stock.ts               Receiving with the Purchasing gate, the uncosted
+                         queue, cost backfill, manual adjustment.
+  redemptions.ts         The §4.9 checkout transaction, void, and history.
+  tickets.ts             (Phase 3) + applyRedemptionTickets — see D-32.
+
+src/server/dto/
+  prize.ts               toPrizeRestrictedDTO / toPrizeCostDTO and the batch
+                         pair. The restricted builders take NARROWED source
+                         types that carry no cost column at all, so passing a
+                         costed row to one is a type error (D-28, §7.5).
 
 src/server/services/__tests__/
   setup.ts               Loads .env; refuses a non-_dev/_test database.
@@ -581,23 +633,34 @@ src/server/services/__tests__/
   inventory.test.ts      §15 tests 1–10, plus void-batch and Decimal cases.
   inventory-concurrency.test.ts
                          Real commit boundaries and racing transactions.
+  redemption.test.ts     Checkout, all-or-nothing rollback, concurrency, void.
+src/server/dto/__tests__/
+  cost-visibility.test.ts  §7.5's forbidden-string scan over serialized DTOs.
 
 vitest.config.ts         Node env, serial files, @ alias.
+scripts/verify-phase4.sh 33 HTTP-level acceptance checks.
 ```
 
-No routes, no UI, no DTOs yet — `inventory.ts` has no caller in the app. That is
-deliberate: §17's Phase 4 opener says to build the engine and its tests first.
+APIs: `/api/prizes`, `/api/prizes/[id]`,
+`/api/shops/[id]/prizes/[prizeId]/config`, `/api/stock/batches`,
+`/api/stock/batches/[id]/cost`, `/api/stock/uncosted`, `/api/stock/adjust`,
+`/api/stock/on-hand`, `/api/redemptions`, `/api/redemptions/[id]/void`.
 
-**Still to build for Phase 4:** the prize catalog with global `ticketCost`,
-`ShopPrizeConfig` stocking policy, batch receiving (with the Purchasing gate on
-the cost field), the redemption cart and its checkout transaction, low-stock
-flags, `toCostDTO()`/`toRestrictedDTO()` per D-28, the uncosted-batch queue UI,
-and `scripts/verify-phase4.sh`.
+**§16 criteria now proven:**
 
-The §16 acceptance criteria that are **not** yet proven: a plain manager cannot
-see a cost value anywhere, a Purchasing manager sees cost only for their own
-shops, and concurrent *redemptions* behave correctly (the engine is proven under
-concurrency; the redemption transaction around it does not exist yet).
+| Criterion | How |
+|---|---|
+| Every §15 FIFO test passes | `npm test` — 36 tests, ten of them §15.1–15.10 |
+| A plain manager provably cannot see cost | `verify-phase4.sh` greps the real serialized response of every prize/stock/redemption endpoint for `cogs`/`unitcost`/`valuation`/`margin`/`profit`, as a manager AND as staff; plus the DTO-level scan in `cost-visibility.test.ts` |
+| A Purchasing manager sees cost only at their own shops | 200 at an assigned shop, 403 at an unassigned one, and still 403 on an owner report |
+| Concurrent redemptions behave correctly | Two racing checkouts with tickets for one → exactly one succeeds; same for the last unit of stock; a double-tap with one Idempotency-Key creates exactly one redemption |
+
+**Still to build for Phase 4:** the UI. There is no `/prizes` redemption screen
+(§8.6), no `/stock` manager screen (§8.7), and no owner-dashboard surface for
+the "batches awaiting cost" warning. The API and engine beneath all three are
+done and verified. **Do not mark Phase 4 done until the screens exist** — §8.6
+and §8.7 are part of the phase, and §16's "20 sales under 15 s" style
+device-level checks cannot be run against an API alone.
 
 ---
 
@@ -737,6 +800,7 @@ docker compose build              # succeeds (catches Linux case-sensitivity)
 bash scripts/verify-phase1.sh     # 21/21 acceptance checks, needs npm run dev
 bash scripts/verify-phase2.sh     # 30/30 acceptance checks, needs npm run dev
 bash scripts/verify-phase3.sh     # Phase 3 PASS, needs npm run dev
+bash scripts/verify-phase4.sh     # 33 checks, needs npm run dev
 ```
 
 All four were last re-run green on **7 Aug 2026** when Phase 3's commit gate was
@@ -832,6 +896,21 @@ the script names customers with a timestamped phone number, so re-running it
 never collides with the previous run's data but does accumulate another
 `Phase Three Main` / `Race` / `Duplicate` trio and another ~55 ledger rows. All
 of it is test data on `marblehouse_dev`. `npm run db:reset` clears the lot.
+
+**Added by the Phase 4 verification run:**
+
+| Username | Password | Role |
+|---|---|---|
+| `purchaser1` | `PurchPass2026!` | MANAGER **with Purchasing** (`canEnterCost`), assigned to BR-1 only |
+
+That account is the one §7.5 exists for, and `verify-phase4.sh` needs it to
+prove the "cost at my shops, 403 at yours" criterion. The script creates it on
+first run and reuses it afterwards.
+
+Also added: a `Phase Four Bear <ts>` catalog item with four batches at BR-1
+(one deliberately received unpriced, then backfilled), a `Phase Four Player`
+customer, and their redemption plus its void. The `npm test` suite adds
+nothing — it rolls back or cleans up after itself.
 
 `npm run db:reset` wipes all of this and reseeds from `.env` — the owner's
 password returns to `SEED_OWNER_PASSWORD` with a forced change on first login.

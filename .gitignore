@@ -33,3 +33,6 @@ Thumbs.db
 
 # Test output
 coverage/
+
+# TypeScript incremental build artifact
+tsconfig.tsbuildinfo

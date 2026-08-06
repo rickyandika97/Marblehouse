@@ -21,8 +21,8 @@ why, not an edit to the old one.
 | 0 | Scaffold, schema, seed, health endpoint | ✅ Done |
 | 1 | Auth, roles, work session, app shell | ✅ Done — all §16 criteria verified |
 | 2 | Sales + customers | ✅ Done — all §16 criteria verified |
-| 3 | Marble & ticket ledgers | 🟨 Built + verified — migration commit pending |
-| 4 | Prizes, FIFO inventory, redemption | ⬜ |
+| 3 | Marble & ticket ledgers | ✅ Done — all §16 criteria verified |
+| 4 | Prizes, FIFO inventory, redemption | ⬜ Next |
 | 5 | Transfers and opname | ⬜ |
 | 6 | Attendance | ⬜ |
 | 7 | Expenses | ⬜ |
@@ -449,6 +449,32 @@ transaction-scoped advisory lock is the cross-process guard. `node-cron` is a
 server external in `next.config.ts` because its Node-only `child_process` and
 `path` imports must not enter Next's browser/edge bundle.
 
+### D-25 · Phase 3's commit gate was closed on 7 Aug 2026
+
+The previous session could not complete gate 5 (*migrations are committed*)
+because the workspace had no `.git` directory, and correctly refused to mark the
+phase Done rather than reporting six of seven gates as a pass.
+
+The repository has since been initialised — a single `Initial commit`
+(`6b08499`) that contains `prisma/migrations/20260806104915_phase3_balance_alerts`,
+all four Phase 3 services and `scripts/verify-phase3.sh`. `prisma migrate status`
+reports all three migrations applied and the schema up to date.
+
+**All seven gates were then re-run in full, not assumed from the previous
+session's log:** typecheck clean, lint clean, `docker compose build` succeeds,
+`verify-phase3.sh` passes every check, migrations committed, this log updated,
+and §6's `SystemAlert` model verified field-for-field against
+`prisma/schema.prisma` (it already matched — the Phase 3 migration was the only
+schema change and the PRD was reconciled when it was written).
+
+**Phase 4 is therefore unblocked.**
+
+Worth knowing for next time: `docker compose build` failed on first attempt with
+*"Cannot connect to the Docker daemon"* — Docker Desktop was installed but not
+running. That is a stopped daemon, **not** the "Docker is not installed" case
+CLAUDE.md gate 3 lets you declare. Launch it with `open -a Docker`, wait, and run
+the gate for real.
+
 ---
 
 ## What Phase 3 actually built
@@ -588,6 +614,10 @@ bash scripts/verify-phase2.sh     # 30/30 acceptance checks, needs npm run dev
 bash scripts/verify-phase3.sh     # Phase 3 PASS, needs npm run dev
 ```
 
+All four were last re-run green on **7 Aug 2026** when Phase 3's commit gate was
+closed (D-25). `docker compose build` needs the Docker Desktop daemon actually
+running, not merely installed — `open -a Docker` first.
+
 All three scripts need the dev server running and **write test data**.
 `verify-phase1.sh` rewrites test users; `verify-phase2.sh` assumes those users
 already exist and adds sales and a customer. Run them against a scratch
@@ -636,7 +666,8 @@ OWNER can merge and the merged caches reconcile to the moved ledgers.
 | Void reason uses `window.prompt` | Functional and accessible, but ugly on a tablet and it cannot enforce the 3-character minimum client-side (the server does). Replace with a proper dialog in Phase 10's polish pass. |
 | Customer detail has no action buttons | §8.5 specifies Deposit / Withdraw / Award / Redeem. Those are Phases 3–4 and are deliberately not stubbed. |
 | Customer edit UI not built | `PATCH /api/customers/:id` exists and works; there is no edit UI yet. Owner-only merge shipped in Phase 3. |
-| Phase 3 migration not committed | This workspace has no `.git` directory, so the mandatory migration-commit gate cannot be completed here. All other checks pass; do not mark Phase 3 Done or start Phase 4 until `20260806104915_phase3_balance_alerts` and the Phase 3 files are committed in the real checkout. |
+| ~~Phase 3 migration not committed~~ | **Resolved 7 Aug 2026 — see D-25.** The repository was initialised and the migration committed; all seven gates now pass. |
+| ~~`tsconfig.tsbuildinfo` is tracked~~ | **Fixed 7 Aug 2026.** It is a TypeScript incremental-build artifact that showed as modified after every `npm run typecheck`. Added to `.gitignore` and `git rm --cached`-ed, so Phase 4's diff stays readable. |
 
 ---
 
@@ -670,6 +701,12 @@ Shops: `BR-1` (Branch 1), `BR-2` (Branch 2), `HQ` (pseudo-shop, expense-only).
 - One active CRITICAL `BALANCE_DRIFT:<customerId>` system alert and matching
   `BALANCE_RECONCILED` audit row from the deliberate drift test.
 - Ticket-award threshold restored to 500 after its owner-setting test.
+
+**The 7 Aug 2026 re-run (D-25) added a second, independent set of these rows** —
+the script names customers with a timestamped phone number, so re-running it
+never collides with the previous run's data but does accumulate another
+`Phase Three Main` / `Race` / `Duplicate` trio and another ~55 ledger rows. All
+of it is test data on `marblehouse_dev`. `npm run db:reset` clears the lot.
 
 `npm run db:reset` wipes all of this and reseeds from `.env` — the owner's
 password returns to `SEED_OWNER_PASSWORD` with a forced change on first login.

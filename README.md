@@ -8,9 +8,8 @@ through a Cloudflare Tunnel. No cloud platform, no Vercel.
 
 - **Full specification:** [`docs/PRD.md`](docs/PRD.md)
 - **Rules for the coding agent:** [`CLAUDE.md`](CLAUDE.md)
-- **Status:** Phases 0–2 complete. Phase 3 is built and verified, but its
-  migration still needs to be committed from the real Git checkout before the
-  phase can be marked complete or Phase 4 can start.
+- **Status:** Phases 0–3 complete. Phase 4 — prizes, FIFO inventory and
+  redemption — is next.
 
 ---
 

@@ -42,6 +42,39 @@ against `prisma/schema.prisma`.
 **`prisma/schema.prisma` remains the authority.** If the two ever drift again,
 the code wins, and §6 should be corrected rather than the code.
 
+### There is exactly one PRD: `docs/PRD.md`
+
+**A stale duplicate, `PRD-pinball-arcade-management.md`, was deleted from the
+repo root on 7 Aug 2026.** It was the original 3 Aug draft, carried in by the
+initial commit and never updated — 428 lines diverged from `docs/PRD.md`, and
+every one of its 55 unique lines was a **superseded** decision:
+
+| The stale copy still said | Superseded by |
+|---|---|
+| `dayStartHour` is per-shop, default 06:00 | D-18 — global, `AppSetting`, 04:00 |
+| `User.passwordHash`, `failedLoginCount`, `lockedUntil`, hand-rolled `Session` | §5.4 / D-1–D-4 — Better Auth owns these |
+| `User.isActive` + `@@index([role, isActive])` | D-2 — `banned` is the only access flag |
+| shadcn/ui with no primitive layer named | §5.7 — Base UI, never Radix |
+| Phase 0 accepts on `docker compose up` at port 3000 | Dev is native on macOS at 5050 |
+| New-shop flow collects a day-start hour | D-18 — there is no per-shop hour to collect |
+
+**Why this was worth deleting rather than leaving alone.** §17's paste-at-
+session-start prompt — in *both* files — instructed a cold session to read
+`PRD-pinball-arcade-management.md` in full, while `CLAUDE.md` points at
+`docs/PRD.md`. A session that followed §17 literally would have read the stale
+copy and taken six reversed decisions as current, including two (`passwordHash`
+on `User`, per-shop `dayStartHour`) that CLAUDE.md explicitly warns against
+"fixing". Reconciling the duplicate was never an option worth taking: two copies
+of a spec drift again the moment one is edited.
+
+§17 now names the real reading order — `CLAUDE.md` → `docs/BUILD-LOG.md` →
+`docs/PRD.md` — states the precedence rule, and carries a short tombstone so a
+future reader who finds the old filename in git history knows it was deleted on
+purpose. The deleted content remains recoverable at commit `6b08499` if it is
+ever genuinely needed.
+
+**If a copy of that file reappears, delete it. Do not merge it.**
+
 ### Things that look wrong in the schema but are deliberate
 
 | Looks like a bug | Actually | See |

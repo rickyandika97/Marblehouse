@@ -2077,7 +2077,15 @@ Responsive pass on real devices, loading and empty states, error copy in plain l
 
 Paste this at the start of every session:
 
-> Read `PRD-pinball-arcade-management.md` in full before writing any code. We are building phase **N** only — do not implement features from later phases. Follow the stack in §5.2 exactly; do not substitute libraries. All business logic goes in `src/server/services/`; route handlers only authenticate, validate with Zod, and call a service. Every role check is enforced server-side. Money is `Decimal`, never `float`. When a requirement in the PRD is ambiguous, stop and ask me rather than guessing.
+> Read `CLAUDE.md`, then `docs/BUILD-LOG.md`, then `docs/PRD.md` in full before writing any code — in that order. Where the build log disagrees with this PRD, **the build log wins**; where either disagrees with `prisma/schema.prisma`, the schema wins. We are building phase **N** only — do not implement features from later phases. Follow the stack in §5.2 exactly; do not substitute libraries. All business logic goes in `src/server/services/`; route handlers only authenticate, validate with Zod, and call a service. Every role check is enforced server-side. Money is `Decimal`, never `float`. When a requirement in the PRD is ambiguous, stop and ask me rather than guessing.
+
+> **There is one PRD, and it is `docs/PRD.md`.** A stale copy called
+> `PRD-pinball-arcade-management.md` sat in the repo root until 7 Aug 2026 and
+> was deleted. It still described per-shop `dayStartHour` at 06:00 (superseded
+> by BUILD-LOG D-18 — global, 04:00), hand-rolled sessions with `passwordHash`
+> and `isActive` on `User` (superseded by §5.4 — Better Auth, `banned`), and
+> shadcn without Base UI (superseded by §5.7). If a copy of it reappears,
+> delete it rather than reconciling it.
 
 Per-phase openers:
 

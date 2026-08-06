@@ -129,8 +129,13 @@ npm run dev
 # Useful
 npm run db:studio         # browse the database
 npm run typecheck
+npm test                  # Vitest — FIFO engine, cost gate (see BUILD-LOG D-26)
 npm run db:reset          # wipe and re-seed
 ```
+
+`npm test` runs against the real dev database, not a mock — the invariants it
+checks are enforced by PostgreSQL. It rolls back or cleans up after itself and
+refuses any database not named `_dev`/`_test`.
 
 `DATABASE_URL` in `.env` points at `localhost:5432/marblehouse_dev` for dev and
 `postgres:5432/marblehouse` for Docker. Both lines are in the file; swap the

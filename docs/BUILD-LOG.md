@@ -550,6 +550,27 @@ with `type: "OPNAME_LOSS"` for §15.9, and `restoreConsumption()` for §15.10.
 When Phase 5 builds the opname and transfer routes, it wires them to these
 functions and adds route-level tests — it must not reimplement the arithmetic.
 
+### D-30 · The FIFO tests were verified by deliberately breaking the engine
+
+A green test proves nothing until it has been seen to fail. Two mutations were
+run against the finished engine:
+
+| Mutation | Result |
+|---|---|
+| Drop `qtyRemaining: { gte: take }` from the conditional update | Parallel test drove stock to **−10 units** — caught |
+| Sort batches by `createdAt` instead of `receivedAt` | §15.6 alone failed — caught |
+
+Both were reverted immediately. The second is the mistake §4.10 warns about: it
+only shows up *after* a branch transfer, so without that test it would have
+shipped and quietly inverted the cost basis. If you refactor `consumeFifo`,
+re-run these two mutations rather than trusting a green suite.
+
+The same technique found two more later in the phase: removing the ticket
+balance guard let two concurrent redemptions spend the same tickets twice
+(D-32), and the uncosted-queue permission bug (D-34) was found by rendering the
+page as each role. **Mutation and role-by-role rendering both earned their keep
+this phase. Neither is optional when you touch this code.**
+
 ### D-31 · A positive manual stock adjustment is priced at zero, not guessed
 
 `adjustStock` with a positive delta creates an adjustment batch at
@@ -629,21 +650,6 @@ would have stranded a working screen with no way in.
 Six tabs and a working Reports beats five tabs and an orphaned page. Phase 10's
 polish pass should fold Reports and Settings behind a single "More" tab rather
 than deleting either.
-
-### D-30 · The FIFO tests were verified by deliberately breaking the engine
-
-A green test proves nothing until it has been seen to fail. Two mutations were
-run against the finished engine:
-
-| Mutation | Result |
-|---|---|
-| Drop `qtyRemaining: { gte: take }` from the conditional update | Parallel test drove stock to **−10 units** — caught |
-| Sort batches by `createdAt` instead of `receivedAt` | §15.6 alone failed — caught |
-
-Both were reverted immediately. The second is the mistake §4.10 warns about: it
-only shows up *after* a branch transfer, so without that test it would have
-shipped and quietly inverted the cost basis. If you refactor `consumeFifo`,
-re-run these two mutations rather than trusting a green suite.
 
 ---
 

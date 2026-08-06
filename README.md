@@ -8,8 +8,10 @@ through a Cloudflare Tunnel. No cloud platform, no Vercel.
 
 - **Full specification:** [`docs/PRD.md`](docs/PRD.md)
 - **Rules for the coding agent:** [`CLAUDE.md`](CLAUDE.md)
-- **Status:** Phases 0–3 complete. Phase 4 — prizes, FIFO inventory and
-  redemption — is next.
+- **Status:** Phases 0–3 complete. Phase 4 (prizes, FIFO inventory, redemption)
+  is built and verified on a development machine — engine, API and screens —
+  but is **not signed off**: it still needs the on-device acceptance pass, a
+  real staff member redeeming prizes on the actual tablet.
 
 ---
 
@@ -40,8 +42,15 @@ Useful while developing:
 ```bash
 npm run db:studio         # browse the data in a GUI
 npm run typecheck
+npm test                  # unit + integration tests (FIFO engine, cost gate)
 npm run db:reset          # wipe and re-seed when the schema churns
 ```
+
+`npm test` runs against your **development database** rather than a mock,
+because the rules it checks — FIFO order, "stock can never go negative" — are
+enforced by PostgreSQL itself. Each test rolls back or cleans up after itself,
+so a full run leaves no rows behind, and it refuses to start against a database
+whose name does not contain `_dev` or `_test`.
 
 Docker is only used for the production deployment (next section). If you ever
 work on a machine without Postgres installed, `docker-compose.dev.yml` will
@@ -137,6 +146,7 @@ prisma/seed.ts           idempotent seed; runs on every boot
 src/app/                 routes and UI
 src/app/api/             REST endpoints (auth → validate → call a service)
 src/server/services/     ALL business logic lives here
+src/server/dto/          response shapes — where cost figures are gated
 src/lib/                 money, business date, phone normalisation
 data/                    attendance photos, receipts  (gitignored)
 backups/                 database backups              (gitignored)

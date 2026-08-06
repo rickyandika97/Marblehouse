@@ -1,0 +1,170 @@
+/**
+ * Request-scoped actor context (PRD §5.4).
+ *
+ * "On every request, middleware loads the session, user, role, shop
+ * assignments and today's work session into a request-scoped context. Every
+ * service function receives this context. NO SERVICE FUNCTION MAY QUERY THE
+ * DATABASE WITHOUT KNOWING THE ACTOR."
+ *
+ * That last sentence is the reason this file exists. If you find yourself
+ * wanting a service that takes no context, you are about to write a
+ * permission hole.
+ */
+import { cache } from "react";
+import type { Role, Shop, WorkSession } from "@prisma/client";
+import { prisma } from "@/lib/prisma";
+import { businessDateFor } from "@/lib/business-date";
+import { getBusinessDayStartHour } from "@/server/services/settings";
+import { getAuthSession } from "./session";
+
+export interface Actor {
+  sessionId: string;
+  userId: string;
+  username: string;
+  displayName: string;
+  role: Role;
+  isActive: boolean;
+  mustChangePassword: boolean;
+  canEnterCost: boolean;
+  defaultShopId: string | null;
+
+  /** Shop IDs from UserShop. For an OWNER this is NOT the authority — see §3.1. */
+  assignedShopIds: string[];
+
+  /** Today's business date, computed server-side. The client never sends this. */
+  businessDate: Date;
+
+  /** Today's declared shop, or null if the picker has not been answered yet. */
+  workSession: (WorkSession & { shop: Shop }) | null;
+}
+
+/**
+ * Cost visibility gate (§7.5, CLAUDE.md).
+ *
+ * For a MANAGER this must ALWAYS be intersected with shop assignment before
+ * it is trusted — use `canSeeCostForShop` rather than this bare flag whenever
+ * a shop is in scope.
+ */
+export function canSeeCost(actor: Actor): boolean {
+  return (
+    actor.role === "OWNER" ||
+    (actor.role === "MANAGER" && actor.canEnterCost)
+  );
+}
+
+export function canSeeCostForShop(actor: Actor, shopId: string): boolean {
+  if (actor.role === "OWNER") return true;
+  if (actor.role !== "MANAGER" || !actor.canEnterCost) return false;
+  return actor.assignedShopIds.includes(shopId);
+}
+
+/**
+ * Is this actor allowed to act on this shop?
+ *
+ * OWNER may act on any shop and needs no assignment (§3.1). MANAGER and STAFF
+ * are confined to their assignments — this is what stops a manager reaching
+ * another branch by typing its ID (R-4).
+ */
+export function hasShopAccess(actor: Actor, shopId: string): boolean {
+  if (actor.role === "OWNER") return true;
+  return actor.assignedShopIds.includes(shopId);
+}
+
+/**
+ * The business date to use for this actor right now.
+ *
+ * The start hour is GLOBAL (§4.2, C-1, D-18) — one value for the whole
+ * business, read from AppSetting. It used to come from the user's default
+ * shop, which was the drift D-17 recorded; that is now resolved.
+ *
+ * The TIMEZONE still comes from the default shop, falling back to the server
+ * TZ. v1 assumes one timezone across all branches (§11), so this is a single
+ * value in practice — but the shop is the more specific source, and keeping it
+ * here means a future multi-timezone change has an obvious place to start.
+ */
+async function actorBusinessDate(defaultShop: Shop | null): Promise<Date> {
+  return businessDateFor(
+    new Date(),
+    defaultShop?.timezone ?? process.env.TZ ?? "Asia/Jakarta",
+    await getBusinessDayStartHour()
+  );
+}
+
+/**
+ * Load the current actor, or null when unauthenticated.
+ *
+ * Wrapped in React's `cache` so that a single server render resolving the
+ * layout, the page and a couple of guards performs ONE session lookup rather
+ * than four. The cache is per-request, so there is no cross-user bleed.
+ */
+export const getActor = cache(async (): Promise<Actor | null> => {
+  const resolved = await getAuthSession();
+  if (!resolved) return null;
+
+  const { user, session } = resolved;
+
+  // A deactivated user's session must stop working immediately — without this
+  // check, deactivating someone would leave them signed in for up to 12 hours
+  // (R-9). Better Auth also blocks new sign-ins for a banned user; this closes
+  // the window on sessions that already exist.
+  if (user.banned) return null;
+
+  // Shop assignments and the default shop's day-start hour are ours, not the
+  // auth library's, so they come from the domain tables.
+  const [assignments, defaultShop] = await Promise.all([
+    prisma.userShop.findMany({
+      where: { userId: user.id },
+      select: { shopId: true },
+    }),
+    user.defaultShopId
+      ? prisma.shop.findUnique({ where: { id: user.defaultShopId } })
+      : Promise.resolve(null),
+  ]);
+
+  const businessDate = await actorBusinessDate(defaultShop);
+
+  const workSession = await prisma.workSession.findUnique({
+    where: { userId_businessDate: { userId: user.id, businessDate } },
+    include: { shop: true },
+  });
+
+  return {
+    sessionId: session.id,
+    userId: user.id,
+    // `username` is nullable in Better Auth's schema but is always set by our
+    // creation path; fall back to the synthetic-email local part rather than
+    // presenting an empty string.
+    username: user.username ?? user.email.split("@")[0] ?? user.id,
+    displayName: user.displayName,
+    role: user.role,
+    isActive: !user.banned,
+    mustChangePassword: user.mustChangePassword ?? false,
+    canEnterCost: user.canEnterCost ?? false,
+    defaultShopId: user.defaultShopId,
+    assignedShopIds: assignments.map((a) => a.shopId),
+    businessDate,
+    workSession,
+  };
+});
+
+/**
+ * Shops this actor may select in the day-start picker (§4.7).
+ *
+ * OWNER sees every active shop; everyone else sees only their assignments.
+ * The HQ pseudo-shop is excluded — it accepts no sales, so nobody "works"
+ * there (§4.12).
+ *
+ * Filtered in SQL, never in JavaScript (§5.6).
+ */
+export async function selectableShops(actor: Actor): Promise<Shop[]> {
+  return prisma.shop.findMany({
+    where: {
+      isActive: true,
+      isHqPseudoShop: false,
+      ...(actor.role === "OWNER"
+        ? {}
+        : { userShops: { some: { userId: actor.userId } } }),
+    },
+    orderBy: [{ name: "asc" }],
+  });
+}

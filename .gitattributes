@@ -1,0 +1,23 @@
+# Normalise line endings so files created on macOS still work inside the
+# Linux container after a Windows checkout. Without this, a .sh file checked
+# out with CRLF fails in the container with "bad interpreter: no such file".
+* text=auto eol=lf
+
+*.sh      text eol=lf
+*.ts      text eol=lf
+*.tsx     text eol=lf
+*.json    text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.prisma  text eol=lf
+*.md      text eol=lf
+
+# Binary — never touch these
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.gz  binary
+*.zip binary

@@ -1,0 +1,807 @@
+// Marblehouse — pinball arcade management system
+// Schema per PRD §6, with all eight owner decisions of 3 Aug 2026 applied.
+//
+// Reminders that keep this schema honest:
+//  - There is no `marbleCount` on sales or presets. A sale records money only.
+//  - `ticketCost` lives on PrizeItem and is GLOBAL — one price at every branch.
+//  - There is no `qtyOnHand` column. On-hand = SUM(PrizeBatch.qtyRemaining).
+//  - Fields marked OWNER-ONLY must never reach a MANAGER/STAFF response (§7.5).
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────── ENUMS ───────────────────────────────
+
+enum Role {
+  OWNER
+  MANAGER
+  STAFF
+}
+
+enum PaymentMethod {
+  CASH
+  EDC
+}
+
+enum SaleStatus {
+  COMPLETED
+  VOIDED
+}
+
+enum MarbleTxnType {
+  DEPOSIT
+  WITHDRAW
+  ADJUST
+}
+
+enum TicketTxnType {
+  AWARD
+  REDEEM
+  ADJUST
+  VOID_RESTORE
+  // No EXPIRE. Tickets never expire (decision 3, 3 Aug 2026). Adding one later
+  // is a migration plus a policy decision, not a code shortcut.
+}
+
+enum StockMovementType {
+  RECEIVE
+  REDEEM
+  TRANSFER_OUT
+  TRANSFER_IN
+  OPNAME_LOSS
+  OPNAME_GAIN
+  DAMAGE
+  MANUAL_ADJUST
+  VOID_RESTORE
+}
+
+enum TransferStatus {
+  IN_TRANSIT
+  RECEIVED
+  CANCELLED
+}
+
+enum AttendanceStatus {
+  PRESENT
+  LATE
+  EXCUSED
+  ABSENT
+}
+
+// ─────────────────────────────── ORG ───────────────────────────────
+
+model Shop {
+  id                   String   @id @default(cuid())
+  code                 String   @unique
+  name                 String
+  address              String?
+  phone                String?
+  timezone             String   @default("Asia/Jakarta")
+  // NO dayStartHour here — the business-day boundary is GLOBAL, held in
+  // AppSetting["businessDayStartHour"] and read via getBusinessDayStartHour().
+  // Per-shop opening hours are a different thing and live in `Shift` (§4.14).
+  // See §4.2, correction C-1, and BUILD-LOG D-18.
+  lateGraceMin         Int      @default(5)
+  allowCustomAmount    Boolean  @default(false)
+  allowDirectTransfer  Boolean  @default(false)
+  requireClockOutPhoto Boolean  @default(false)
+  isHqPseudoShop       Boolean  @default(false)
+  isActive             Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  userShops       UserShop[]
+  defaultForUsers User[]            @relation("DefaultShop")
+  presets         SalePreset[]
+  sales           Sale[]
+  shifts          Shift[]
+  attendances     Attendance[]
+  expenses        Expense[]
+  prizeConfigs    ShopPrizeConfig[]
+  batches         PrizeBatch[]
+  redemptions     Redemption[]
+  movements       StockMovement[]
+  workSessions    WorkSession[]
+  marbleTxns      MarbleLedger[]
+  ticketTxns      TicketLedger[]
+  transfersOut    PrizeTransfer[]   @relation("TransferFrom")
+  transfersIn     PrizeTransfer[]   @relation("TransferTo")
+  opnames         OpnameSession[]
+
+  @@index([isActive])
+}
+
+/// Owned by Better Auth (§5.4, decided 4 Aug 2026), mapped to `user`.
+///
+/// The auth library owns identity, credentials and sessions. Our domain fields
+/// ride along via `user.additionalFields` rather than a parallel table — a
+/// second table joined to the auth user would be a permanent source of drift.
+///
+/// Regenerate the auth-owned columns with:
+///   npx @better-auth/cli generate --config src/server/auth/auth.ts
+/// then reconcile by hand. Do NOT delete the domain relations below; the CLI
+/// does not know about them.
+model User {
+  id String @id @default(cuid())
+
+  // ── Better Auth core ────────────────────────────────────────────────
+  /// SYNTHETIC. Better Auth structurally requires a unique, non-null email,
+  /// but this business collects none — staff have no work addresses (§5.4).
+  /// We generate `<username>@marblehouse.invalid` at creation.
+  ///
+  /// `.invalid` is reserved by RFC 2606 and can never resolve, so if an email
+  /// path is ever switched on by mistake it fails hard instead of delivering
+  /// mail to a real stranger. It is never displayed, never editable, and is
+  /// not contact information.
+  ///
+  /// DO NOT "fix" this by wiring up real email. See §5.4: no verification,
+  /// no magic links, no email password reset.
+  email         String  @unique
+  emailVerified Boolean @default(false)
+  /// Better Auth's core display field. We keep our own `displayName` below as
+  /// the human-facing name; `name` mirrors it to satisfy the library.
+  name          String
+  image         String?
+
+  /// Login identifier — unique, case-insensitive (§5.4).
+  /// IMMUTABLE after creation: it is the seed of the synthetic email, and
+  /// keeping the two in sync would be a class of bug for no benefit. To change
+  /// one, deactivate the account and create a new one.
+  username        String? @unique
+  displayUsername String?
+
+  /// Access control, from the admin plugin. This is the SINGLE stored source
+  /// of truth for whether a user may sign in; there is deliberately no
+  /// `isActive` column here. The DTO exposes `isActive: !banned` for the UI.
+  /// UI copy says "Deactivate", never "ban" — most cases are staff leaving.
+  banned     Boolean?  @default(false)
+  banReason  String?
+  /// Temporary suspension comes free with the plugin. No Phase 1 UI for it.
+  banExpires DateTime?
+
+  // ── Domain fields (user.additionalFields in auth.ts) ─────────────────
+  role        Role
+  displayName String
+  phone       String?
+
+  /// Purchasing permission (§7.5). Owner-granted, meaningful only on a MANAGER.
+  /// Unlocks prize cost entry and stock valuation FOR THEIR ASSIGNED SHOPS ONLY.
+  /// Grants nothing else — no profit reports, no cross-shop cost visibility.
+  canEnterCost Boolean @default(false)
+
+  mustChangePassword Boolean   @default(true)
+  defaultShopId      String?
+  defaultShop        Shop?     @relation("DefaultShop", fields: [defaultShopId], references: [id])
+  lastLoginAt        DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  // ── Auth relations ──────────────────────────────────────────────────
+  sessions Session[]
+  accounts Account[]
+
+  // ── Domain relations (unchanged — all still point at User) ──────────
+  userShops    UserShop[]
+  workSessions WorkSession[]
+  sales        Sale[]
+  attendances  Attendance[]
+  expenses     Expense[]
+  redemptions  Redemption[]
+  auditLogs    AuditLog[]
+  marbleTxns   MarbleLedger[]
+  ticketTxns   TicketLedger[]
+
+  @@index([role, banned])
+  @@map("user")
+}
+
+model UserShop {
+  id     String @id @default(cuid())
+  userId String
+  shopId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, shopId])
+  @@index([shopId])
+}
+
+/// Owned by Better Auth. The hand-rolled session table was deleted per §5.4 —
+/// the library handles token generation, rotation, timing-safe comparison and
+/// cookie flags, which is exactly the category of code worth not writing.
+model Session {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Set by the admin plugin's impersonation. Impersonation is not enabled in
+  /// Phase 1 — §5.4 permits it only if audit-logged.
+  impersonatedBy String?
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("session")
+}
+
+/// Owned by Better Auth. Holds the argon2id password hash in `password` for
+/// the credential provider. This is why there is no `passwordHash` on User.
+model Account {
+  id         String @id @default(cuid())
+  accountId  String
+  providerId String
+  userId     String
+  user       User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  /// argon2id hash (§5.4). Never leaves the server.
+  password              String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@map("account")
+}
+
+/// Owned by Better Auth. Unused in Phase 1 — there are no email flows (§5.4) —
+/// but the library expects the table to exist.
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+/// One row per user per business day: which shop they declared they are at.
+model WorkSession {
+  id           String   @id @default(cuid())
+  userId       String
+  shopId       String
+  businessDate DateTime @db.Date
+  selectedAt   DateTime @default(now())
+  changedCount Int      @default(0)
+  user         User     @relation(fields: [userId], references: [id])
+  shop         Shop     @relation(fields: [shopId], references: [id])
+
+  @@unique([userId, businessDate])
+  @@index([shopId, businessDate])
+}
+
+// ─────────────────────────────── SALES ───────────────────────────────
+
+/// A preset is an amount and a label. NOTHING ELSE.
+/// Do not add marbleCount — the business does not track marbles per sale.
+model SalePreset {
+  id        String   @id @default(cuid())
+  shopId    String
+  shop      Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  label     String
+  amount    Decimal  @db.Decimal(14, 2)
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  sales Sale[]
+
+  @@index([shopId, isActive, sortOrder])
+}
+
+model Sale {
+  id           String      @id @default(cuid())
+  shopId       String
+  shop         Shop        @relation(fields: [shopId], references: [id])
+  recordedById String
+  recordedBy   User        @relation(fields: [recordedById], references: [id])
+  customerId   String?
+  customer     Customer?   @relation(fields: [customerId], references: [id])
+  presetId     String?
+  preset       SalePreset? @relation(fields: [presetId], references: [id])
+
+  amount         Decimal       @db.Decimal(14, 2)
+  paymentMethod  PaymentMethod
+  isCustomAmount Boolean       @default(false)
+  status         SaleStatus    @default(COMPLETED)
+
+  businessDate DateTime @db.Date
+  occurredAt   DateTime @default(now())
+
+  voidedAt   DateTime?
+  voidedById String?
+  voidReason String?
+  note       String?
+
+  @@index([shopId, businessDate])
+  @@index([customerId, occurredAt])
+  @@index([recordedById, businessDate])
+  @@index([businessDate])
+}
+
+// ─────────────────────── CUSTOMERS & BALANCES ───────────────────────
+
+model Customer {
+  id              String  @id @default(cuid())
+  name            String
+  phoneRaw        String
+  phoneNormalized String  @unique
+  note            String?
+  isActive        Boolean @default(true)
+
+  /// Caches, written only inside the same transaction as the matching ledger
+  /// insert. The ledger is the source of truth; a nightly job reconciles these.
+  marbleBalance Int @default(0)
+  ticketBalance Int @default(0)
+
+  firstSeenAt  DateTime @default(now())
+  lastSeenAt   DateTime @default(now())
+  mergedIntoId String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  sales       Sale[]
+  marbleTxns  MarbleLedger[]
+  ticketTxns  TicketLedger[]
+  redemptions Redemption[]
+
+  @@index([name])
+  @@index([lastSeenAt])
+}
+
+model MarbleLedger {
+  id         String   @id @default(cuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id])
+  shopId     String
+  shop       Shop     @relation(fields: [shopId], references: [id])
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+
+  type         MarbleTxnType
+  delta        Int
+  balanceAfter Int
+  reason       String?
+  saleId       String?
+  businessDate DateTime      @db.Date
+  occurredAt   DateTime      @default(now())
+
+  @@index([customerId, occurredAt])
+  @@index([shopId, businessDate])
+}
+
+model TicketLedger {
+  id         String   @id @default(cuid())
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id])
+  shopId     String
+  shop       Shop     @relation(fields: [shopId], references: [id])
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+
+  type         TicketTxnType
+  delta        Int
+  balanceAfter Int
+  reason       String?
+  redemptionId String?
+  businessDate DateTime      @db.Date
+  occurredAt   DateTime      @default(now())
+
+  @@index([customerId, occurredAt])
+  @@index([shopId, businessDate])
+  @@index([userId, businessDate]) // Tickets Awarded by Staff report (§4.6)
+}
+
+// ─────────────────────── PRIZES & INVENTORY ───────────────────────
+
+/// Global catalog. Ticket cost is global — the same at every branch.
+/// Stock is per shop and lives in PrizeBatch.
+model PrizeItem {
+  id         String   @id @default(cuid())
+  sku        String   @unique
+  name       String
+  category   String?
+  imagePath  String?
+  ticketCost Int
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  configs       ShopPrizeConfig[]
+  batches       PrizeBatch[]
+  lines         RedemptionLine[]
+  movements     StockMovement[]
+  transferLines PrizeTransferLine[]
+  opnameLines   OpnameLine[]
+
+  @@index([isActive, name])
+}
+
+/// Per-shop stocking policy. NOTE: ticketCost is NOT here — it is global.
+model ShopPrizeConfig {
+  id          String    @id @default(cuid())
+  shopId      String
+  prizeItemId String
+  shop        Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  prizeItem   PrizeItem @relation(fields: [prizeItemId], references: [id], onDelete: Cascade)
+
+  lowStockThreshold Int      @default(0) // 0 = no alert
+  isActive          Boolean  @default(true) // does this branch carry the item
+  updatedAt         DateTime @updatedAt
+
+  @@unique([shopId, prizeItemId])
+  @@index([shopId, isActive])
+}
+
+/// One delivery of one prize into one shop at one cost. THE unit of stock.
+model PrizeBatch {
+  id          String    @id @default(cuid())
+  shopId      String
+  prizeItemId String
+  shop        Shop      @relation(fields: [shopId], references: [id])
+  prizeItem   PrizeItem @relation(fields: [prizeItemId], references: [id])
+
+  batchCode    String?
+  qtyReceived  Int
+  qtyRemaining Int
+  /// OWNER-ONLY (plus Purchasing managers, own shops only).
+  unitCogs     Decimal @db.Decimal(14, 2)
+  supplier     String?
+  note         String?
+  isAdjustment Boolean @default(false)
+  /// Received by a manager without the Purchasing permission — owner must
+  /// still set unitCogs. Consumption recorded at 0 is backfilled later (§7.5).
+  needsCosting Boolean @default(false)
+  isVoid       Boolean @default(false)
+
+  /// FIFO sort key. Preserved across branch transfers so FIFO stays honest.
+  receivedAt    DateTime
+  createdAt     DateTime @default(now())
+  createdById   String?
+  sourceBatchId String?
+
+  consumptions StockConsumption[]
+
+  @@index([shopId, prizeItemId, receivedAt])
+  @@index([shopId, prizeItemId, qtyRemaining])
+  @@index([needsCosting])
+}
+
+/// Append-only record of every quantity change.
+model StockMovement {
+  id          String    @id @default(cuid())
+  shopId      String
+  prizeItemId String
+  shop        Shop      @relation(fields: [shopId], references: [id])
+  prizeItem   PrizeItem @relation(fields: [prizeItemId], references: [id])
+
+  type         StockMovementType
+  qtyDelta     Int
+  refType      String?
+  refId        String?
+  userId       String?
+  reason       String?
+  businessDate DateTime          @db.Date
+  occurredAt   DateTime          @default(now())
+
+  consumptions StockConsumption[]
+
+  @@index([shopId, prizeItemId, occurredAt])
+  @@index([businessDate, type])
+}
+
+/// FIFO detail: which batch was drawn down, how much, at what cost.
+/// SUM(qty * unitCogsAtConsumption) IS the prize expense. OWNER-ONLY.
+model StockConsumption {
+  id                    String        @id @default(cuid())
+  movementId            String
+  movement              StockMovement @relation(fields: [movementId], references: [id])
+  batchId               String
+  batch                 PrizeBatch    @relation(fields: [batchId], references: [id])
+  qty                   Int
+  unitCogsAtConsumption Decimal       @db.Decimal(14, 2)
+  createdAt             DateTime      @default(now())
+
+  @@index([movementId])
+  @@index([batchId])
+}
+
+// ─────────────────────────── REDEMPTION ───────────────────────────
+
+model Redemption {
+  id         String   @id @default(cuid())
+  shopId     String
+  shop       Shop     @relation(fields: [shopId], references: [id])
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id])
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+
+  totalTickets Int
+  /// OWNER-ONLY.
+  totalCogs    Decimal   @db.Decimal(14, 2)
+  isVoided     Boolean   @default(false)
+  voidedAt     DateTime?
+  voidedById   String?
+  voidReason   String?
+
+  businessDate DateTime @db.Date
+  occurredAt   DateTime @default(now())
+
+  lines RedemptionLine[]
+
+  @@index([shopId, businessDate])
+  @@index([customerId, occurredAt])
+}
+
+model RedemptionLine {
+  id           String     @id @default(cuid())
+  redemptionId String
+  redemption   Redemption @relation(fields: [redemptionId], references: [id], onDelete: Cascade)
+  prizeItemId  String
+  prizeItem    PrizeItem  @relation(fields: [prizeItemId], references: [id])
+
+  qty             Int
+  ticketCostEach  Int
+  ticketCostTotal Int
+  /// OWNER-ONLY.
+  cogsTotal       Decimal @db.Decimal(14, 2)
+  movementId      String?
+
+  @@index([redemptionId])
+  @@index([prizeItemId])
+}
+
+// ─────────────────────────── TRANSFERS ───────────────────────────
+
+model PrizeTransfer {
+  id         String @id @default(cuid())
+  fromShopId String
+  toShopId   String
+  fromShop   Shop   @relation("TransferFrom", fields: [fromShopId], references: [id])
+  toShop     Shop   @relation("TransferTo", fields: [toShopId], references: [id])
+
+  status TransferStatus @default(IN_TRANSIT)
+  note   String?
+
+  dispatchedById String
+  dispatchedAt   DateTime  @default(now())
+  receivedById   String?
+  receivedAt     DateTime?
+  cancelledById  String?
+  cancelledAt    DateTime?
+
+  businessDate DateTime            @db.Date
+  lines        PrizeTransferLine[]
+
+  @@index([fromShopId, status])
+  @@index([toShopId, status])
+}
+
+model PrizeTransferLine {
+  id          String        @id @default(cuid())
+  transferId  String
+  transfer    PrizeTransfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  prizeItemId String
+  prizeItem   PrizeItem     @relation(fields: [prizeItemId], references: [id])
+  qty         Int
+  /// FIFO split consumed at source, used to recreate batches on receive:
+  /// [{ sourceBatchId, qty, unitCogs, receivedAt }]
+  batchPlan   Json
+
+  @@index([transferId])
+}
+
+// ─────────────────────────── OPNAME ───────────────────────────
+
+model OpnameSession {
+  id           String    @id @default(cuid())
+  shopId       String
+  shop         Shop      @relation(fields: [shopId], references: [id])
+  userId       String
+  note         String?
+  isCommitted  Boolean   @default(false)
+  businessDate DateTime  @db.Date
+  startedAt    DateTime  @default(now())
+  committedAt  DateTime?
+
+  lines OpnameLine[]
+
+  @@index([shopId, businessDate])
+}
+
+model OpnameLine {
+  id          String        @id @default(cuid())
+  sessionId   String
+  session     OpnameSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  prizeItemId String
+  prizeItem   PrizeItem     @relation(fields: [prizeItemId], references: [id])
+
+  systemQty  Int
+  countedQty Int
+  variance   Int
+  /// OWNER-ONLY.
+  varianceValue Decimal? @db.Decimal(14, 2)
+  note          String?
+
+  @@index([sessionId])
+}
+
+// ─────────────────────────── EXPENSES ───────────────────────────
+
+model ExpenseCategory {
+  id         String   @id @default(cuid())
+  name       String   @unique
+  isArchived Boolean  @default(false)
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  expenses Expense[]
+}
+
+model Expense {
+  id         String          @id @default(cuid())
+  shopId     String
+  shop       Shop            @relation(fields: [shopId], references: [id])
+  categoryId String
+  category   ExpenseCategory @relation(fields: [categoryId], references: [id])
+  userId     String
+  user       User            @relation(fields: [userId], references: [id])
+
+  amount       Decimal  @db.Decimal(14, 2)
+  note         String?
+  receiptPath  String?
+  businessDate DateTime @db.Date
+  createdAt    DateTime @default(now())
+  isDeleted    Boolean  @default(false)
+
+  @@index([shopId, businessDate])
+  @@index([categoryId, businessDate])
+}
+
+// ─────────────────────────── ATTENDANCE ───────────────────────────
+
+model Shift {
+  id         String   @id @default(cuid())
+  shopId     String
+  shop       Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  name       String
+  startTime  DateTime @db.Time(0)
+  endTime    DateTime @db.Time(0)
+  daysOfWeek Int[]    @default([0, 1, 2, 3, 4, 5, 6]) // 0 = Sunday
+  isActive   Boolean  @default(true)
+
+  attendances Attendance[]
+
+  @@index([shopId, isActive])
+}
+
+model Attendance {
+  id      String @id @default(cuid())
+  userId  String
+  user    User   @relation(fields: [userId], references: [id])
+  shopId  String
+  shop    Shop   @relation(fields: [shopId], references: [id])
+  shiftId String?
+  shift   Shift? @relation(fields: [shiftId], references: [id])
+
+  businessDate DateTime  @db.Date
+  clockInAt    DateTime
+  clockOutAt   DateTime?
+
+  /// Snapshot so later shift edits do not rewrite lateness history.
+  shiftStartAtCapture DateTime?
+  graceMinAtCapture   Int?
+
+  status      AttendanceStatus @default(PRESENT)
+  isLate      Boolean          @default(false)
+  lateMinutes Int              @default(0)
+
+  photoPath      String?
+  photoPurgedAt  DateTime?
+  latitude       Decimal? @db.Decimal(10, 7)
+  longitude      Decimal? @db.Decimal(10, 7)
+  accuracyM      Int?
+  locationDenied Boolean  @default(false)
+
+  clockOutPhotoPath String?
+  note              String?
+  editedById        String?
+  editedAt          DateTime?
+
+  @@unique([userId, businessDate])
+  @@index([shopId, businessDate])
+  @@index([businessDate, isLate])
+}
+
+// ─────────────────────────── SYSTEM ───────────────────────────
+
+model AuditLog {
+  id       String  @id @default(cuid())
+  userId   String?
+  user     User?   @relation(fields: [userId], references: [id])
+  role     Role?
+  shopId   String?
+  entity   String
+  entityId String?
+  action   String
+  before   Json?
+  after    Json?
+  reason   String?
+
+  ipAddress  String?
+  occurredAt DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@index([userId, occurredAt])
+  @@index([occurredAt])
+}
+
+model IdempotencyKey {
+  key          String   @id
+  userId       String
+  endpoint     String
+  responseJson Json
+  createdAt    DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model BackupRun {
+  id         String    @id @default(cuid())
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  succeeded  Boolean   @default(false)
+  sizeBytes  BigInt?
+  filePath   String?
+  checksum   String?
+  errorText  String?
+
+  @@index([startedAt])
+}
+
+/// Durable operational warning raised by background jobs. Phase 3 writes
+/// balance-drift alerts here; the owner dashboard presents them in Phase 8.
+/// Keeping the alert now means a repaired cache cannot erase the evidence that
+/// drift happened before the owner sees it.
+model SystemAlert {
+  id          String    @id @default(cuid())
+  key         String    @unique
+  severity    String
+  title       String
+  message     String
+  details     Json?
+  isActive    Boolean   @default(true)
+  firstSeenAt DateTime  @default(now())
+  lastSeenAt  DateTime  @default(now())
+  resolvedAt  DateTime?
+
+  @@index([isActive, severity, lastSeenAt])
+}
+
+/// Key/value store for app-level settings, e.g. lastOffsiteCopyAt (§13.4).
+model AppSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}

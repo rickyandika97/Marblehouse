@@ -1,0 +1,29 @@
+# CRITICAL: node_modules must never be copied from the host into the image.
+# Your Mac's native binaries (argon2, prisma engines, sharp) are built for
+# macOS/arm64 and will not run in a Linux container. The image builds its own.
+node_modules
+.next
+out
+build
+dist
+
+.git
+.gitignore
+.github
+
+.env
+.env.local
+.env.*.local
+
+data
+backups
+
+*.log
+.DS_Store
+Thumbs.db
+coverage
+.vscode
+.idea
+
+README.md
+docs

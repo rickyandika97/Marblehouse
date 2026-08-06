@@ -1,0 +1,35 @@
+# Secrets — never commit. .env.example is the template that IS committed.
+.env
+.env.local
+.env.*.local
+*.pem
+
+# Dependencies & build output
+node_modules/
+.next/
+out/
+build/
+dist/
+next-env.d.ts
+
+# Runtime data — attendance photos, receipts, database backups.
+# These contain customer names, phone numbers and staff photos. Keep them
+# out of GitHub entirely.
+data/
+backups/
+!data/.gitkeep
+!backups/.gitkeep
+
+# Logs & OS noise
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Test output
+coverage/

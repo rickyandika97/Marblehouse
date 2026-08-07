@@ -15,6 +15,7 @@ import {
   Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { AttendanceBanner } from "@/components/attendance-banner";
 
 /**
  * Role-dependent bottom tab bar (§8.0).
@@ -119,10 +120,12 @@ export function AppShell({
       </header>
 
       {/*
-        The red attendance banner (§4.13) belongs to Phase 6 and is
-        deliberately not stubbed here — a fake banner that does nothing would
-        train staff to ignore the real one.
+        The red attendance banner (§4.13). Not dismissible by design — it
+        clears only when the user has actually clocked in. OWNER never sees it
+        (attendance is optional for them), and the component decides that from
+        the server's answer rather than from the role prop.
       */}
+      <AttendanceBanner />
 
       <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-6 pb-24">
         {children}

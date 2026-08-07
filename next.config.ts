@@ -5,12 +5,49 @@ const nextConfig: NextConfig = {
 
   // Background jobs run only in the Node server runtime. Keep node-cron's
   // child_process/path imports out of Next's browser/edge webpack graph.
-  serverExternalPackages: ["node-cron"],
+  //
+  // `sharp` is here for the same reason with a sharper edge: it loads platform
+  // -specific native binaries, so bundling it fails at build time with a
+  // module-not-found on its own internals (Phase 6). It is used only by the
+  // attendance watermarker, which is server-only by definition.
+  serverExternalPackages: ["node-cron", "sharp"],
 
-  webpack(config, { isServer }) {
+  webpack(config, { isServer, nextRuntime }) {
     if (isServer) {
-      config.externals.push({ "node-cron": "commonjs node-cron" });
+      config.externals.push({
+        "node-cron": "commonjs node-cron",
+        sharp: "commonjs sharp",
+      });
     }
+
+    // `instrumentation.ts` is compiled for BOTH the node and edge runtimes,
+    // even though its body returns early unless NEXT_RUNTIME is "nodejs".
+    // Webpack still walks the import graph, so the scheduler → photo-retention
+    // → attendance-photo chain drags `node:fs/promises` and friends into the
+    // edge bundle, where `node:` schemes are unsupported and the build fails.
+    //
+    // Excluding the photo module from the edge bundle breaks that chain.
+    // Nothing in the edge runtime can legitimately reach it: it reads and
+    // writes files, which the edge runtime cannot do at all. `externals` with
+    // a matcher is used rather than a resolve alias, because an alias keyed on
+    // the `@/` path did not intercept the request.
+    if (nextRuntime === "edge") {
+      config.externals.push(
+        (
+          { request }: { request?: string },
+          callback: (err?: Error | null, result?: string) => void,
+        ) => {
+          if (request?.includes("services/attendance-photo")) {
+            return callback(
+              null,
+              "commonjs @/server/services/attendance-photo",
+            );
+          }
+          return callback();
+        },
+      );
+    }
+
     return config;
   },
 

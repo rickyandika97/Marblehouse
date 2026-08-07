@@ -15,7 +15,6 @@
  * bytes in Postgres (§4.15: it would bloat every backup). They are served only
  * through an authenticated route that re-checks role and shop access.
  */
-import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -238,7 +237,11 @@ export async function storeAttendancePhoto(
   const dd = String(at.getUTCDate()).padStart(2, "0");
 
   const relativeDir = path.join("attendance", yyyy, mm, dd);
-  const fileName = `${randomUUID()}.jpg`;
+  // `crypto` is a global in Node 22 (and everywhere else). Importing
+  // `node:crypto` instead made webpack fail with UnhandledSchemeError while
+  // building the edge instrumentation bundle, which does not support `node:`
+  // schemes — and instrumentation reaches this module through the scheduler.
+  const fileName = `${crypto.randomUUID()}.jpg`;
   const absoluteDir = path.join(DATA_ROOT, relativeDir);
 
   await mkdir(absoluteDir, { recursive: true });

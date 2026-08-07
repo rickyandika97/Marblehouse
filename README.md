@@ -8,10 +8,11 @@ through a Cloudflare Tunnel. No cloud platform, no Vercel.
 
 - **Full specification:** [`docs/PRD.md`](docs/PRD.md)
 - **Rules for the coding agent:** [`CLAUDE.md`](CLAUDE.md)
-- **Status:** Phases 0–3 complete. Phase 4 (prizes, FIFO inventory, redemption)
-  is built and verified on a development machine — engine, API and screens —
-  but is **not signed off**: it still needs the on-device acceptance pass, a
-  real staff member redeeming prizes on the actual tablet.
+- **Status:** Phases 0–3 complete. Phases 4 (prizes, FIFO inventory,
+  redemption) and 5 (transfers and opname) are built and verified on a
+  development machine — engines, APIs and screens — but **neither is signed
+  off**: both still need the on-device acceptance pass, a real staff member
+  redeeming prizes and counting stock on the actual tablet.
 
 ---
 
@@ -42,7 +43,7 @@ Useful while developing:
 ```bash
 npm run db:studio         # browse the data in a GUI
 npm run typecheck
-npm test                  # unit + integration tests (FIFO engine, cost gate)
+npm test                  # unit + integration tests (FIFO, transfers, opname)
 npm run db:reset          # wipe and re-seed when the schema churns
 ```
 

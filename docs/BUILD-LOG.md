@@ -23,8 +23,8 @@ why, not an edit to the old one.
 | 2 | Sales + customers | ✅ Done — all §16 criteria verified |
 | 3 | Marble & ticket ledgers | ✅ Done — all §16 criteria verified |
 | 4 | Prizes, FIFO inventory, redemption | 🟨 Built + verified on dev — awaiting the on-device acceptance pass |
-| 5 | Transfers and opname | ⬜ |
-| 6 | Attendance | ⬜ |
+| 5 | Transfers and opname | ✅ Done — all §16 criteria verified on dev |
+| 6 | Attendance | ⬜ Next |
 | 7 | Expenses | ⬜ |
 | 8 | Dashboards and reports | ⬜ |
 | 9 | Backup, restore, hardening | ⬜ |
@@ -718,6 +718,162 @@ work on already-closed phases.
 
 ---
 
+## Decisions taken during Phase 5
+
+### D-38 · Cancelling a transfer requires a reason
+
+**Owner decision, 7 Aug 2026.**
+
+§4.10 says a transfer can be `CANCELLED` while `IN_TRANSIT` and the batches are
+restored at the source. It does not say whether a reason is needed. Three
+options were put to the owner; they chose **restore, with a mandatory
+audit-logged reason**, matching how a sale void already works (§4.3).
+
+The reasoning: a cancel *after the box has physically left* is the case worth a
+paper trail, and it is indistinguishable in the data from a dispatch that was
+simply mis-keyed. The reason is what separates them later.
+
+**What cancel does NOT do:** it does not try to model a lost box. If the stock
+genuinely never comes back, the owner writes it off separately through opname
+or a damage adjustment, so a real loss appears as shrinkage rather than
+disappearing inside a cancelled transfer. Cancel restores; loss is a different
+event. Do not merge them.
+
+Rejected: blocking cancel once dispatched. It is the most physically faithful,
+but the common case is a mis-keyed dispatch, and blocking it would strand
+stock in transit with no way back.
+
+### D-39 · `allowDirectTransfer` was built now, not deferred
+
+**Owner decision, 7 Aug 2026.**
+
+§4.10's shop setting collapses dispatch and receive into one step. The column
+already existed, and the flag turned out to be a single branch at the end of
+`dispatchTransfer`.
+
+Crucially, direct mode **calls the same `applyReceive` helper** the two-step
+flow calls rather than duplicating the batch-recreation logic. That is what
+guarantees both paths preserve `receivedAt` identically — a second copy would
+be a second place to get FIFO wrong, and only one of them would have a test.
+
+Default stays **off**. Both paths are tested (`lands the stock at the
+destination in one step` / `stays two-step when the shop does not allow it`).
+
+### D-40 · Preserving `receivedAt` is the load-bearing rule of the whole phase
+
+§4.10 says a received batch keeps the original `unitCogs` **and** the original
+`receivedAt`. The second half is easy to skip, because stamping arrival time
+*looks* more natural and everything still appears to work.
+
+It does not work. FIFO sorts on `receivedAt`, so a transferred batch that took
+today's date sorts as the newest stock at the destination, and the destination
+consumes its *expensive local* batch first. **Verified by mutation: the cost of
+one consumption went from 2500 to 45000 — an 18× overstatement**, and the total
+still looked plausible.
+
+This is D-30's second engine mutation reappearing one layer up. The test
+`preserves receivedAt so a transferred batch keeps FIFO priority` exists
+specifically to hold it, and `verify-phase5.sh` re-checks it against the
+database. **If you refactor `applyReceive`, re-run that mutation.**
+
+### D-41 · Opname reveals the system count only after the count is entered
+
+§4.11's anti-anchoring rule is implemented as a *server* guarantee, not a UI
+convention: `POST /api/opname` returns the item list with **no quantities at
+all**, and `systemQty` is read server-side when the counted lines are saved.
+
+The screen therefore cannot leak what it never received. Had the quantity been
+sent early and merely hidden in the client, anyone with dev tools — and every
+future refactor of that component — would defeat the control.
+
+Why it matters commercially: a counter who can see "40" will find 40. The count
+stops being independent evidence, and opname becomes a formality that
+rubber-stamps whatever the system already believed.
+
+Tested at both levels: a service test asserts the DTO's keys, and
+`verify-phase5.sh` asserts it against the real HTTP body.
+
+### D-42 · `weightedAverageCost()` finally has a caller — and only one
+
+Built and tested in Phase 4 (§15.8) with nothing wired to it (D-29). Phase 5
+wires it to exactly one place: pricing a **positive opname variance**.
+
+Do not reach for it anywhere else. In particular it is **not** how a manual
+stock adjustment is priced — D-31 prices that at zero deliberately, because a
+manual adjustment has no basis for an estimate and inventing one would distort
+prize expense with a number nobody entered. An opname variance is different:
+it is found stock reconciled against a physical count, where the average is the
+best available basis.
+
+**It returns 0 when nothing is on hand**, which is correct (found stock of a
+brand-new prize is free rather than undefined) — but it means a test that
+drains a shop to zero first will assert nothing. That happened while writing
+`verify-phase5.sh`; the script now restocks before testing positive variance
+and asserts the exact average.
+
+### D-43 · A verification script must fail when its own query fails
+
+`verify-phase5.sh` reported a false **PASS** on its first run. One `db` query
+was malformed, node exited with a syntax error, the check compared two empty
+strings, and `chk` called it a pass.
+
+Two fixes, both worth copying into the other verify scripts if they are ever
+touched:
+
+1. **`chk` now fails an empty actual value** when a non-empty one was expected.
+   A check that passes because it crashed is worse than no check.
+2. **`db` queries are hoisted into their own assignments** rather than nested
+   inside a `chk` argument. `"$(db "…{where:{…}}…")"` inside another quoted
+   argument was being mangled by brace expansion before node ever saw it.
+
+The wider lesson is the one CLAUDE.md already makes about tests: a green check
+proves nothing until you have seen it go red. This one had never been seen red.
+
+---
+
+## What Phase 5 built
+
+```
+src/server/services/
+  transfers.ts    Dispatch / receive / cancel with batch provenance, the
+                  in-transit figure, and the §4.10 both-ends permission rule.
+                  batchPlan on PrizeTransferLine is the record of which source
+                  batches were consumed; receive replays it.
+  opname.ts       Counting sessions, the anti-anchoring guarantee (D-41), and
+                  variance commit — OPNAME_LOSS via consumeFifo for shrinkage,
+                  an isAdjustment batch at weightedAverageCost for found stock.
+
+src/server/services/__tests__/
+  transfers.test.ts  13 tests, including §15's dispatch→receive conservation.
+  opname.test.ts      9 tests, including §15.8 and §15.9 at route level (D-29).
+
+scripts/verify-phase5.sh   42 HTTP-level acceptance checks.
+```
+
+APIs: `/api/transfers`, `/api/transfers/[id]/receive`,
+`/api/transfers/[id]/cancel`, `/api/opname`, `/api/opname/[id]`,
+`/api/opname/[id]/lines`, `/api/opname/[id]/commit`.
+
+Screens: the **Transfers** and **Opname** tabs on `/stock`, completing §8.7's
+five (D-35 deferred them from Phase 4 rather than stubbing them).
+
+**No migration.** `PrizeTransfer`, `PrizeTransferLine`, `OpnameSession` and
+`OpnameLine` have existed since the Phase 0 schema, so PRD §6 still matches
+`prisma/schema.prisma` and needed no reconciliation.
+
+**§16 criteria proven:**
+
+| Criterion | How |
+|---|---|
+| A transfer round trip conserves quantity **and** total cost | `verify-phase5.sh` sums quantity and `qty × unitCogs` across BOTH branches before and after, and asserts the destination holds one batch per source batch at the original costs (`6@1000,2@3000`), not one averaged batch. Also proven in `transfers.test.ts`. |
+| An opname loss is shrinkage, not prize expense | The committed movement is asserted to be `OPNAME_LOSS`, never `REDEEM` — at service level and against the database over HTTP. |
+
+Both are proven **on a dev machine**. Like Phase 4, the device-level half of
+§15's manual checklist — a real manager doing a real count on the actual
+tablet — has not happened.
+
+---
+
 ## What Phase 4 has built SO FAR
 
 ```
@@ -934,12 +1090,13 @@ APIs: `/api/auth/{login,logout,me,change-password,[...all]}`,
 ```bash
 npm run typecheck                 # clean
 npm run lint                      # clean
-npm test                          # 17 FIFO tests (D-26) — safe to re-run, no residue
+npm test                          # 58 tests (D-26) — safe to re-run, no residue
 docker compose build              # succeeds (catches Linux case-sensitivity)
 bash scripts/verify-phase1.sh     # 21/21 acceptance checks, needs npm run dev
 bash scripts/verify-phase2.sh     # 30/30 acceptance checks, needs npm run dev
 bash scripts/verify-phase3.sh     # Phase 3 PASS, needs npm run dev
 bash scripts/verify-phase4.sh     # 35 checks, needs npm run dev
+bash scripts/verify-phase5.sh     # 42 checks, needs npm run dev
 ```
 
 All four were last re-run green on **7 Aug 2026** when Phase 3's commit gate was
@@ -991,7 +1148,10 @@ OWNER can merge and the merged caches reconcile to the moved ledgers.
 | ~~`Shop.dayStartHour` still exists~~ | **Resolved same day — see D-18.** Dropped; the cutoff is global at 04:00. |
 | No UI for the business-day hour | §8.10 puts it under Owner → System. It is set by seed/migration only. Build the screen in Phase 9 with the other owner settings; changing it needs a warning that it does not restamp history (D-18). |
 | Idempotency keys are never deleted | D-16. The cleanup job is Phase 9. Rows accumulate one per mutation until then; harmless but unbounded. |
-| Void reason uses `window.prompt` | Functional and accessible, but ugly on a tablet and it cannot enforce the 3-character minimum client-side (the server does). Replace with a proper dialog in Phase 10's polish pass. |
+| Void reason uses `window.prompt` | Functional and accessible, but ugly on a tablet and it cannot enforce the 3-character minimum client-side (the server does). Replace with a proper dialog in Phase 10's polish pass. **The Phase 5 transfer-cancel reason uses the same prompt and should be replaced at the same time.** |
+| Transfers are single-line in the UI | The API accepts up to 100 lines per transfer and the service handles them; the dispatch form sends one prize at a time. Multi-line dispatch is a UI change only — no service or schema work. Worth doing in Phase 10 if branches move mixed boxes often. |
+| Opname counts every stocked item | `startOpname` accepts `prizeItemIds` to count a subset, but the screen always starts a full count. §8.7 says "select items or all". Partial counts are supported server-side; the picker is not built. |
+| No in-transit column on the On hand tab | §8.7 lists one. `inTransitTo()` exists in `transfers.ts` and returns the figure per prize, but the On hand table does not render it yet. Wire it up in Phase 8 with the other stock reporting, or sooner if a manager asks where a box went. |
 | Customer detail has no action buttons | §8.5 specifies Deposit / Withdraw / Award / Redeem. Those are Phases 3–4 and are deliberately not stubbed. |
 | Customer edit UI not built | `PATCH /api/customers/:id` exists and works; there is no edit UI yet. Owner-only merge shipped in Phase 3. |
 | ~~Phase 3 migration not committed~~ | **Resolved 7 Aug 2026 — see D-25.** The repository was initialised and the migration committed; all seven gates now pass. |
@@ -1050,6 +1210,22 @@ Also added: a `Phase Four Bear <ts>` catalog item with four batches at BR-1
 (one deliberately received unpriced, then backfilled), a `Phase Four Player`
 customer, and their redemption plus its void. The `npm test` suite adds
 nothing — it rolls back or cleans up after itself.
+
+**Added by the Phase 5 verification run:**
+
+- `P5 Transfer Bear <ts>` catalog items, one per run, each with batches at
+  BR-1 and BR-2 left over from the dispatch/receive round trip.
+- Three `PrizeTransfer` rows per run: one RECEIVED, one CANCELLED, one
+  IN_TRANSIT (from the idempotency double-tap, which is deliberately never
+  received).
+- Two committed `OpnameSession` rows per run, one shortfall and one surplus,
+  with their `OPNAME_LOSS` / `OPNAME_GAIN` movements and an `isAdjustment`
+  batch.
+
+`npm test` still adds nothing — `transfers.test.ts` rolls back and
+`opname.test.ts` cleans up in `afterEach`. Verified: `OpnameSession`,
+`PrizeTransfer` and the suite's fixture shops are all back to zero rows after a
+full run.
 
 `npm run db:reset` wipes all of this and reseeds from `.env` — the owner's
 password returns to `SEED_OWNER_PASSWORD` with a forced change on first login.

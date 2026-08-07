@@ -976,6 +976,120 @@ Every route still gets the same `AppError` conversion and the same 500
 behaviour. Use this for any future non-JSON endpoint (CSV exports in Phase 8
 are the obvious next one) instead of writing a bespoke handler.
 
+### D-51 · The browser pass on 7 Aug 2026 is NOT the on-device pass
+
+**Read this before concluding Phase 6 is signed off.**
+
+A UI review was driven through Chrome against `localhost:5050` on the
+development Mac at the end of Phase 6. It verified a great deal — see the table
+below — but it is **not** the gate §16 and §15 are asking for, and it must not
+be recorded as one.
+
+Three specific reasons the two are not interchangeable:
+
+| What the real gate needs | What the browser pass actually did |
+|---|---|
+| A real tablet, on shop wifi | A desktop Chrome window resized to 900×1200 |
+| A real camera producing a real JPEG | **OBS Virtual Camera** — the only video input on this machine |
+| A real geolocation prompt, granted and denied | **`navigator.geolocation` was stubbed** in page context for both paths |
+
+The geolocation stub is the important one. It makes the *client's handling* of a
+granted or denied position real, and that is genuinely worth something — but the
+browser permission dialog, the thing staff will actually fumble on a tablet, was
+never shown. Likewise the EXIF rule (D-44) was never exercised against a real
+camera file, because a canvas-derived blob carries no EXIF by construction.
+
+**What the browser pass DID prove**, all on dev:
+
+| Check | Result |
+|---|---|
+| Banner is red, full-width, sticky, exact §4.13 copy | ✅ `bg-red-600`, 44px, sticky below the top bar |
+| Banner has no dismiss path (D-45) | ✅ zero close/dismiss controls in the DOM |
+| Banner does not block work (D-45) | ✅ the sale form is fully interactive underneath |
+| Banner clears only on clock-in | ✅ gone after clock-in, confirmed on a different route |
+| Shift chooser shows "X min late" in red (§8.9) | ✅ and the arithmetic is right — 06:00→308, 09:00→128, 10:00→68 at 11:08 |
+| Live capture only, no gallery path | ✅ 1280×720 stream, canvas→blob, no file input exists |
+| Location granted | ✅ lat/long/accuracy stored as `Decimal`, `locationDenied: false` |
+| Location denied | ✅ clock-in proceeds, `LOCATION UNAVAILABLE` watermark, coords **null** (not zeros), flagged |
+| Watermark legible | ✅ all seven §4.13 fields, verified in the **stored JPEG**, not just on screen |
+| Lateness snapshot (§4.14) | ✅ `shiftStartAtCapture` + `graceMinAtCapture` both written |
+| One record per day | ✅ friendly "Already clocked in", not an error |
+| History + Team tabs | ✅ a manager sees own-shop staff, lateness and the denied-flag icon |
+| Plain manager 403 on `/stock/uncosted` | ✅ D-34's fix still holds |
+
+Worth knowing: the denied path stores `latitude`/`longitude`/`accuracyM` as
+**null**, not zero. Zeros would have been a silent falsification — (0, 0) is a
+real place in the Gulf of Guinea, and it would plot on the owner's map.
+
+**Phase 6 therefore stays 🟨.** It needs the same tablet session Phase 4 has
+been waiting for since 7 Aug; doing both in one sitting is the sensible move.
+
+### D-52 · The "No shift applies" escape hatch had to clear the 44px floor
+
+**A real §8.11 violation, found by measuring the rendered page rather than by
+reading the diff.**
+
+The clock-in shift chooser ends with *"No shift applies — clock in anyway"*.
+It shipped as a bare text link and measured **20px tall** against NF-3's 44px
+minimum.
+
+The eleven shift cards above it were all fine at 64px, which is why this
+survived review — the screen *looks* generously sized. What makes this one
+count is the second half of §8.11's rule: a control below 44px is acceptable
+**only when a larger equivalent exists elsewhere**. For a staff member working
+an unscheduled shift, this link is the only route through the screen. There is
+no larger equivalent, so the exemption does not apply.
+
+Now `min-h-11 w-full` with a hover state — measured at **868×44** in the
+browser, and clicked to confirm it still advances to the camera step with no
+shift selected. Deliberately kept muted, underlined and border-free so it stays
+visually secondary to the real shift options; the fix is about the tap target,
+not about promoting it.
+
+**No test.** CLAUDE.md gate 3 exempts UI polish, and a jsdom assertion on a
+Tailwind class would prove nothing about rendered geometry — the measurement
+that found this bug is the one that verifies the fix, and it needs a real
+browser. Typecheck, lint, all 116 tests and `docker compose build` were re-run
+green after the change.
+
+### D-53 · `nativeButton` is DERIVED in the Button wrapper, not passed per call
+
+**Owner decision, 7 Aug 2026 — fixed during Phase 6 rather than deferred.**
+
+Base UI logged an error on every `<Button render={<a>}>` / `render={<Link>}`:
+*"a component that acts as a button expected a native `<button>` because the
+`nativeButton` prop is true."* Eight sites across `forbidden.tsx`, customers,
+stock, reports and the clock-in flow — **not a Phase 6 defect**; it fires from
+`forbidden.tsx` (Phase 1) too, verified independently.
+
+The obvious fix is `nativeButton={false}` at each of the eight call sites. That
+was rejected. **Eight sites across five phases had it wrong, which is the
+failure mode of a prop you have to remember** — the ninth call site would have
+been wrong too. `components/ui/button.tsx` now derives it:
+
+```ts
+nativeButton ?? (render === undefined || (isValidElement(render) && render.type === "button"))
+```
+
+No `render` → a real `<button>` → true. `render={<Link/>}` or `render={<a/>}` →
+false. An explicit `nativeButton` still wins, for a case we cannot infer.
+`render` may also be a *function*, where `isValidElement` correctly yields false.
+
+**This does more than silence a warning.** With `nativeButton={false}` Base UI
+adds `role="button"` and handles Space-key activation itself, so the anchors
+gain the button behaviour they were missing while keeping `href` and
+`tabIndex: 0`. Before the fix they activated on Enter but not Space.
+
+Verified in a browser, not from the diff: an in-page `console.error` collector
+survived three client-side navigations across `/stock`, `/customers` and a
+customer detail page and captured **zero** Base UI errors, with both link
+buttons on that page reporting `role="button"` and `tabIndex: 0`. The
+`forbidden.tsx` site — the one proven to warn *before* the change — renders
+clean.
+
+**Do not "simplify" this back to a plain spread of `props`.** The wrapper must
+keep destructuring `render` so it can inspect it.
+
 ---
 
 ## What Phase 6 built
@@ -995,6 +1109,8 @@ src/server/services/
 
 src/components/
   attendance-banner.tsx   The §4.13 red banner. Not dismissible (D-45).
+  ui/button.tsx           TOUCHED, not created: nativeButton is now derived
+                          from `render` (D-53). Affects every phase's buttons.
 
 src/app/(app)/attendance/
   clock-in/               Shift → camera → location → upload (§8.9).
@@ -1019,12 +1135,18 @@ schema, so PRD §6 still matches `prisma/schema.prisma`.
 | Lateness is correct at the grace boundary | ✅ 12 unit tests, both sides of 5:00/5:01 and of a midnight crossing; three mutations caught |
 | The banner behaves exactly as specified | ✅ on dev — `required` is false for OWNER and true for the others, it clears on clock-in, and it has no dismiss path |
 | The watermark is legible | ✅ verified by rendering it and by a pixel-level check; both the coordinates and the `LOCATION UNAVAILABLE` variant |
-| A clock-in works with location granted **and** denied | 🟨 both paths proven over HTTP, but **on a dev machine only** |
+| A clock-in works with location granted **and** denied | 🟨 both paths proven over HTTP **and** through the real client in a browser (D-51), but **on a dev machine only** |
 
 **The on-device pass is the outstanding gate.** §16 asks for a clock-in on a
 real tablet with location granted and denied; §15's manual checklist asks for
 the same. The camera (`getUserMedia`) and the geolocation prompt cannot be
 exercised from a shell, so Phase 6 is complete on dev and **not signed off**.
+
+**A browser pass on 7 Aug 2026 narrowed that gap without closing it** — it drove
+the real client through both location paths and caught one genuine §8.11
+violation (D-52) plus a codebase-wide a11y warning (D-53). It is still not the
+device gate: the camera was OBS Virtual Camera and geolocation was stubbed.
+Read **D-51** before treating any of it as sign-off.
 
 ---
 
@@ -1355,6 +1477,9 @@ OWNER can merge and the merged caches reconcile to the moved ledgers.
 | Clock-out photo is not captured | `Shop.requireClockOutPhoto` and `Attendance.clockOutPhotoPath` both exist and the purge job already clears the file. Nothing writes it. §4.13 makes it optional and per-shop; build it with the clock-out button. |
 | No attendance reporting surfaces | §8.9 also asks for a calendar heatmap, a ranked lateness table and a weekly trend chart. Those are reporting, and Phase 8 owns reports — the data (`isLate`, `lateMinutes`, `businessDate`) is all recorded and indexed for them. |
 | Excuse reason uses `window.prompt` | Third site now, after the sale void and the transfer cancel. Replace all three together in Phase 10. |
+| Shop switcher is 32px tall | The top-bar "Branch 1" control in `app-shell.tsx` (Phase 1) is below NF-3's 44px floor. Allowed by §8.11 only because a larger equivalent exists at Settings → Current shop, so it is not the *only* way to switch. Raise it in Phase 10's responsive pass. Found by measuring the rendered page (D-51). |
+| Duplicate shifts render unfiltered | The clock-in chooser showed **11** shifts at BR-1, including four identical `Verify Shift` rows — accumulated `verify-phase6.sh` data, not a code bug (`npm run db:reset` clears it). But nothing in the UI or the service guards against genuinely duplicate shift names, and staff would see the same confusing list. Consider a uniqueness rule or a dedupe on the chooser when shift management gets its Phase 10 pass. |
+| ~~`Button render={<a>}` a11y warning~~ | **Fixed 7 Aug 2026 — see D-53.** `nativeButton` is now derived in the wrapper, covering all eight sites and every future one. |
 | Dashboard screen | Route + permission boundary only. Metrics are Phase 8. |
 | ~~`Shop.dayStartHour` still exists~~ | **Resolved same day — see D-18.** Dropped; the cutoff is global at 04:00. |
 | No UI for the business-day hour | §8.10 puts it under Owner → System. It is set by seed/migration only. Build the screen in Phase 9 with the other owner settings; changing it needs a warning that it does not restamp history (D-18). |

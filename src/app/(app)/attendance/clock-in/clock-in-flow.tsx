@@ -288,10 +288,15 @@ export function ClockInFlow({
               </li>
             ))}
           </ul>
+          {/* §8.11: this is the ONLY route through the screen for someone
+              working an unscheduled shift, so it has to clear the 44px floor
+              like the cards above — a text link would be the one control with
+              no larger equivalent anywhere. Kept visually secondary (no border,
+              muted) so it does not compete with the real shift options. */}
           <button
             type="button"
             onClick={() => setStep("camera")}
-            className="text-sm text-muted-foreground underline"
+            className="min-h-11 w-full rounded-xl px-4 text-sm text-muted-foreground underline hover:bg-muted"
           >
             No shift applies — clock in anyway
           </button>

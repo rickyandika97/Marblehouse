@@ -10,6 +10,7 @@ import {
   Package,
   Settings,
   ShoppingCart,
+  Clock,
   Store,
   User,
   Users,
@@ -48,11 +49,13 @@ const TABS: Record<Role, { href: string; label: string; icon: typeof User }[]> =
     { href: "/sale", label: "Sale", icon: ShoppingCart },
     { href: "/customers", label: "Customers", icon: Users },
     { href: "/stock", label: "Stock", icon: Package },
+    { href: "/attendance", label: "Attendance", icon: Clock },
     { href: "/settings", label: "Settings", icon: Settings },
   ],
   STAFF: [
     { href: "/sale", label: "Sale", icon: ShoppingCart },
     { href: "/customers", label: "Customers", icon: Users },
+    { href: "/attendance", label: "Attendance", icon: Clock },
     { href: "/settings", label: "Me", icon: User },
   ],
 };

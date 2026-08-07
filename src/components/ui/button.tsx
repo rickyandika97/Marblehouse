@@ -1,3 +1,4 @@
+import { isValidElement } from "react"
 import { Button as ButtonPrimitive } from "@base-ui/react/button"
 import { cva, type VariantProps } from "class-variance-authority"
 
@@ -42,16 +43,36 @@ const buttonVariants = cva(
   }
 )
 
+/**
+ * `nativeButton` tells Base UI whether the element it actually renders is a
+ * real `<button>`. It defaults to TRUE, so `render={<Link/>}` or `render={<a/>}`
+ * — the D-6 navigation pattern used across the app — makes the primitive apply
+ * button semantics to an anchor and log an error.
+ *
+ * Derived here rather than passed at each call site: there were eight such
+ * sites across five phases and every one of them had it wrong, which is the
+ * failure mode of a prop you have to remember. An explicit `nativeButton` still
+ * wins, for the case where a caller renders something we cannot infer.
+ */
 function Button({
   className,
   variant = "default",
   size = "default",
+  render,
+  nativeButton,
   ...props
 }: ButtonPrimitive.Props & VariantProps<typeof buttonVariants>) {
+  const rendersNativeButton =
+    nativeButton ??
+    (render === undefined ||
+      (isValidElement(render) && render.type === "button"))
+
   return (
     <ButtonPrimitive
       data-slot="button"
       className={cn(buttonVariants({ variant, size, className }))}
+      render={render}
+      nativeButton={rendersNativeButton}
       {...props}
     />
   )

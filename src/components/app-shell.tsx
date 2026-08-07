@@ -7,13 +7,16 @@ import {
   LayoutDashboard,
   BarChart3,
   LogOut,
+  Package,
   Settings,
   ShoppingCart,
+  Clock,
   Store,
   User,
   Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { AttendanceBanner } from "@/components/attendance-banner";
 
 /**
  * Role-dependent bottom tab bar (§8.0).
@@ -21,15 +24,23 @@ import { cn } from "@/lib/utils";
  * These tabs are a convenience, NOT a permission. Every destination re-checks
  * the role server-side; hiding a tab only saves the user a pointless tap.
  *
- * Phase 1 ships Dashboard, Sale and Settings as real screens. The remaining
- * tabs belong to later phases and are deliberately absent rather than
- * rendered as dead links.
+ * Phase 1 shipped Dashboard, Sale and Settings; Phase 4 adds Stock for the
+ * roles that manage it. The remaining tabs belong to later phases and are
+ * deliberately absent rather than rendered as dead links.
+ *
+ * STAFF gets no Stock tab: §3.4 gives them redemption but not receiving or
+ * opname, and they reach the prize grid from a customer instead (§8.6).
  */
 const TABS: Record<Role, { href: string; label: string; icon: typeof User }[]> = {
+  // Six tabs is one more than is comfortable on a phone, but the nav is the
+  // ONLY route to Reports — dropping it to make room for Stock would strand a
+  // working screen. Phase 10's polish pass should fold Reports and Settings
+  // into a single "More" tab rather than removing either.
   OWNER: [
     { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
     { href: "/sale", label: "Sales", icon: ShoppingCart },
     { href: "/customers", label: "Customers", icon: Users },
+    { href: "/stock", label: "Stock", icon: Package },
     { href: "/reports/tickets-awarded", label: "Reports", icon: BarChart3 },
     { href: "/settings", label: "Settings", icon: Settings },
   ],
@@ -37,11 +48,14 @@ const TABS: Record<Role, { href: string; label: string; icon: typeof User }[]> =
     { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
     { href: "/sale", label: "Sale", icon: ShoppingCart },
     { href: "/customers", label: "Customers", icon: Users },
+    { href: "/stock", label: "Stock", icon: Package },
+    { href: "/attendance", label: "Attendance", icon: Clock },
     { href: "/settings", label: "Settings", icon: Settings },
   ],
   STAFF: [
     { href: "/sale", label: "Sale", icon: ShoppingCart },
     { href: "/customers", label: "Customers", icon: Users },
+    { href: "/attendance", label: "Attendance", icon: Clock },
     { href: "/settings", label: "Me", icon: User },
   ],
 };
@@ -109,10 +123,12 @@ export function AppShell({
       </header>
 
       {/*
-        The red attendance banner (§4.13) belongs to Phase 6 and is
-        deliberately not stubbed here — a fake banner that does nothing would
-        train staff to ignore the real one.
+        The red attendance banner (§4.13). Not dismissible by design — it
+        clears only when the user has actually clocked in. OWNER never sees it
+        (attendance is optional for them), and the component decides that from
+        the server's answer rather than from the role prop.
       */}
+      <AttendanceBanner />
 
       <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-6 pb-24">
         {children}

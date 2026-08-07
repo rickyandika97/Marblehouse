@@ -2077,13 +2077,23 @@ Responsive pass on real devices, loading and empty states, error copy in plain l
 
 Paste this at the start of every session:
 
-> Read `PRD-pinball-arcade-management.md` in full before writing any code. We are building phase **N** only — do not implement features from later phases. Follow the stack in §5.2 exactly; do not substitute libraries. All business logic goes in `src/server/services/`; route handlers only authenticate, validate with Zod, and call a service. Every role check is enforced server-side. Money is `Decimal`, never `float`. When a requirement in the PRD is ambiguous, stop and ask me rather than guessing.
+> Read `CLAUDE.md`, then `docs/BUILD-LOG.md`, then `docs/PRD.md` in full before writing any code — in that order. Where the build log disagrees with this PRD, **the build log wins**; where either disagrees with `prisma/schema.prisma`, the schema wins. We are building phase **N** only — do not implement features from later phases. Follow the stack in §5.2 exactly; do not substitute libraries. All business logic goes in `src/server/services/`; route handlers only authenticate, validate with Zod, and call a service. Every role check is enforced server-side. Money is `Decimal`, never `float`. When a requirement in the PRD is ambiguous, stop and ask me rather than guessing.
+
+> **There is one PRD, and it is `docs/PRD.md`.** A stale copy called
+> `PRD-pinball-arcade-management.md` sat in the repo root until 7 Aug 2026 and
+> was deleted. It still described per-shop `dayStartHour` at 06:00 (superseded
+> by BUILD-LOG D-18 — global, 04:00), hand-rolled sessions with `passwordHash`
+> and `isActive` on `User` (superseded by §5.4 — Better Auth, `banned`), and
+> shadcn without Base UI (superseded by §5.7). If a copy of it reappears,
+> delete it rather than reconciling it.
 
 Per-phase openers:
 
 - **Phase 0:** "Scaffold the project per §5.3 and §12.1, create `prisma/schema.prisma` exactly as written in §6, generate the initial migration, and write the seed script from §10. Nothing else."
 - **Phase 4:** "Implement the FIFO inventory engine in `src/server/services/inventory.ts` per §4.8. Write the ten unit tests from §15 first, then make them pass. Do not build any UI yet."
+- **Phase 5:** "Implement transfers per §4.10 and opname per §4.11, in `src/server/services/transfers.ts` and `opname.ts`. **Call the existing engine in `inventory.ts` — do not reimplement any FIFO or cost arithmetic.** Dispatch consumes at source via `consumeFifo`; cancel restores via `restoreConsumption`, which already refuses a double restore (BUILD-LOG D-27) — do not add a second restore path. Receive creates **one destination batch per source batch consumed**, preserving both `unitCogs` and the original `receivedAt`, or FIFO order goes wrong globally in a way that only shows up after a later transfer (§4.10, and the mutation in D-30). A positive opname variance is priced with `weightedAverageCost()`, which is built and tested (§15.8) but has had no caller until now; a negative variance consumes FIFO as `OPNAME_LOSS`, never `REDEEM`. Opname must not reveal the system count until counted quantities are entered. Then add the **Transfers** and **Opname** tabs to `stock-tabs.tsx` (D-35) — the array is built from a list, so this is additive."
 - **Phase 6:** "Implement attendance per §4.13 to §4.15. The photo must be watermarked server-side with sharp — the client never produces the watermark. Gallery upload must be blocked."
+- **Phase 7:** "Implement expenses per §4.12 and §7.6, in `src/server/services/expenses.ts`. The delete-if-unused rule is the acceptance criterion: deleting a category with expense rows returns **409 `CATEGORY_IN_USE` with the usage count**, never a silent archive — the count is what makes the refusal actionable. A category with zero rows deletes outright; one with rows can only be archived. Expenses are shop-scoped and `businessDate` is server-computed (§4.2, D-18) like every other dated row; the client never sends it. **HQ is the one shop that accepts expenses but no sales** (`isHqPseudoShop`), so do not reuse a sale-shop guard here — Phase 5's transfer code deliberately refuses HQ, and expenses must do the opposite. Receipt photos reuse `attendance-photo.ts`'s storage shape but **not** its watermarking: a receipt is evidence of a purchase, not of a person's location. Amount is `Decimal` and crosses the wire as a string (D-13)."
 
 Guardrails worth repeating to the agent when it drifts:
 

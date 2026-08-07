@@ -74,15 +74,22 @@ function fieldErrors(error: ZodError): Record<string, string> {
 /**
  * Wrap a route handler: converts AppError into the standard envelope and
  * anything unexpected into a 500 that says nothing useful to an attacker.
+ *
+ * A handler that returns a `Response` itself gets it passed through untouched.
+ * That is how non-JSON routes — the attendance photo stream (§4.15) — keep the
+ * same guard and error envelope as everything else instead of opting out of
+ * `handleRoute` and hand-rolling their own try/catch.
  */
 export function handleRoute<T>(
   fn: () => Promise<T>
-): Promise<NextResponse> {
+): Promise<Response> {
   return fn()
     .then((data) =>
       data === undefined
         ? new NextResponse(null, { status: 204 })
-        : NextResponse.json(data)
+        : data instanceof Response
+          ? data
+          : NextResponse.json(data)
     )
     .catch((e: unknown) => {
       if (e instanceof AppError) {

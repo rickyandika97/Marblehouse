@@ -129,8 +129,13 @@ npm run dev
 # Useful
 npm run db:studio         # browse the database
 npm run typecheck
+npm test                  # Vitest — FIFO engine, cost gate (see BUILD-LOG D-26)
 npm run db:reset          # wipe and re-seed
 ```
+
+`npm test` runs against the real dev database, not a mock — the invariants it
+checks are enforced by PostgreSQL. It rolls back or cleans up after itself and
+refuses any database not named `_dev`/`_test`.
 
 `DATABASE_URL` in `.env` points at `localhost:5432/marblehouse_dev` for dev and
 `postgres:5432/marblehouse` for Docker. Both lines are in the file; swap the
@@ -138,21 +143,37 @@ comment. Never edit the production `.env` from here.
 
 ## Before finishing any phase
 
-**The phase is not done until all seven pass.** Do not report a phase complete
+**The phase is not done until all eight pass.** Do not report a phase complete
 with any of these outstanding — say which one is unfinished and why.
 
 1. `npm run typecheck` passes.
 2. `npm run lint` passes.
-3. `docker compose build` succeeds. **Run this even though dev is native** —
+3. **`npm test` passes, and the phase's new logic is covered by it.** A green
+   suite that never exercised what you built is not a passing gate — say so
+   rather than counting it. Money, stock and balance code needs a test before
+   the phase closes; UI polish does not.
+
+   **A test you have not seen fail proves nothing.** For anything enforcing an
+   invariant — FIFO order, a balance guard, a permission — break it on purpose
+   once, confirm the suite catches it, and revert. That technique caught three
+   real defects in Phase 4 (BUILD-LOG D-30). Where a permission depends on
+   whether a parameter is present, test **both** forms: one branch passing says
+   nothing about the other (D-34).
+4. `docker compose build` succeeds. **Run this even though dev is native** —
    macOS is case-insensitive and Linux is not, so a bad import like
    `./components/button` vs `./components/Button` only fails here. If Docker
    is not installed on this machine, say so rather than skipping the check
    silently.
-4. The phase's acceptance criteria in PRD §16 demonstrably pass. Write a
+5. The phase's acceptance criteria in PRD §16 demonstrably pass. Write a
    re-runnable script at `scripts/verify-phase<N>.sh` — see
    `scripts/verify-phase1.sh` for the shape — and paste its output.
-5. Migrations are committed. Never generate a migration on the production box.
-6. **Update `docs/BUILD-LOG.md`.** Specifically:
+
+   If the phase ships a screen, **boot the app and load every new page as each
+   role that can reach it.** `typecheck` and `lint` both pass on a route tree
+   Next refuses to start (D-33), and a permission bug is visible in a rendered
+   page long before it is visible in a diff (D-34).
+6. Migrations are committed. Never generate a migration on the production box.
+7. **Update `docs/BUILD-LOG.md`.** Specifically:
    - Flip this phase's row in the **Phase status** table to ✅, and the next
      phase's to ⬜ Next.
    - Add a `### D-n` entry for **every decision taken during the phase** —
@@ -162,7 +183,7 @@ with any of these outstanding — say which one is unfinished and why.
    - Add new files/services to the "what was built" map.
    - Add anything deferred or knowingly left rough to **Known issues / debts**.
    - Update **Current database state** if seeds or test accounts changed.
-7. **If the schema changed, reconcile PRD §6 against `prisma/schema.prisma`**
+8. **If the schema changed, reconcile PRD §6 against `prisma/schema.prisma`**
    so the spec keeps matching the code, and note any new divergence.
 
 > A decision that exists only in a chat transcript is a decision the next agent

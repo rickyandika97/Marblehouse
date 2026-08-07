@@ -8,9 +8,12 @@ through a Cloudflare Tunnel. No cloud platform, no Vercel.
 
 - **Full specification:** [`docs/PRD.md`](docs/PRD.md)
 - **Rules for the coding agent:** [`CLAUDE.md`](CLAUDE.md)
-- **Status:** Phases 0–2 complete. Phase 3 is built and verified, but its
-  migration still needs to be committed from the real Git checkout before the
-  phase can be marked complete or Phase 4 can start.
+- **Status:** Phases 0–3 complete. Phases 4 (prizes, FIFO inventory,
+  redemption), 5 (transfers and opname) and 6 (attendance) are built and
+  verified on a development machine — engines, APIs and screens — but **none
+  is signed off**: each still needs the on-device acceptance pass. Phase 6's
+  is the most important, because the camera and geolocation prompts genuinely
+  cannot be tested any other way.
 
 ---
 
@@ -41,8 +44,15 @@ Useful while developing:
 ```bash
 npm run db:studio         # browse the data in a GUI
 npm run typecheck
+npm test                  # unit + integration tests (FIFO, transfers, attendance)
 npm run db:reset          # wipe and re-seed when the schema churns
 ```
+
+`npm test` runs against your **development database** rather than a mock,
+because the rules it checks — FIFO order, "stock can never go negative" — are
+enforced by PostgreSQL itself. Each test rolls back or cleans up after itself,
+so a full run leaves no rows behind, and it refuses to start against a database
+whose name does not contain `_dev` or `_test`.
 
 Docker is only used for the production deployment (next section). If you ever
 work on a machine without Postgres installed, `docker-compose.dev.yml` will
@@ -138,6 +148,7 @@ prisma/seed.ts           idempotent seed; runs on every boot
 src/app/                 routes and UI
 src/app/api/             REST endpoints (auth → validate → call a service)
 src/server/services/     ALL business logic lives here
+src/server/dto/          response shapes — where cost figures are gated
 src/lib/                 money, business date, phone normalisation
 data/                    attendance photos, receipts  (gitignored)
 backups/                 database backups              (gitignored)

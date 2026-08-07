@@ -9,10 +9,11 @@ through a Cloudflare Tunnel. No cloud platform, no Vercel.
 - **Full specification:** [`docs/PRD.md`](docs/PRD.md)
 - **Rules for the coding agent:** [`CLAUDE.md`](CLAUDE.md)
 - **Status:** Phases 0–3 complete. Phases 4 (prizes, FIFO inventory,
-  redemption) and 5 (transfers and opname) are built and verified on a
-  development machine — engines, APIs and screens — but **neither is signed
-  off**: both still need the on-device acceptance pass, a real staff member
-  redeeming prizes and counting stock on the actual tablet.
+  redemption), 5 (transfers and opname) and 6 (attendance) are built and
+  verified on a development machine — engines, APIs and screens — but **none
+  is signed off**: each still needs the on-device acceptance pass. Phase 6's
+  is the most important, because the camera and geolocation prompts genuinely
+  cannot be tested any other way.
 
 ---
 
@@ -43,7 +44,7 @@ Useful while developing:
 ```bash
 npm run db:studio         # browse the data in a GUI
 npm run typecheck
-npm test                  # unit + integration tests (FIFO, transfers, opname)
+npm test                  # unit + integration tests (FIFO, transfers, attendance)
 npm run db:reset          # wipe and re-seed when the schema churns
 ```
 

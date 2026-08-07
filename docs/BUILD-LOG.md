@@ -24,8 +24,8 @@ why, not an edit to the old one.
 | 3 | Marble & ticket ledgers | ✅ Done — all §16 criteria verified |
 | 4 | Prizes, FIFO inventory, redemption | 🟨 Built + verified on dev — awaiting the on-device acceptance pass |
 | 5 | Transfers and opname | ✅ Done — all §16 criteria verified on dev |
-| 6 | Attendance | ⬜ Next |
-| 7 | Expenses | ⬜ |
+| 6 | Attendance | ✅ Done on dev — awaiting the on-device acceptance pass |
+| 7 | Expenses | ⬜ Next |
 | 8 | Dashboards and reports | ⬜ |
 | 9 | Backup, restore, hardening | ⬜ |
 | 10 | Polish and pilot | ⬜ |
@@ -831,6 +831,203 @@ proves nothing until you have seen it go red. This one had never been seen red.
 
 ---
 
+## Decisions taken during Phase 6
+
+### D-44 · A photo with NO EXIF date is accepted
+
+**Owner decision, 7 Aug 2026.**
+
+§4.13 says to block gallery uploads by rejecting a photo whose EXIF
+`DateTimeOriginal` is more than 10 minutes old. It does not say what to do when
+there is no EXIF date at all — and that is the **normal** case, because the
+`getUserMedia` → canvas → blob path §4.13 itself mandates produces a JPEG with
+no EXIF whatsoever.
+
+The rule is therefore: **reject only when a date is present AND stale.**
+
+| Photo | Result |
+|---|---|
+| No EXIF date | **Accept** — normal live capture |
+| EXIF ≤ 10 min old | Accept |
+| EXIF > 10 min old | **Reject** — a gallery pick |
+
+Rejecting the no-EXIF case was considered and refused: it would block nearly
+every genuine clock-in while stopping no realistic cheat, since anyone
+deliberately uploading an old file can strip EXIF as easily as we can read it.
+Flagging it instead was also refused — it would flag almost every record, which
+trains the owner to ignore the flag.
+
+**What actually carries the weight is not the EXIF check.** The client has no
+file input at all, the server stamps its OWN clock into the watermark, and
+`clockInAt` is never client-supplied. The EXIF rule is one cheap extra layer,
+not the control.
+
+`exifDateIsStale()` in `services/attendance-photo.ts`.
+
+### D-45 · The banner does not block work
+
+**Owner decision, 7 Aug 2026.**
+
+§4.13's flow is explicit: banner appears → *"user can work normally"* → user
+taps banner → clock-in → banner disappears. So a staff member who has not
+clocked in can still record sales, redeem prizes and everything else.
+
+The alternative — blocking sales until clock-in — was refused. A customer
+waiting at the counter while staff fight a camera permission dialog is a real
+cost, and the attendance record captures the true arrival time whenever it is
+made, so lateness reporting is unaffected either way.
+
+**The banner is still not dismissible.** There is deliberately no close button
+and no `dismissed` state in `components/attendance-banner.tsx`: it clears for
+exactly one reason, which is that the user clocked in. A banner staff can
+dismiss is a banner staff will dismiss, and the record it exists to produce
+never gets made.
+
+### D-46 · Lateness takes the day offset as a fact, not a guess
+
+The first version of `computeLateness` inferred a midnight crossing from a
+heuristic — "a delta over 12 hours must really be an early arrival". A mutation
+proved that branch was **unreachable**: a raw 00:05 against a 22:00 start is
+already −1315, so deleting the whole correction left every test green.
+
+It was also *wrong*. It read a genuinely late 00:05 arrival as 22 hours early,
+and therefore on time.
+
+The caller now passes `clockInDayOffset` (0 or 1) as a fact, derived by
+`clockInDayOffsetFor()` from the shift window. Both branches are reachable and
+both are tested; a 00:05 clock-in for a 22:00 shift is correctly 125 minutes
+late.
+
+**The grace boundary is inclusive** (§15): the comparison is `> graceMin`,
+never `>=`. 5:00 late is on time; 5:01 is late. `lateMinutes` measures from
+shift **start**, not from the end of grace — grace decides *whether* someone is
+late, and the stored number is how late they actually were.
+
+### D-47 · `sharp` and the edge instrumentation bundle
+
+**Three bundling problems, one root cause. Read this before touching
+`next.config.ts` or anything that imports `attendance-photo.ts`.**
+
+`instrumentation.ts` is compiled for **both** the node and edge runtimes, even
+though its body returns early unless `NEXT_RUNTIME === "nodejs"`. Webpack still
+walks the entire import graph, so `instrumentation → scheduler →
+photo-retention → attendance-photo` dragged filesystem code into a bundle that
+cannot resolve Node built-ins.
+
+| Symptom | Fix |
+|---|---|
+| `Module not found` inside sharp's own internals | `sharp` added to `serverExternalPackages` and `externals`, exactly like `node-cron` (D-24) — it loads platform-specific native binaries |
+| `UnhandledSchemeError: node:crypto` | Replaced `randomUUID` from `node:crypto` with the global `crypto.randomUUID()` |
+| `UnhandledSchemeError: node:fs/promises` | **Not** replaceable. `attendance-photo` is excluded from the edge bundle by an `externals` matcher |
+
+A `resolve.alias` keyed on the `@/` path did **not** intercept the request; the
+`externals` function does. Making the scheduler's import dynamic did not help
+either — webpack follows dynamic imports too.
+
+Nothing in the edge runtime can legitimately reach the photo module: it reads
+and writes files, which the edge runtime cannot do at all. `docker compose
+build` passes, so the exclusion holds for the Linux production build too.
+
+### D-48 · sharp must be materialised before it is measured
+
+**This cost two separate bugs in one phase, in unrelated files. It will cost a
+third if you do not know it.**
+
+Calling `.metadata()` or `.stats()` on a sharp pipeline that has a *pending*
+operation reports the **source** image, not the result:
+
+- In `attendance-photo.ts`, `metadata()` after a pending `.resize()` returned
+  the original dimensions, so the SVG overlay was built too large and
+  `composite` threw *"Image to composite must have same dimensions or
+  smaller"* — for every photo wider than 1080px, which is every real phone
+  photo. The 640px test fixtures never reached it.
+- In `scripts/lib/check-watermark.mjs`, `.stats()` after a pending
+  `.extract()` returned whole-image stats, so every region measured
+  identically and the watermark check could never fail.
+
+**Always `.toBuffer()` first, then measure the buffer.** Both sites now do.
+
+### D-49 · Retention deletes the photo, never the record
+
+§4.15 keeps attendance photos 61 days. `services/photo-retention.ts` deletes
+the file, nulls `photoPath` and sets `photoPurgedAt` — and there is
+deliberately **no `attendance.delete` anywhere in that file**.
+
+Losing the image is the policy; losing the lateness history with it would
+destroy the only reason the record exists, and would conveniently erase the
+evidence for whatever wage dispute made someone want it gone.
+
+Ordering is deliberate: the **file** is removed first, then the row is updated.
+A crash between them leaves a row pointing at a missing file, which the photo
+route already answers with a 404. The opposite order would leave an orphan file
+that nothing knows about and nothing will ever clean up.
+
+Registered at 03:00 in `jobs/scheduler.ts` (§11), alongside Phase 3's 04:00
+reconciliation.
+
+### D-50 · `handleRoute` passes a `Response` through untouched
+
+The attendance photo route returns image bytes, not JSON. Rather than opting
+out of `handleRoute` and hand-rolling a try/catch — which would have given one
+route a different error envelope and a different guard — `handleRoute` now
+returns a handler's `Response` unchanged.
+
+Every route still gets the same `AppError` conversion and the same 500
+behaviour. Use this for any future non-JSON endpoint (CSV exports in Phase 8
+are the obvious next one) instead of writing a bespoke handler.
+
+---
+
+## What Phase 6 built
+
+```
+src/lib/
+  lateness.ts             computeLateness + clockInDayOffsetFor. Pure, no DB,
+                          so §15's boundary cases are cheap to test (D-46).
+
+src/server/services/
+  attendance.ts           Clock-in / clock-out / status / list / edit, the
+                          read rule, and the one-record-per-day guard.
+  attendance-photo.ts     Server-side watermarking, the EXIF check (D-44),
+                          storage under data/attendance/YYYY/MM/DD.
+  shifts.ts               §4.14 CRUD. Editing never rewrites past lateness.
+  photo-retention.ts      The 61-day purge (D-49).
+
+src/components/
+  attendance-banner.tsx   The §4.13 red banner. Not dismissible (D-45).
+
+src/app/(app)/attendance/
+  clock-in/               Shift → camera → location → upload (§8.9).
+  page.tsx + attendance-list.tsx   History, team toggle, owner Excuse.
+
+scripts/verify-phase6.sh          41 HTTP-level acceptance checks.
+scripts/lib/check-watermark.mjs   Pixel-level watermark assertion (D-48).
+```
+
+APIs: `/api/attendance/status`, `/api/attendance/clock-in`,
+`/api/attendance/clock-out`, `/api/attendance`, `/api/attendance/[id]`,
+`/api/attendance/[id]/photo`, `/api/shops/[id]/shifts`,
+`/api/shops/[id]/shifts/[shiftId]`.
+
+**No migration.** `Attendance` and `Shift` have existed since the Phase 0
+schema, so PRD §6 still matches `prisma/schema.prisma`.
+
+**§16 criteria:**
+
+| Criterion | Status |
+|---|---|
+| Lateness is correct at the grace boundary | ✅ 12 unit tests, both sides of 5:00/5:01 and of a midnight crossing; three mutations caught |
+| The banner behaves exactly as specified | ✅ on dev — `required` is false for OWNER and true for the others, it clears on clock-in, and it has no dismiss path |
+| The watermark is legible | ✅ verified by rendering it and by a pixel-level check; both the coordinates and the `LOCATION UNAVAILABLE` variant |
+| A clock-in works with location granted **and** denied | 🟨 both paths proven over HTTP, but **on a dev machine only** |
+
+**The on-device pass is the outstanding gate.** §16 asks for a clock-in on a
+real tablet with location granted and denied; §15's manual checklist asks for
+the same. The camera (`getUserMedia`) and the geolocation prompt cannot be
+exercised from a shell, so Phase 6 is complete on dev and **not signed off**.
+
+---
+
 ## What Phase 5 built
 
 ```
@@ -1090,13 +1287,14 @@ APIs: `/api/auth/{login,logout,me,change-password,[...all]}`,
 ```bash
 npm run typecheck                 # clean
 npm run lint                      # clean
-npm test                          # 58 tests (D-26) — safe to re-run, no residue
+npm test                          # 116 tests (D-26) — safe to re-run, no residue
 docker compose build              # succeeds (catches Linux case-sensitivity)
 bash scripts/verify-phase1.sh     # 21/21 acceptance checks, needs npm run dev
 bash scripts/verify-phase2.sh     # 30/30 acceptance checks, needs npm run dev
 bash scripts/verify-phase3.sh     # Phase 3 PASS, needs npm run dev
 bash scripts/verify-phase4.sh     # 35 checks, needs npm run dev
 bash scripts/verify-phase5.sh     # 42 checks, needs npm run dev
+bash scripts/verify-phase6.sh     # 41 checks, needs npm run dev
 ```
 
 All four were last re-run green on **7 Aug 2026** when Phase 3's commit gate was
@@ -1143,7 +1341,11 @@ OWNER can merge and the merged caches reconcile to the moved ledgers.
 | Dependency audit | `npm audit --omit=dev` reports 6 high advisories through Prisma's `effect` dependency and Next's PostCSS/sharp dependencies. The offered automatic fix upgrades outside the pinned stack (Prisma 6.19 / Next 16), so Phase 3 did not force it. Reassess as an explicit dependency/hardening update. |
 | Edge Runtime build warning | From `jose` inside Better Auth. Harmless — we do not use the Edge Runtime (§5.2 forbids it) and nothing enables it. |
 | Phases 1–3 have no unit tests | Vitest landed in Phase 4 (D-26), and `npm test` is a phase gate from Phase 4 onward (D-37). Phases 1–3 shipped before either existed and are covered only by the curl-based `verify-phase{1,2,3}.sh`. §15's remaining unit tests — business-date boundaries at 03:59/04:00/23:59, lateness at the grace boundary, phone normalisation — have no home yet. **Add each as its phase comes up** (lateness with Phase 6, for example) rather than in one late sweep; the business-date cases are the exception and are worth backfilling sooner, since every phase stamps `businessDate` and D-18 made the rule global. |
-| Red attendance banner | Deliberately NOT stubbed. Phase 6. A fake banner that does nothing trains staff to ignore the real one. |
+| ~~Red attendance banner~~ | **Built in Phase 6.** Not dismissible, and it does not block work (D-45). |
+| Clock-out has no UI | `POST /api/attendance/clock-out` exists, is tested and works; nothing calls it. §4.13 says v1 lateness is clock-in only, so this is not on the critical path — but a shift with no clock-out looks unfinished on the team screen. Wire a button into the attendance screen in Phase 10. |
+| Clock-out photo is not captured | `Shop.requireClockOutPhoto` and `Attendance.clockOutPhotoPath` both exist and the purge job already clears the file. Nothing writes it. §4.13 makes it optional and per-shop; build it with the clock-out button. |
+| No attendance reporting surfaces | §8.9 also asks for a calendar heatmap, a ranked lateness table and a weekly trend chart. Those are reporting, and Phase 8 owns reports — the data (`isLate`, `lateMinutes`, `businessDate`) is all recorded and indexed for them. |
+| Excuse reason uses `window.prompt` | Third site now, after the sale void and the transfer cancel. Replace all three together in Phase 10. |
 | Dashboard screen | Route + permission boundary only. Metrics are Phase 8. |
 | ~~`Shop.dayStartHour` still exists~~ | **Resolved same day — see D-18.** Dropped; the cutoff is global at 04:00. |
 | No UI for the business-day hour | §8.10 puts it under Owner → System. It is set by seed/migration only. Build the screen in Phase 9 with the other owner settings; changing it needs a warning that it does not restamp history (D-18). |
@@ -1195,6 +1397,20 @@ the script names customers with a timestamped phone number, so re-running it
 never collides with the previous run's data but does accumulate another
 `Phase Three Main` / `Race` / `Duplicate` trio and another ~55 ledger rows. All
 of it is test data on `marblehouse_dev`. `npm run db:reset` clears the lot.
+
+**Added by the Phase 6 verification run:**
+
+- Shifts at BR-1: `Verify Shift` (09:00–17:00) and `Night` (22:00–06:00), one
+  pair per run. The script edits `Verify Shift`'s start time to 06:00 as part
+  of proving that past lateness is not rewritten, so a re-run finds it moved.
+- One attendance row each for `staff1` (location granted, later excused) and
+  `manager1` (location denied), both for the current business date. The script
+  deletes today's rows for the three test accounts on startup, so it is
+  re-runnable — but rows from *previous* business dates accumulate.
+- Watermarked JPEGs under `data/attendance/YYYY/MM/DD/`. These are **not**
+  cleaned up by the script; `npm test` cleans up its own, and the 61-day purge
+  job would eventually clear the rest. Delete `data/attendance` by hand if it
+  gets noisy.
 
 **Added by the Phase 4 verification run:**
 

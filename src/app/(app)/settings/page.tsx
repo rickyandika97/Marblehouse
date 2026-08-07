@@ -1,5 +1,13 @@
 import Link from "next/link";
-import { ChevronRight, KeyRound, Settings2, Store, Users } from "lucide-react";
+import {
+  ChevronRight,
+  KeyRound,
+  Receipt,
+  Settings2,
+  Store,
+  Tags,
+  Users,
+} from "lucide-react";
 import { requireActorPage } from "@/server/auth/page-guard";
 import { Card } from "@/components/ui/card";
 
@@ -25,6 +33,23 @@ export default async function SettingsPage() {
       title: "Change password",
       description: "Update the password for this account",
       show: true,
+    },
+    {
+      href: "/expenses",
+      icon: Receipt,
+      title: "Expenses",
+      description: "Record and review branch and head-office costs",
+      // Not a bottom-nav tab: OWNER and MANAGER are already at six, which
+      // D-36 records as one more than fits a phone. Reached from here until
+      // Phase 10 folds the nav behind a "More" tab.
+      show: actor.role !== "STAFF",
+    },
+    {
+      href: "/settings/expense-categories",
+      icon: Tags,
+      title: "Expense categories",
+      description: "Add, rename or archive the categories expenses use",
+      show: actor.role === "OWNER",
     },
     {
       href: "/settings/users",

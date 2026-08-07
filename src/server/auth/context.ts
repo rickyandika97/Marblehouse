@@ -168,3 +168,29 @@ export async function selectableShops(actor: Actor): Promise<Shop[]> {
     orderBy: [{ name: "asc" }],
   });
 }
+
+/**
+ * Shops this actor may record an EXPENSE against (§4.12).
+ *
+ * Identical to `selectableShops` except that it **includes HQ**, which is the
+ * entire point: HQ is the pseudo-shop the owner books non-branch costs to.
+ *
+ * Deliberately a second function rather than a flag on `selectableShops`.
+ * That one feeds the day-start picker and the sale screen, where HQ must never
+ * appear — it accepts no sales, and a shop in the picker is a shop someone can
+ * start recording takings at. Widening it with an option would put one
+ * `if` between HQ and the sale flow; a separate function cannot leak.
+ *
+ * HQ sorts last so the branches a manager actually works at come first.
+ */
+export async function expenseShops(actor: Actor): Promise<Shop[]> {
+  return prisma.shop.findMany({
+    where: {
+      isActive: true,
+      ...(actor.role === "OWNER"
+        ? {}
+        : { userShops: { some: { userId: actor.userId } } }),
+    },
+    orderBy: [{ isHqPseudoShop: "asc" }, { name: "asc" }],
+  });
+}

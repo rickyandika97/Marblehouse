@@ -25,8 +25,8 @@ why, not an edit to the old one.
 | 4 | Prizes, FIFO inventory, redemption | 🟨 Built + verified on dev — awaiting the on-device acceptance pass |
 | 5 | Transfers and opname | ✅ Done — all §16 criteria verified on dev |
 | 6 | Attendance | ✅ Done on dev — awaiting the on-device acceptance pass |
-| 7 | Expenses | ⬜ Next |
-| 8 | Dashboards and reports | ⬜ |
+| 7 | Expenses | ✅ Done on dev — all §16 criteria verified |
+| 8 | Dashboards and reports | ⬜ Next |
 | 9 | Backup, restore, hardening | ⬜ |
 | 10 | Polish and pilot | ⬜ |
 
@@ -1092,6 +1092,171 @@ keep destructuring `render` so it can inspect it.
 
 ---
 
+## Decisions taken during Phase 7
+
+### D-54 · `expenseShops()` is a SECOND function, not a flag on `selectableShops`
+
+`selectableShops()` filters `isHqPseudoShop: false` — correct for its callers,
+which are the day-start picker and the sale screen. HQ accepts no sales, so a
+shop in that picker is a shop someone could start recording takings at.
+
+The expense form needs the opposite: HQ is the entire reason an owner can book
+a cost that belongs to no branch (§4.12). The obvious move — an
+`includeHq?: boolean` option — was rejected. It puts **one `if` between HQ and
+the sale flow**, and a later refactor that flips a default, or a caller that
+passes the option by copy-paste, reintroduces exactly the bug the original
+filter exists to prevent. A separate function cannot leak into the picker
+however it is called.
+
+`expenseShops()` sorts HQ **last** (`isHqPseudoShop: "asc"`) so the branches a
+manager actually works at come first.
+
+Verified in the browser both ways: the owner's expense form lists
+`Branch 1 · Branch 2 · HQ / Unallocated`, and `/settings/shop` still lists only
+the two branches.
+
+### D-55 · Expense amount is re-validated in the SERVICE, not only in Zod
+
+**A real bug, found by a test that called the service directly.**
+
+`createExpense` takes an already-parsed input type, so the Zod refinement that
+rejects a non-positive amount only runs when the call arrives through the route.
+The first version of `expenses.test.ts` called the service directly with `"0"`
+and **got a zero-value expense row**.
+
+`toPositiveAmount()` now parses and checks at the point of the write. This looks
+redundant next to the schema and is not: every other money path in this codebase
+re-checks its own invariant where the write happens (D-20's conditional balance
+update, D-32's single ticket guard), precisely because a schema is one caller
+away from being bypassed — a job, a script, a future service, a test. A zero or
+negative expense would quietly distort every §9 total that sums it.
+
+**The general rule this is an instance of:** a Zod schema validates *a request*.
+A service invariant protects *the data*. They are not substitutes, and where the
+value is money the service must hold the line itself.
+
+### D-56 · A used category's count includes SOFT-DELETED expenses
+
+`deleteCategory` counts `expense.count({ where: { categoryId } })` with **no
+`isDeleted` filter**, so a category whose only expense has been soft-deleted
+still refuses to delete.
+
+This is deliberate and the test `still refuses when the only expense is
+soft-deleted` pins it. "Unused" has to mean *structurally unreferenced*, not
+merely *invisible*: a soft-deleted row still holds the foreign key, and hard
+deleting the category out from under it would either fail at the database or
+orphan the reference. §6.1.5 keeps money rows forever, so the categories they
+point at have to survive too.
+
+The consequence to know: a category used once and then voided can never be hard
+deleted. Archiving is the answer, which is what the refusal already tells the
+owner.
+
+### D-57 · Receipts are stored but NOT watermarked
+
+§17's Phase 7 opener says receipt photos reuse `attendance-photo.ts`'s storage
+shape but not its watermarking, and `services/receipts.ts` follows that exactly.
+
+The distinction is worth stating because the two look interchangeable:
+
+| | Evidence of | So the proof is |
+|---|---|---|
+| Attendance photo | *a person being somewhere at a time* | Our server's clock and place, burned in — the whole control depends on it being unforgeable |
+| Receipt | *a purchase* | The printed document itself: its own vendor, date and total |
+
+Stamping our clock across a receipt would obscure the details that make it
+evidence, and would assert something untrue — we know when the image was
+uploaded, not when the money was spent.
+
+**It is still re-encoded through sharp**, which strips EXIF. On a phone photo
+that EXIF carries GPS coordinates, and a receipt has no business recording
+where someone was standing (§14 R-14).
+
+Stored at 1600px, wider than an attendance photo's 1080px, because a receipt is
+a document — the line items have to stay readable when the owner zooms in
+months later to settle a query.
+
+### D-58 · Expenses are reached from Settings, not a seventh nav tab
+
+OWNER and MANAGER already carry six bottom-nav tabs, which D-36 records as one
+more than sits comfortably on a phone. A seventh would make the row unusable,
+and §8.0 specifies five.
+
+So `/expenses` and `/settings/expense-categories` are linked from the Settings
+list instead. Both pages enforce their own role server-side
+(`requireRolePage("OWNER", "MANAGER")` and `("OWNER")`), so this is purely
+about reachability — verified by loading `/expenses` as STAFF and getting a
+real 403 page.
+
+**Phase 10 should fold this properly.** D-36 already asks for a "More" tab; when
+that lands, Expenses belongs in it rather than buried under Settings, which is
+not where anyone would look for a daily task.
+
+### D-59 · `verify-phase7.sh` was proven by three mutations
+
+D-43's rule — a green check proves nothing until it has been seen red — applied
+to the acceptance criterion itself. All 44 checks passed on the first run, which
+is exactly when to be suspicious. Three deliberate breaks:
+
+| Mutation | Caught by |
+|---|---|
+| Silently archive instead of throwing `CATEGORY_IN_USE` (the failure §17 names by name) | `deleting a USED category returns 409` → got 200 |
+| Drop `usageCount` from the error details | `the usage COUNT is in the body` → **caught only by D-43's empty-value guard**; a naive `chk` would have compared `""` to `""` and passed |
+| Copy Phase 5's `isHqPseudoShop` refusal into the expense guard | `an expense against HQ is accepted` |
+
+All three reverted, `git diff` confirmed clean, and the suite re-run green. The
+second is the one worth remembering: it is the exact false-pass shape D-43 was
+written about, reproduced a phase later.
+
+---
+
+## What Phase 7 built
+
+```
+src/server/services/
+  expenses.ts     Categories (the §16 delete-if-unused rule) + expense CRUD,
+                  role scoping in SQL, soft delete, the D-55 amount guard.
+  receipts.ts     Receipt storage. Same shape as attendance-photo, NO
+                  watermark (D-57). Re-encodes to strip EXIF/GPS.
+
+src/server/auth/
+  context.ts      TOUCHED: + expenseShops() — like selectableShops but
+                  INCLUDING HQ (D-54).
+
+src/app/(app)/expenses/
+  page.tsx + expense-screen.tsx    §8.8 list, running total, add form.
+
+src/app/(app)/settings/expense-categories/
+  page.tsx + category-manager.tsx  Owner-only. Where the 409 refusal is seen.
+
+src/server/services/__tests__/expenses.test.ts   15 tests.
+scripts/verify-phase7.sh                         44 HTTP-level checks.
+```
+
+APIs: `/api/expense-categories`, `/api/expense-categories/[id]`,
+`/api/expenses`, `/api/expenses/[id]`, `/api/expenses/[id]/receipt`.
+
+**No migration.** `Expense` and `ExpenseCategory` have existed since the Phase 0
+schema, so PRD §6 still matches `prisma/schema.prisma`.
+
+**§16 criterion:**
+
+| Criterion | Status |
+|---|---|
+| Deleting a used category returns a clear refusal with the usage count | ✅ 409 `CATEGORY_IN_USE`, count in `error.details.usageCount` **and** in the message; proven at service level, at HTTP level, and **rendered in the browser** — *"Electricity" is used by 1 expense and cannot be deleted. Archive it instead…* Three mutations confirm the check goes red (D-59). |
+
+Also verified: HQ accepts expenses while a transfer to HQ is still refused;
+`businessDate` ignores a client-sent value; money survives as a string at
+`1234567890.12`; a replayed Idempotency-Key creates exactly one row; the full
+§3.4 permission matrix including the unscoped-manager branch (D-34's lesson);
+and a delete is soft, audited and carries its reason.
+
+**Unlike Phases 4 and 6, Phase 7 has no device-level criterion.** §16 asks for
+one thing and it is fully provable from a shell and a browser, which is why this
+row is ✅ rather than 🟨.
+
+---
+
 ## What Phase 6 built
 
 ```
@@ -1409,7 +1574,7 @@ APIs: `/api/auth/{login,logout,me,change-password,[...all]}`,
 ```bash
 npm run typecheck                 # clean
 npm run lint                      # clean
-npm test                          # 116 tests (D-26) — safe to re-run, no residue
+npm test                          # 131 tests (D-26) — safe to re-run, no residue
 docker compose build              # succeeds (catches Linux case-sensitivity)
 bash scripts/verify-phase1.sh     # 21/21 acceptance checks, needs npm run dev
 bash scripts/verify-phase2.sh     # 30/30 acceptance checks, needs npm run dev
@@ -1417,6 +1582,7 @@ bash scripts/verify-phase3.sh     # Phase 3 PASS, needs npm run dev
 bash scripts/verify-phase4.sh     # 35 checks, needs npm run dev
 bash scripts/verify-phase5.sh     # 42 checks, needs npm run dev
 bash scripts/verify-phase6.sh     # 41 checks, needs npm run dev
+bash scripts/verify-phase7.sh     # 44 checks, needs npm run dev
 ```
 
 **`verify-phase5.sh` and `verify-phase6.sh` were last run green on 7 Aug 2026**,
@@ -1476,6 +1642,9 @@ OWNER can merge and the merged caches reconcile to the moved ledgers.
 | Clock-out has no UI | `POST /api/attendance/clock-out` exists, is tested and works; nothing calls it. §4.13 says v1 lateness is clock-in only, so this is not on the critical path — but a shift with no clock-out looks unfinished on the team screen. Wire a button into the attendance screen in Phase 10. |
 | Clock-out photo is not captured | `Shop.requireClockOutPhoto` and `Attendance.clockOutPhotoPath` both exist and the purge job already clears the file. Nothing writes it. §4.13 makes it optional and per-shop; build it with the clock-out button. |
 | No attendance reporting surfaces | §8.9 also asks for a calendar heatmap, a ranked lateness table and a weekly trend chart. Those are reporting, and Phase 8 owns reports — the data (`isLate`, `lateMinutes`, `businessDate`) is all recorded and indexed for them. |
+| No expense edit or receipt UI | `PATCH /api/expenses/:id` and `POST /api/expenses/:id/receipt` both exist, are permission-checked and are covered by tests; no screen calls either. §8.8 asks for an optional receipt photo on the add form. The service and storage are done — this is a UI-only gap. |
+| Expense list has no filters or pagination UI | The service takes `categoryId`, `from`, `to` and a cursor, and returns `nextCursor`; the screen renders the first page for the work-session shop with no date-range or category filter and no "load more". §8.8 specifies all three. Phase 8 owns expense *reporting* and is the natural place. |
+| Expenses live under Settings | D-58. Reachable but not where anyone looks for a daily task. Phase 10's "More" tab (D-36) should carry it. |
 | Excuse reason uses `window.prompt` | Third site now, after the sale void and the transfer cancel. Replace all three together in Phase 10. |
 | Shop switcher is 32px tall | The top-bar "Branch 1" control in `app-shell.tsx` (Phase 1) is below NF-3's 44px floor. Allowed by §8.11 only because a larger equivalent exists at Settings → Current shop, so it is not the *only* way to switch. Raise it in Phase 10's responsive pass. Found by measuring the rendered page (D-51). |
 | Duplicate shifts render unfiltered | The clock-in chooser showed **11** shifts at BR-1, including four identical `Verify Shift` rows — accumulated `verify-phase6.sh` data, not a code bug (`npm run db:reset` clears it). But nothing in the UI or the service guards against genuinely duplicate shift names, and staff would see the same confusing list. Consider a uniqueness rule or a dedupe on the chooser when shift management gets its Phase 10 pass. |
@@ -1545,6 +1714,19 @@ of it is test data on `marblehouse_dev`. `npm run db:reset` clears the lot.
   cleaned up by the script; `npm test` cleans up its own, and the 61-day purge
   job would eventually clear the rest. Delete `data/attendance` by hand if it
   gets noisy.
+
+**Added by the Phase 7 verification run:**
+
+- Expense categories named `P7 Unused/Used/General/Total <timestamp>`, one set
+  per run. The `Unused` one is deleted by the script itself; the rest stay,
+  because the whole point is that a used category **cannot** be removed
+  (D-56) — so these accumulate, and the expense-form chip list grows with every
+  run. `npm run db:reset` clears them.
+- Expense rows at BR-1 and at **HQ**, including a soft-deleted one with its
+  `DELETE` audit row, plus the idempotency-replay pair.
+- `npm test` adds nothing — `expenses.test.ts` cleans up in `afterEach`.
+  Verified: `ExpenseCategory` and `Expense` are back to their pre-run counts
+  after a full suite run.
 
 **Added by the Phase 4 verification run:**
 

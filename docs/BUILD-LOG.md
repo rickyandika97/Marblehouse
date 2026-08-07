@@ -1297,9 +1297,18 @@ bash scripts/verify-phase5.sh     # 42 checks, needs npm run dev
 bash scripts/verify-phase6.sh     # 41 checks, needs npm run dev
 ```
 
-All four were last re-run green on **7 Aug 2026** when Phase 3's commit gate was
-closed (D-25). `docker compose build` needs the Docker Desktop daemon actually
-running, not merely installed — `open -a Docker` first.
+**`verify-phase5.sh` and `verify-phase6.sh` were last run green on 7 Aug 2026**,
+at the end of Phase 6, together with typecheck, lint, all 116 tests and
+`docker compose build`. `verify-phase{1,2,3,4}.sh` were last run green earlier
+the same day and have not been re-run since; they write test data, so re-run
+them in numeric order against a scratch database if you need them.
+
+`docker compose build` needs the Docker Desktop daemon actually running, not
+merely installed — `open -a Docker` first.
+
+**Phase 6 note:** `npm run dev` must be running for `verify-phase6.sh`, and the
+suite writes watermarked JPEGs under `data/attendance/`. Those are gitignored
+and are not cleaned up by the script — `npm test` cleans up its own.
 
 All three scripts need the dev server running and **write test data**.
 `verify-phase1.sh` rewrites test users; `verify-phase2.sh` assumes those users

@@ -323,6 +323,57 @@ describe("attendance status — the red banner (§4.13)", () => {
     expect(status.clockedIn).toBe(true);
     expect(status.record?.clockInAt).toBeTruthy();
   });
+
+  /**
+   * The clock-out card reads these three off `attendanceStatus` (Phase 10).
+   * Without the shift's end time it cannot say "ends 17:00", which is the whole
+   * reason there is no nagging clock-out banner — the card informs instead.
+   */
+  it("carries the shop name and the shift's scheduled end time", async () => {
+    const { shop, shift, actor } = await fixture();
+    await track(
+      clockIn(actor, shop.id, await photo(), {
+        shiftId: shift.id,
+        locationDenied: false,
+      })
+    );
+
+    const status = await attendanceStatus(actor);
+    expect(status.record?.shopName).toBe(shop.name);
+    // The fixture's shift ends at 17:00, formatted from a @db.Time column.
+    expect(status.record?.shift?.endTime).toBe("17:00");
+    expect(status.record?.clockOutAt).toBeNull();
+  });
+
+  /**
+   * §8.9's "No shift applies — clock in anyway" path stores `shiftId: null`
+   * (D-52). The card must render for that person too, so `shift` has to be a
+   * clean null rather than a crash reading `endTime` off nothing.
+   */
+  it("returns a null shift for a clock-in with no shift chosen", async () => {
+    const { shop, actor } = await fixture();
+    await track(clockIn(actor, shop.id, await photo(), { locationDenied: false }));
+
+    const status = await attendanceStatus(actor);
+    expect(status.clockedIn).toBe(true);
+    expect(status.record?.shift).toBeNull();
+    expect(status.record?.shopName).toBe(shop.name);
+  });
+
+  it("reports clockOutAt once the shift is closed", async () => {
+    const { shop, shift, actor } = await fixture();
+    await track(
+      clockIn(actor, shop.id, await photo(), {
+        shiftId: shift.id,
+        locationDenied: false,
+      })
+    );
+    await clockOut(actor, {});
+
+    // The card hides itself on this, so a wrong value here leaves someone
+    // able to tap "Clock out" on a shift they already finished.
+    expect((await attendanceStatus(actor)).record?.clockOutAt).toBeTruthy();
+  });
 });
 
 describe("clock-out", () => {

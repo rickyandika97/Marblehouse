@@ -6,6 +6,7 @@ import { MapPinOff, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ReasonDialog } from "@/components/reason-dialog";
+import { ClockOutCard } from "./clock-out-card";
 import { cn } from "@/lib/utils";
 
 interface Row {
@@ -23,6 +24,27 @@ interface Row {
   user: { id: string; displayName: string };
   shop: { id: string; name: string; code: string };
   shift: { id: string; name: string } | null;
+}
+
+function hhmm(iso: string): string {
+  return new Date(iso).toLocaleTimeString("id-ID", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/**
+ * "09:02 → 17:16", or "09:02 → still in" for a shift with no clock-out.
+ *
+ * The open case is deliberately not left as a bare clock-in time. A record with
+ * no clock-out is genuinely different from a completed one — it is either
+ * someone still working or someone who forgot — and collapsing the two is what
+ * made the team screen look unfinished.
+ */
+function clockRange(clockInAt: string, clockOutAt: string | null): string {
+  return clockOutAt
+    ? `${hhmm(clockInAt)} → ${hhmm(clockOutAt)}`
+    : `${hhmm(clockInAt)} → still in`;
 }
 
 /**
@@ -82,6 +104,10 @@ export function AttendanceList({
     <div className="space-y-5">
       <h1 className="text-2xl font-bold tracking-tight">Attendance</h1>
 
+      {/* Renders nothing unless the viewer is clocked in and not yet out. */}
+      <ClockOutCard />
+
+
       {canSeeTeam && (
         <div className="flex gap-1 border-b">
           {(["mine", "team"] as const).map((s) => (
@@ -122,10 +148,11 @@ export function AttendanceList({
                   </p>
                   <p className="text-xs text-muted-foreground">
                     {scope === "team" ? `${r.businessDate} · ` : ""}
-                    {new Date(r.clockInAt).toLocaleTimeString("id-ID", {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
+                    {/* Showing the range rather than the clock-in alone: a
+                        shift with no clock-out is what the debt entry called
+                        "looks unfinished", and it should be visible as such
+                        rather than indistinguishable from a completed one. */}
+                    {clockRange(r.clockInAt, r.clockOutAt)}
                     {r.shift ? ` · ${r.shift.name}` : ""} · {r.shop.code}
                   </p>
                 </div>
@@ -160,6 +187,10 @@ export function AttendanceList({
               <p className="font-semibold">{open.user.displayName}</p>
               <p className="text-sm text-muted-foreground">
                 {open.businessDate} · {open.shop.name}
+              </p>
+              <p className="text-sm text-muted-foreground">
+                {clockRange(open.clockInAt, open.clockOutAt)}
+                {open.shift ? ` · ${open.shift.name}` : ""}
               </p>
             </div>
             <Button variant="outline" size="sm" onClick={() => setOpen(null)}>

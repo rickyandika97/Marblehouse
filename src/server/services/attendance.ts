@@ -101,7 +101,13 @@ export async function attendanceStatus(actor: Actor) {
       lateMinutes: true,
       status: true,
       shopId: true,
-      shift: { select: { id: true, name: true } },
+      shop: { select: { name: true } },
+      // endTime drives the clock-out card's "scheduled to X" line. There is no
+      // *end*-time snapshot on Attendance the way there is for the start
+      // (`shiftStartAtCapture`), so this is read live: it is shown as context
+      // for a decision being made now, and is never stored or used to judge a
+      // past record. Editing a shift must not rewrite history (§4.14).
+      shift: { select: { id: true, name: true, endTime: true } },
     },
   });
 
@@ -119,7 +125,14 @@ export async function attendanceStatus(actor: Actor) {
           lateMinutes: record.lateMinutes,
           status: record.status,
           shopId: record.shopId,
-          shift: record.shift,
+          shopName: record.shop.name,
+          shift: record.shift
+            ? {
+                id: record.shift.id,
+                name: record.shift.name,
+                endTime: formatTime(record.shift.endTime),
+              }
+            : null,
         }
       : null,
   };

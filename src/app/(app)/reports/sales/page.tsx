@@ -7,6 +7,7 @@ import {
   formatAmount,
   formatMoney,
   rangeFrom,
+  filterPropsFor,
 } from "../report-shell";
 
 export const metadata = { title: "Daily Sales Summary · Marblehouse" };
@@ -27,6 +28,7 @@ export default async function SalesReportPage({
   const actor = await requireManagerOrOwnerPage();
   const sp = await searchParams;
   const { from, to } = rangeFrom(sp, actor.businessDate);
+  const filters = await filterPropsFor(actor);
   const input = { from, to, ...(sp.shopId ? { shopId: sp.shopId } : {}) };
 
   // A foreign shopId in the query string throws FORBIDDEN from the service;
@@ -46,6 +48,7 @@ export default async function SalesReportPage({
       to={to}
       exportName="sales"
       shopId={sp.shopId}
+      {...filters}
     >
       <ReportTotals
         items={[

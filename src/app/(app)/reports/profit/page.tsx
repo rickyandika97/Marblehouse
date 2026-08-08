@@ -6,6 +6,7 @@ import {
   ReportTotals,
   formatMoney,
   rangeFrom,
+  filterPropsFor,
 } from "../report-shell";
 
 export const metadata = { title: "Profit & Loss · Marblehouse" };
@@ -27,6 +28,7 @@ export default async function ProfitReportPage({
   const actor = await requireOwnerPage();
   const sp = await searchParams;
   const { from, to } = rangeFrom(sp, actor.businessDate);
+  const filters = await filterPropsFor(actor);
 
   const { rows, combined } = await profitReport(actor, {
     from,
@@ -42,6 +44,7 @@ export default async function ProfitReportPage({
       to={to}
       exportName="profit"
       shopId={sp.shopId}
+      {...filters}
     >
       <ReportTotals
         items={[

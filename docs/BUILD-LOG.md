@@ -1399,6 +1399,61 @@ The top-8-plus-Others rule (§5.6) is enforced in **`dashboard.ts`**, not in the
 component, so every consumer of that payload gets the same shape and nobody can
 re-introduce a 30-series chart from the UI side.
 
+### D-68 · The report filter bar, and what a page does with a bad URL
+
+**Owner decision, 8 Aug 2026 — built immediately after Phase 8 closed.**
+
+Phase 8 shipped seven report screens that read `?from=&to=&shopId=` but had no
+control to set them; you typed the query string. `report-filters.tsx` adds
+one-tap presets (Today · 7 days · 30 days · This month · Last month) plus two
+native date inputs, and a shop picker. It lives in `ReportShell`, so all seven
+screens gained it at once.
+
+**It navigates by URL rather than holding data in client state.** The page
+re-runs as a server component and the service re-resolves scope and permissions
+from scratch. A client-side filter would have meant fetching report JSON into
+the browser — exactly what the cost gate exists to prevent for a manager (§7.5).
+
+**The shop picker offers "All shops" to an OWNER only.** §3.4 gives a manager one
+shop at a time, so their picker lists their assignments with no aggregate
+option. A multi-shop manager can switch between their own branches from the
+report screen (owner decision — the alternative was making them change their
+work session in Settings, which is worse for someone running two sites). This is
+not where the rule is enforced: `resolveScope` validates every `shopId`
+server-side and 403s a foreign one. The picker only avoids showing a control
+that would fail.
+
+**Presets anchor to the actor's BUSINESS date, never `new Date()`.** Before
+04:00 the business day is still yesterday (§4.2, D-18), so a wall-clock "Today"
+would ask for a date nothing is filed under yet — an empty report at 2am reads
+as a broken screen rather than a boundary.
+
+**Two real defects, both found by putting rubbish in the URL bar:**
+
+| Input | Was | Now |
+|---|---|---|
+| `?from=banana`, `?from=2026-02-31`, inverted range | **500** — `asPageError` only converted `FORBIDDEN`, so `VALIDATION_FAILED` escaped | `rangeFrom` validates and falls back; an inverted range is **swapped**, not refused |
+| `?shopId=no-such-shop` as OWNER | **200 with a page of zeroes** — reads as "this branch sold nothing" | **404** |
+
+The second is the subtler one. `hasShopAccess` answers *"may you?"*, not *"is it
+real?"*, and returns true for an owner on any string. `resolveScope` now checks
+existence — but **after** the permission check, deliberately: reversing that
+order would let a manager tell a real-but-foreign shop (403) from a fake one
+(404) and probe which ids exist. Both orderings are pinned by tests.
+
+An inverted range is swapped rather than rejected because it is almost always a
+half-finished edit — the user changed "from" and has not yet changed "to". The
+swap cannot produce a wrong number; it yields the range they described, the
+right way round.
+
+`asPageError` now maps `NOT_FOUND` → `notFound()` alongside `FORBIDDEN` →
+`forbidden()`. Anything else is still rethrown on purpose: a service failing in
+a way the page did not anticipate **is** a 500, and rendering "not found" for it
+would hide a real bug.
+
+Verified by 14 new checks in `verify-phase8.sh` and 2 new unit tests, with the
+manager "All shops" check confirmed to go red under mutation.
+
 ---
 
 ## What Phase 8 built
@@ -1430,8 +1485,14 @@ src/app/(app)/reports/
   sales/ attendance/ low-stock/ prize-expense/ stock-valuation/ profit/
   liability/         The six screens (D-66), plus low-stock.
 
-src/server/services/__tests__/reports.test.ts   34 tests.
-scripts/verify-phase8.sh                        51 HTTP-level checks.
+src/app/(app)/reports/report-filters.tsx        D-68's filter bar: presets,
+                  custom dates, shop picker. Client component; navigates by URL.
+
+src/server/auth/page-guard.ts   TOUCHED: asPageError now maps NOT_FOUND too
+                  (D-68), not only FORBIDDEN.
+
+src/server/services/__tests__/reports.test.ts   36 tests.
+scripts/verify-phase8.sh                        65 HTTP-level checks.
 ```
 
 APIs: `/api/dashboard`, `/api/reports/[name]`, `/api/reports/[name]/export`.
@@ -1447,7 +1508,7 @@ D-33's slug rule is not caught by typecheck or lint.
 
 | Criterion | Status |
 |---|---|
-| Every metric in §9 matches a hand-calculation against the demo dataset | ✅ `verify-phase8.sh` recomputes revenue, transactions, unique customers, walk-ins, payment split, prize expense, shrinkage, operating expenses, gross and net profit, tickets awarded/redeemed, outstanding marbles and tickets, estimated liability, stock valuation, late count and late rate — all in **independent SQL** that never calls the engine. 51/51 pass. Three mutations confirm the script goes red (D-62's fourth is the one that mattered). |
+| Every metric in §9 matches a hand-calculation against the demo dataset | ✅ `verify-phase8.sh` recomputes revenue, transactions, unique customers, walk-ins, payment split, prize expense, shrinkage, operating expenses, gross and net profit, tickets awarded/redeemed, outstanding marbles and tickets, estimated liability, stock valuation, late count and late rate — all in **independent SQL** that never calls the engine. 65/65 pass. Four mutations confirm the script goes red (D-62's fourth is the one that mattered). |
 
 Also verified: a plain manager sees no cost value or cost column on **any**
 report or export; staff are refused on all sixteen endpoint/export combinations;
@@ -1822,7 +1883,7 @@ APIs: `/api/auth/{login,logout,me,change-password,[...all]}`,
 ```bash
 npm run typecheck                 # clean
 npm run lint                      # clean
-npm test                          # 165 tests (D-26) — safe to re-run, no residue
+npm test                          # 167 tests (D-26) — safe to re-run, no residue
 docker compose build              # succeeds (catches Linux case-sensitivity)
 bash scripts/verify-phase1.sh     # 21/21 acceptance checks, needs npm run dev
 bash scripts/verify-phase2.sh     # 30/30 acceptance checks, needs npm run dev
@@ -1831,7 +1892,7 @@ bash scripts/verify-phase4.sh     # 35 checks, needs npm run dev
 bash scripts/verify-phase5.sh     # 42 checks, needs npm run dev
 bash scripts/verify-phase6.sh     # 41 checks, needs npm run dev
 bash scripts/verify-phase7.sh     # 44 checks, needs npm run dev
-bash scripts/verify-phase8.sh     # 51 checks, needs npm run dev AND --demo data
+bash scripts/verify-phase8.sh     # 65 checks, needs npm run dev AND --demo data
 ```
 
 **`verify-phase8.sh` needs the demo dataset** (`npm run db:seed -- --demo`) and
@@ -1906,8 +1967,9 @@ OWNER can merge and the merged caches reconcile to the moved ledgers.
 | ~~`Button render={<a>}` a11y warning~~ | **Fixed 7 Aug 2026 — see D-53.** `nativeButton` is now derived in the wrapper, covering all eight sites and every future one. |
 | ~~Dashboard screen~~ | **Built in Phase 8.** §8.3's five rows, §8.4's stripped manager variant. |
 | Nine §9 report screens not built | D-66. Sales by Staff, Sales by Shop, Payment Method Breakdown, Customer Spend Leaderboard, Prize Redemption, Shrinkage, and Expense Report all have a working service **and** a CSV export today — they need only a page. §8.9's attendance heatmap and weekly trend need a chart (use Recharts there, not the dashboard's inline SVG — D-67). No service or schema work in any of them. |
-| No date-range picker on report screens | Every report accepts `?from=&to=&shopId=` and defaults to the last 30 days, but there is no UI to change it — you type the query string. §8.8 asks for range and category filters on expenses specifically. A single shared control on `report-shell.tsx` would cover all seven screens at once; worth doing early in Phase 10. |
-| No shop filter control on the owner dashboard | §8.3 specifies an `All shops` / single-shop selector. The payload and `?shopId=` both support it; only the control is missing. |
+| ~~No date-range picker on report screens~~ | **Built — D-68.** Presets plus custom dates and a shop picker, shared across all seven screens via `ReportShell`. |
+| No shop filter control on the owner **dashboard** | §8.3 specifies an `All shops` / single-shop selector. `/dashboard?shopId=` works and is permission-checked, but the *dashboard* has no picker — D-68 added it to the report screens only. `filterPropsFor()` in `report-shell.tsx` is reusable; this is a small job. |
+| Expense screen still has no filters | §8.8 asks for date-range and category filters plus a running total on `/expenses`. D-68's control is built for the reports' `from/to/shopId` shape and does not cover a category chip; adapting it is the obvious route. |
 | Report pagination | §9's tabular reports return every row for the period. `customerReport` caps at 200 by construction, but sales-by-day over a year is 365 rows in one response. NF-4 wants 50-row pages on list screens. Not urgent at three branches; revisit before the pilot widens. |
 | ~~`Shop.dayStartHour` still exists~~ | **Resolved same day — see D-18.** Dropped; the cutoff is global at 04:00. |
 | No UI for the business-day hour | §8.10 puts it under Owner → System. It is set by seed/migration only. Build the screen in Phase 9 with the other owner settings; changing it needs a warning that it does not restamp history (D-18). |

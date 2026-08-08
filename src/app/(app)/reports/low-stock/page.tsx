@@ -6,6 +6,7 @@ import {
   ReportTotals,
   formatAmount,
   rangeFrom,
+  filterPropsFor,
 } from "../report-shell";
 
 export const metadata = { title: "Low Stock · Marblehouse" };
@@ -26,6 +27,7 @@ export default async function LowStockReportPage({
   const actor = await requireManagerOrOwnerPage();
   const sp = await searchParams;
   const { from, to } = rangeFrom(sp, actor.businessDate);
+  const filters = await filterPropsFor(actor);
 
   const { rows } = await lowStockReport(actor, {
     from,
@@ -43,6 +45,7 @@ export default async function LowStockReportPage({
       to={to}
       exportName="low-stock"
       shopId={sp.shopId}
+      {...filters}
     >
       <ReportTotals
         items={[

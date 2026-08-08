@@ -378,6 +378,25 @@ describe("resolveScope — the manager rule (8 Aug 2026 decision)", () => {
       resolveScope(actorFor("OWNER"), { from: iso(DAY), to: iso(YESTERDAY) })
     ).rejects.toMatchObject({ code: "VALIDATION_FAILED" });
   });
+
+  it("404s a shop id that does not exist, even for an OWNER", async () => {
+    // hasShopAccess answers "may you?", not "is it real?", and returns true for
+    // an owner on any id. Without the existence check a URL typo renders a calm
+    // report full of zeroes that reads as "this branch sold nothing".
+    await expect(
+      resolveScope(actorFor("OWNER"), { shopId: "no-such-shop-id" })
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("prefers 403 over 404 for a manager, so shop ids cannot be probed", async () => {
+    // Order matters: if existence were checked first, the different responses
+    // for a real-but-foreign shop and a fake one would confirm which ids exist.
+    await expect(
+      resolveScope(actorFor("MANAGER", { shopIds: [shopA] }), {
+        shopId: "no-such-shop-id",
+      })
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
 });
 
 describe("cost gating (§7.5, §15)", () => {

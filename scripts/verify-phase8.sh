@@ -307,6 +307,70 @@ DASH_S=$(c -b "$S" "$B/api/dashboard")
 chk "staff are refused the dashboard entirely (§3.4)" "$DASH_S" "403"
 
 # ═════════════════════════════════════════════════════════════════════════
+printf "\n════ Report filter UI — date range and shop picker ════\n"
+# ═════════════════════════════════════════════════════════════════════════
+# The filters navigate by URL, so the server re-resolves scope and permissions
+# on every change. These check the CONTROL matches what the API will allow.
+
+FIRST_SHOP=$(sql "SELECT id FROM \"Shop\" WHERE code LIKE 'DEMO-%' ORDER BY code LIMIT 1")
+
+OWNER_SALES_HTML=$(j -b "$O" "$B/reports/sales")
+chk "the filter bar renders on a report page" \
+  "$(printf '%s' "$OWNER_SALES_HTML" | grep -c 'Last month')" "1"
+chk "an OWNER is offered 'All shops'" \
+  "$(printf '%s' "$OWNER_SALES_HTML" | grep -c 'All shops')" "1"
+
+MGR_SALES_HTML=$(j -b "$M" "$B/reports/sales")
+chk "a MANAGER gets the same presets" \
+  "$(printf '%s' "$MGR_SALES_HTML" | grep -c 'Last month')" "1"
+# §3.4: one shop at a time. The picker must not offer an aggregate.
+chk "a MANAGER is NOT offered 'All shops' (§3.4)" \
+  "$(printf '%s' "$MGR_SALES_HTML" | grep -c 'All shops')" "0"
+
+MGR_OPTIONS=$(printf '%s' "$MGR_SALES_HTML" | grep -oE '<option value="[^"]+"' | wc -l | tr -d ' ')
+chk "  and their picker lists only their assigned shops" "$MGR_OPTIONS" "1"
+
+# The range must actually narrow the data, not just redraw the header.
+REV_ALL=$(j -b "$O" "$B/api/reports/sales?$Q" | q ".summary.revenue")
+REV_DAY=$(j -b "$O" "$B/api/reports/sales?from=$TO&to=$TO" | q ".summary.revenue")
+if [ "$REV_ALL" = "$REV_DAY" ]; then
+  fail "narrowing the date range changes the figure" "both $REV_ALL"
+else
+  pass "narrowing the date range changes the figure"
+fi
+
+REV_ONE_SHOP=$(j -b "$O" "$B/api/reports/sales?$Q&shopId=$FIRST_SHOP" | q ".summary.revenue")
+if [ "$REV_ALL" = "$REV_ONE_SHOP" ]; then
+  fail "the shop filter changes the figure" "both $REV_ALL"
+else
+  pass "the shop filter changes the figure"
+fi
+
+# The export must carry the filters, or the CSV silently disagrees with the
+# screen — and you would not notice until the numbers were in a spreadsheet.
+CSV_DAY_ROWS=$(j -b "$O" "$B/api/reports/sales/export?from=$TO&to=$TO" | tail -n +2 | grep -c "$TO")
+chk "the CSV export carries the current filters" "$CSV_DAY_ROWS" "1"
+
+# A date arrives from the URL bar and can be anything. A page has no
+# handleRoute, so an unhandled throw is a 500 rather than a usable screen.
+BANANA=$(c -b "$O" "$B/reports/sales?from=banana&to=$TO")
+chk "a malformed date falls back instead of 500ing" "$BANANA" "200"
+IMPOSSIBLE=$(c -b "$O" "$B/reports/sales?from=2026-02-31&to=$TO")
+chk "an impossible calendar date falls back too" "$IMPOSSIBLE" "200"
+INVERTED=$(c -b "$O" "$B/reports/sales?from=$TO&to=$FROM")
+chk "an inverted range is swapped, not refused" "$INVERTED" "200"
+INVERTED_HDR=$(j -b "$O" "$B/reports/sales?from=$TO&to=$FROM" | grep -oE "$FROM<!-- --> to <!-- -->$TO" | head -1)
+chk "  and it renders the corrected window" \
+  "$([ -n "$INVERTED_HDR" ] && echo yes)" "yes"
+
+# A shop id that does not exist must say so, not render a calm page of zeroes.
+GHOST=$(c -b "$O" "$B/reports/sales?shopId=no-such-shop")
+chk "a nonexistent shopId is 404, not a silent zero" "$GHOST" "404"
+# …but a MANAGER must get 403 first, so ids cannot be probed for existence.
+GHOST_MGR=$(c -b "$M" "$B/reports/sales?shopId=no-such-shop")
+chk "  and a MANAGER gets 403 first, so ids cannot be probed" "$GHOST_MGR" "403"
+
+# ═════════════════════════════════════════════════════════════════════════
 printf "\n════ CSV export mechanics (§7.8) ════\n"
 # ═════════════════════════════════════════════════════════════════════════
 

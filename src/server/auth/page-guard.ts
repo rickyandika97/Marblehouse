@@ -9,7 +9,7 @@
  * screen rather than redirecting: a redirect would imply the URL is fine and
  * the user merely logged in wrong.
  */
-import { forbidden, redirect } from "next/navigation";
+import { forbidden, notFound, redirect } from "next/navigation";
 import type { Role } from "@prisma/client";
 import { AppError } from "@/server/errors";
 import { getActor, type Actor } from "./context";
@@ -59,10 +59,24 @@ export async function requireManagerOrOwnerPage(): Promise<Actor> {
   return requireRolePage("OWNER", "MANAGER");
 }
 
-/** Convert an AppError thrown by a service into a page-level 403. */
+/**
+ * Convert an AppError thrown by a service into the right page-level response.
+ *
+ * A service throws `AppError` (CLAUDE.md rule 10) and `handleRoute` converts it
+ * for API routes. A PAGE has no such wrapper, so an uncaught throw becomes a
+ * 500 — which is how two Phase 8 report pages returned a server error to a
+ * plain manager instead of a 403 (D-64).
+ *
+ * Only the codes a page can genuinely produce are mapped. Anything else is
+ * rethrown deliberately: a service failing in a way a page did not anticipate
+ * IS a 500, and silently rendering "not found" for it would hide a real bug.
+ */
 export function asPageError(e: unknown): never {
-  if (e instanceof AppError && e.code === "FORBIDDEN") {
-    forbidden();
+  if (e instanceof AppError) {
+    if (e.code === "FORBIDDEN") forbidden();
+    // A bad shop id in the URL bar. Without this it is a 500; with it the
+    // user gets the standard not-found page.
+    if (e.code === "NOT_FOUND") notFound();
   }
   throw e;
 }

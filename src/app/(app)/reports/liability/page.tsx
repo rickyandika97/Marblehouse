@@ -1,6 +1,13 @@
 import { requireManagerOrOwnerPage, asPageError } from "@/server/auth/page-guard";
 import { liabilityReport } from "@/server/services/reports";
-import { ReportShell, ReportTotals, formatAmount, formatMoney, rangeFrom } from "../report-shell";
+import {
+  ReportShell,
+  ReportTotals,
+  formatAmount,
+  formatMoney,
+  rangeFrom,
+  filterPropsFor,
+} from "../report-shell";
 
 export const metadata = { title: "Liability · Marblehouse" };
 export const dynamic = "force-dynamic";
@@ -24,6 +31,7 @@ export default async function LiabilityReportPage({
   const actor = await requireManagerOrOwnerPage();
   const sp = await searchParams;
   const { from, to } = rangeFrom(sp, actor.businessDate);
+  const filters = await filterPropsFor(actor);
 
   const report = await liabilityReport(actor, {
     from,
@@ -79,6 +87,7 @@ export default async function LiabilityReportPage({
       to={to}
       exportName="liability"
       shopId={sp.shopId}
+      {...filters}
     >
       <ReportTotals items={items} />
 

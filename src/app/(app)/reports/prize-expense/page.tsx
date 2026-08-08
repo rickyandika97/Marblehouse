@@ -7,6 +7,7 @@ import {
   formatAmount,
   formatMoney,
   rangeFrom,
+  filterPropsFor,
 } from "../report-shell";
 
 export const metadata = { title: "Prize Expense · Marblehouse" };
@@ -28,6 +29,7 @@ export default async function PrizeExpenseReportPage({
   const actor = await requireManagerOrOwnerPage();
   const sp = await searchParams;
   const { from, to } = rangeFrom(sp, actor.businessDate);
+  const filters = await filterPropsFor(actor);
 
   // The cost gate lives in the service and throws AppError (CLAUDE.md rule 10).
   // A page has no `handleRoute` to convert that, so an uncaught throw renders a
@@ -47,6 +49,7 @@ export default async function PrizeExpenseReportPage({
       to={to}
       exportName="prize-expense"
       shopId={sp.shopId}
+      {...filters}
     >
       <ReportTotals
         items={[

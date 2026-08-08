@@ -7,6 +7,7 @@ import {
   formatAmount,
   formatMoney,
   rangeFrom,
+  filterPropsFor,
 } from "../report-shell";
 
 export const metadata = { title: "Stock Valuation · Marblehouse" };
@@ -28,6 +29,7 @@ export default async function StockValuationReportPage({
   const actor = await requireManagerOrOwnerPage();
   const sp = await searchParams;
   const { from, to } = rangeFrom(sp, actor.businessDate);
+  const filters = await filterPropsFor(actor);
 
   // Cost-gated in the service; asPageError turns its AppError into a real 403
   // page rather than a 500 (see prize-expense for the full note).
@@ -45,6 +47,7 @@ export default async function StockValuationReportPage({
       to={to}
       exportName="stock-valuation"
       shopId={sp.shopId}
+      {...filters}
     >
       <ReportTotals
         items={[

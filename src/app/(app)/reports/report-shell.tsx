@@ -2,13 +2,16 @@ import Link from "next/link";
 import { Download } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatAmount, formatMoney } from "@/lib/money";
+import { selectableShops, type Actor } from "@/server/auth/context";
+import { ReportFilters, type ShopOption } from "./report-filters";
 
 /**
  * Shared furniture for the §9 report screens.
  *
- * Every report is a title, a date range, an optional export button and a
- * table. Keeping that in one place is what makes the individual report pages
- * thin readers over `services/reports.ts` rather than six copies of a layout.
+ * Every report is a title, a date range, filters, an optional export button and
+ * a table. Keeping that in one place is what makes the individual report pages
+ * thin readers over `services/reports.ts` rather than seven copies of a layout
+ * — and it means the filter control was added to all seven screens at once.
  *
  * The export link is only rendered when the caller passes `exportName`, and
  * the endpoint behind it re-checks the role server-side — a rendered button is
@@ -21,6 +24,9 @@ export function ReportShell({
   to,
   exportName,
   shopId,
+  shops,
+  canSeeAllShops,
+  businessDate,
   children,
 }: {
   title: string;
@@ -29,6 +35,11 @@ export function ReportShell({
   to: string;
   exportName?: string;
   shopId?: string;
+  /** Shops this actor may filter to. Omit to hide the picker entirely. */
+  shops?: ShopOption[];
+  /** OWNER only — a manager gets one shop at a time (§3.4). */
+  canSeeAllShops?: boolean;
+  businessDate?: string;
   children: React.ReactNode;
 }) {
   const params = new URLSearchParams({ from, to });
@@ -45,6 +56,10 @@ export function ReportShell({
           </p>
         </div>
         {exportName && (
+          // Carries the CURRENT filters, so the CSV matches what is on screen.
+          // An export that silently ignored the filter would be worse than no
+          // export — you would not notice until the numbers were in a
+          // spreadsheet.
           <Link
             href={`/api/reports/${exportName}/export?${params.toString()}`}
             prefetch={false}
@@ -55,6 +70,18 @@ export function ReportShell({
           </Link>
         )}
       </div>
+
+      {businessDate && (
+        <ReportFilters
+          from={from}
+          to={to}
+          shopId={shopId}
+          shops={shops ?? []}
+          canSeeAllShops={canSeeAllShops ?? false}
+          businessDate={businessDate}
+        />
+      )}
+
       {children}
     </div>
   );
@@ -159,8 +186,55 @@ export function rangeFrom(
   businessDate: Date
 ): { from: string; to: string } {
   const iso = (d: Date) => d.toISOString().slice(0, 10);
-  const to = searchParams.to ?? iso(businessDate);
-  const from =
-    searchParams.from ?? iso(new Date(businessDate.getTime() - 29 * 86_400_000));
+  const fallbackTo = iso(businessDate);
+  const fallbackFrom = iso(new Date(businessDate.getTime() - 29 * 86_400_000));
+
+  // A date arrives here from the URL bar, so it can be anything. The service
+  // throws VALIDATION_FAILED for a malformed or inverted range — correct for an
+  // API, but on a PAGE an uncaught throw is a 500, and a mistyped date is
+  // ordinary user input rather than an error worth a crash screen.
+  //
+  // So a bad value falls back to the default window instead. The filter bar
+  // then renders showing the range actually in use, which tells the user what
+  // happened without a stack trace.
+  let to = isIsoDate(searchParams.to) ? searchParams.to! : fallbackTo;
+  let from = isIsoDate(searchParams.from) ? searchParams.from! : fallbackFrom;
+
+  // An inverted range is almost always a half-finished edit — the user changed
+  // "from" and has not yet changed "to". Swapping is friendlier than refusing,
+  // and cannot produce a wrong number: the range it yields is the one they
+  // described, just the right way round.
+  if (from > to) [from, to] = [to, from];
+
   return { from, to };
+}
+
+/** `YYYY-MM-DD`, and a real calendar date — `2026-02-31` is neither. */
+function isIsoDate(value: string | undefined): boolean {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const d = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value;
+}
+
+/**
+ * Everything `ReportShell` needs for its filter bar, resolved for one actor.
+ *
+ * A single helper so all seven report pages populate the picker identically —
+ * `selectableShops` already scopes to assignments for a manager and excludes
+ * the HQ pseudo-shop, which records no sales and so has no place in a reports
+ * picker (§4.12, D-54).
+ */
+export async function filterPropsFor(
+  actor: Actor
+): Promise<{
+  shops: ShopOption[];
+  canSeeAllShops: boolean;
+  businessDate: string;
+}> {
+  const shops = await selectableShops(actor);
+  return {
+    shops: shops.map((s) => ({ id: s.id, name: s.name })),
+    canSeeAllShops: actor.role === "OWNER",
+    businessDate: actor.businessDate.toISOString().slice(0, 10),
+  };
 }

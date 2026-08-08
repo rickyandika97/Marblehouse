@@ -96,6 +96,16 @@ export async function resolveScope(
     if (!hasShopAccess(actor, input.shopId)) {
       throw forbidden("You do not have access to that shop.");
     }
+    // `hasShopAccess` returns true for an OWNER on ANY id, including one that
+    // does not exist — it answers "may you?", not "is it real?". Without this
+    // check a typo in the URL renders a perfectly calm report full of zeroes,
+    // which reads as "this branch sold nothing" rather than "no such branch".
+    // A manager never reaches here with a bogus id: it would have failed the
+    // assignment check above.
+    const exists = await prisma.shop.count({ where: { id: input.shopId } });
+    if (exists === 0) {
+      throw new AppError("NOT_FOUND", "That shop does not exist.");
+    }
     return { shopIds: [input.shopId], isAllShops: false, from, to };
   }
 

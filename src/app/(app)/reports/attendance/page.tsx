@@ -6,6 +6,7 @@ import {
   ReportTotals,
   formatAmount,
   rangeFrom,
+  filterPropsFor,
 } from "../report-shell";
 
 export const metadata = { title: "Attendance & Lateness · Marblehouse" };
@@ -28,6 +29,7 @@ export default async function AttendanceReportPage({
   const actor = await requireManagerOrOwnerPage();
   const sp = await searchParams;
   const { from, to } = rangeFrom(sp, actor.businessDate);
+  const filters = await filterPropsFor(actor);
 
   const { rows, totals } = await attendanceReport(actor, {
     from,
@@ -43,6 +45,7 @@ export default async function AttendanceReportPage({
       to={to}
       exportName="attendance"
       shopId={sp.shopId}
+      {...filters}
     >
       <ReportTotals
         items={[

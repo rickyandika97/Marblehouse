@@ -31,17 +31,35 @@ const nextConfig: NextConfig = {
     // writes files, which the edge runtime cannot do at all. `externals` with
     // a matcher is used rather than a resolve alias, because an alias keyed on
     // the `@/` path did not intercept the request.
+    //
+    // Phase 9 added two more links to the same chain, and they fail the same
+    // way:
+    //
+    //   instrumentation → scheduler → maintenance → reports → auth/context
+    //                                                       → auth → argon2
+    //   instrumentation → scheduler → backup → pg_dump via child_process
+    //
+    // `reports` is the one that bites: it reaches Better Auth and therefore
+    // `@node-rs/argon2`, whose native/wasm variants webpack cannot resolve for
+    // the edge target, and the dev server refuses to start at all. Making the
+    // import dynamic does NOT help — webpack follows dynamic imports too, which
+    // D-47 already recorded. The matcher is the only thing that works.
     if (nextRuntime === "edge") {
+      const serverOnlyModules = [
+        "services/attendance-photo",
+        "services/reports",
+        "services/backup",
+        "services/maintenance",
+      ];
+
       config.externals.push(
         (
           { request }: { request?: string },
           callback: (err?: Error | null, result?: string) => void,
         ) => {
-          if (request?.includes("services/attendance-photo")) {
-            return callback(
-              null,
-              "commonjs @/server/services/attendance-photo",
-            );
+          const match = serverOnlyModules.find((m) => request?.includes(m));
+          if (match) {
+            return callback(null, `commonjs @/server/${match}`);
           }
           return callback();
         },

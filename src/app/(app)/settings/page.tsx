@@ -1,8 +1,10 @@
 import Link from "next/link";
 import {
   ChevronRight,
+  DatabaseBackup,
   KeyRound,
   Receipt,
+  ScrollText,
   Settings2,
   Store,
   Tags,
@@ -57,6 +59,20 @@ export default async function SettingsPage() {
       title: "Users",
       description: "Create accounts, set roles and shop access",
       // Shown only to the owner — but the page enforces it again server-side.
+      show: actor.role === "OWNER",
+    },
+    {
+      href: "/settings/backups",
+      icon: DatabaseBackup,
+      title: "Backups",
+      description: "Download a backup and record your off-machine copy",
+      show: actor.role === "OWNER",
+    },
+    {
+      href: "/settings/audit-log",
+      icon: ScrollText,
+      title: "Audit log",
+      description: "Every privileged change, with who and when",
       show: actor.role === "OWNER",
     },
     {

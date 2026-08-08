@@ -31,8 +31,33 @@ RUN npm run build
 # ---------- runner ----------
 FROM node:22-bookworm-slim AS runner
 WORKDIR /app
+
+# postgresql-client-16 SPECIFICALLY, from PGDG — not Debian's default.
+#
+# Bookworm ships postgresql-client 15, and `pg_dump` REFUSES to dump a server
+# newer than itself:
+#
+#   pg_dump: error: aborting because of server version mismatch
+#   detail: server version: 16.13; pg_dump version: 15.18
+#
+# docker-compose.yml runs postgres:16-alpine, so with the default package every
+# nightly backup would fail — in production only. Dev on this Mac uses
+# Homebrew's pg_dump 16 and works perfectly, so nothing else in the phase gates
+# catches it: typecheck, lint, tests and even `docker compose build` all pass.
+# Found by running pg_dump inside the built image against a v16 server.
+#
+# `restore.sh` needs the matching pg_restore for the same reason.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      openssl ca-certificates postgresql-client tini \
+      openssl ca-certificates tini curl gnupg \
+    && install -d /usr/share/postgresql-common/pgdg \
+    && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+         -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+         > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-client-16 \
+    && apt-get purge -y gnupg && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
 ENV NODE_ENV=production

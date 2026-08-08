@@ -27,8 +27,8 @@ why, not an edit to the old one.
 | 6 | Attendance | ✅ Done on dev — awaiting the on-device acceptance pass |
 | 7 | Expenses | ✅ Done on dev — all §16 criteria verified |
 | 8 | Dashboards and reports | ✅ Done on dev — §16 criterion verified; see D-66 for the deferred report screens |
-| 9 | Backup, restore, hardening | ⬜ Next |
-| 10 | Polish and pilot | ⬜ |
+| 9 | Backup, restore, hardening | 🟨 Built + verified on dev — awaiting the owner's own restore rehearsal on a second machine |
+| 10 | Polish and pilot | ⬜ Next |
 
 ---
 
@@ -1560,6 +1560,273 @@ which looks plausible enough to accept.
 
 ---
 
+## Decisions taken during Phase 9
+
+### D-71 · Backups are NOT encrypted — a deliberate, informed choice
+
+**Owner decision, 8 Aug 2026.**
+
+§13.5 says backups contain customer names, phone numbers and password hashes,
+and that if they leave the building they should be GPG-encrypted — *"If you
+skip this, do it knowingly."* The owner was offered three options and chose to
+skip it knowingly.
+
+Recorded here so nobody "fixes" it later thinking it was an oversight, and so
+the reasoning is available if the decision is ever revisited:
+
+- The archives stay on a machine the owner physically controls, and the copies
+  they make go to storage they control.
+- A lost passphrase makes every backup permanently unreadable — including the
+  one needed at 2am during the exact emergency backups exist for. That is a
+  real, and irreversible, failure mode of the alternative.
+
+**What was built anyway:** `restore.sh` has a marked place where decryption
+belongs, and §13.4's `RCLONE_REMOTE` stays in `.env.example` unset. Turning
+encryption on later is a change to `backup.sh` and that one spot in
+`restore.sh`; nothing else in the system depends on the archive being plaintext.
+
+**The consequence to keep in view:** the backup screen says, on its face, that
+the archives are unencrypted and contain personal data. That sentence is not
+decoration — it is what makes the choice visible to whoever handles the files
+next. Do not remove it while this decision stands.
+
+### D-72 · No automatic USB copy — and this makes the alert load-bearing
+
+**Owner decision, 8 Aug 2026.**
+
+§13.4 recommends a permanently attached USB drive that `backup.sh` copies to
+automatically, on the grounds that it *"costs nothing, needs no discipline, and
+covers the most likely failure by far — the internal disk dying."* The owner
+declined it for now.
+
+**Read this together with D-71, because the two compound.** With no encryption
+*and* no USB copy, there is **no automatic protection at all** against losing
+the entire history of the business. The only surviving control is the owner
+manually copying an archive off the machine, and §13.4 is explicit that this
+control's failure mode is *silent* — you discover the discipline slipped on the
+day the machine dies (R-2).
+
+That is why the following are **not** UI polish and must not be softened:
+
+| Control | Why it is load-bearing now |
+|---|---|
+| One-tap download | §13.4: if it takes more than one tap it will not happen weekly |
+| The copy log | It is what resets the reminder; without it the escalation is meaningless |
+| Red at 14 days, **undismissable** | The last thing standing between the owner and total loss |
+| The plain-language message | "Backup overdue" does not make anyone act; naming the days lost does |
+
+If a USB drive is ever attached, `BACKUP_USB_PATH` is the shape to add: copy the
+newest archive after `applyRetention()`, and never fail the backup itself if the
+drive is missing.
+
+### D-73 · Retention refuses to delete rather than risk deleting everything
+
+§13.2 says keep 7 daily backups and *"never delete your way to zero"*.
+`applyRetention()` implements that as a hard floor: if pruning would leave fewer
+than `MIN_SURVIVING_BACKUPS` (3) archives, it deletes **nothing** and reports
+`skippedForSafety`, which the CLI and the screen both surface.
+
+The failure this prevents is not the common case — it is a bug in the sort order
+or the keep count clearing the shelf, discovered on the day an archive is
+needed. Keeping too many backups costs disk. Keeping none costs the business.
+
+**The test for this initially proved nothing, and that is worth recording.**
+The first version re-implemented the keep/delete decision inside the test file
+and asserted against its own copy. Deleting the safety floor from the shipped
+function left all 13 tests green — D-62's lesson, reproduced exactly. The test
+now calls the real `applyRetention()` with `BACKUP_DIR` pointed at a temp
+directory via `vi.resetModules()`, and the same mutation fails it immediately.
+**If you refactor retention, re-run that mutation.**
+
+### D-74 · The production image needs postgresql-client-16 SPECIFICALLY
+
+**A production-only defect that every other gate passed. Read this before
+touching the Dockerfile.**
+
+`node:22-bookworm-slim` + `postgresql-client` installs version **15**. The
+compose stack runs `postgres:16-alpine`. `pg_dump` refuses to dump a server
+newer than itself:
+
+```
+pg_dump: error: aborting because of server version mismatch
+detail: server version: 16.13; pg_dump version: 15.18
+```
+
+So **every nightly backup would have failed in production**, silently, while
+working perfectly in development — dev uses Homebrew's pg_dump 16. Typecheck,
+lint, 180 unit tests, `verify-phase9.sh` and even `docker compose build` all
+passed with this in place.
+
+The Dockerfile now installs `postgresql-client-16` from the PGDG apt repository.
+Verified by running `pg_dump` **inside the built image** against a real v16
+server, not by reading the Dockerfile.
+
+**The general lesson, which is D-33's in a new place:** a build that succeeds
+proves the image builds, not that the tools inside it work. When a phase
+depends on an external binary, execute it in the image.
+
+**If Postgres is ever upgraded to 17, this pin moves with it.** A mismatched
+client is silent until the backup you need does not exist.
+
+### D-75 · Alerts are re-synced on read, not only by cron
+
+`SystemAlert` is written by the background jobs, but the owner **dashboard**
+reads that table while the backup API computes staleness live. Between crons the
+two could disagree — the settings page showing a red warning while the dashboard
+showed nothing until 02:00.
+
+`syncBackupAlerts()` therefore runs when the backup screen is rendered and after
+both mutations (taking a backup, recording a copy), so tapping "I copied this
+off-machine" clears the red banner on the same tap rather than leaving the owner
+wondering whether it registered.
+
+**Found by `verify-phase9.sh`, not by any unit test** — the check asserts the
+warning text appears in the rendered *dashboard* HTML, which is the screen §13.4
+actually relies on. A check that only asked the API would have passed.
+
+The alert-sync call is deliberately wrapped in a `.catch()` that swallows: this
+is the page someone opens when they are already in trouble, and alert
+bookkeeping must never be the reason it fails to render.
+
+### D-76 · Rate limiting was already built; the audit log had no reader
+
+§16's Phase 9 line asks for "rate limiting, audit log viewer". Only one of those
+was missing.
+
+**Rate limiting already exists** in `src/server/auth/auth.ts` from Phase 1: 5
+sign-in attempts per 15 minutes with a 100-request general window (§5.4). A
+second mechanism was deliberately **not** added — two rate limiters is two
+sources of truth about who is throttled, which is the drift D-4 warns about for
+permissions. If a specific endpoint ever needs its own limit, add a
+`customRules` entry there rather than a new layer.
+
+**The audit log had no reader at all.** `writeAudit` has been recording rows
+since Phase 1 and nothing ever read them back, so the trail existed but could
+not be consulted — which is most of the point of §4.16. `services/audit-log.ts`
+and `/settings/audit-log` close that: owner-only, filterable by entity, paged by
+cursor.
+
+It is **read-only by construction**. There is no update or delete anywhere in
+that file or in `audit.ts`, and no retention job for audit rows. §4.16 requires
+immutability, and a "tidy up old audit rows" helper is precisely how a trail
+stops being evidence. `POST` and `DELETE` on the endpoint return 405.
+
+### D-77 · The business-day hour is a two-step change, unlike every other setting
+
+§8.10 puts the cutoff under Owner → System, which is where it now lives. It is
+the only control on that screen that needs a confirmation step.
+
+Everything else there changes what the app does next. This changes what past and
+future data *mean*: `businessDate` is stamped once and never recalculated
+(D-18), so moving the hour puts a permanent seam in the reporting history with
+nothing in the app to mark where it falls. The confirmation names that
+consequence in full rather than asking a bare "are you sure?", which trains
+people to tap through.
+
+**Deliberately not offered: a "restamp history" option.** Recomputing
+`businessDate` across existing sales, ledgers, attendance and expenses would
+silently rewrite every historical report the owner has already read.
+
+The change is audit-logged with **both** the old and new hour, so "revenue for
+the 9th looks odd" has an answer if someone moved the cutoff on the 9th.
+
+### D-78 · A Phase 8 check was asserting a fixture, and Phase 9 exposed it
+
+`verify-phase8.sh` asserted `alerts.backupIsStale === "true"` as a **constant**.
+That passed for one reason only: no backup had ever run, so the flag was
+permanently true. The moment Phase 9 took a real backup the check failed —
+with nothing broken.
+
+It now derives the expectation from `/api/health`'s `lastLocalBackupAt` and
+§13.2's 36-hour rule, so it tests the **rule** rather than the state the
+database happened to be in.
+
+**The mutation story here is worth more than the fix.** Breaking
+`backupIsStale` to a hard `false` still passed, because with a fresh backup
+both sides computed "not stale" and `false === false`. Only after backdating
+the `BackupRun` rows to 72 hours did the same mutation fail correctly.
+
+That is **D-69's lesson repeating**: a green result under mutation means either
+a weak check or a fixture that makes the mutation unobservable, and you cannot
+tell which without looking. Check the fixture before rewriting the test. It is
+also a caution about acceptance scripts generally — a check that hardcodes an
+expected value ages into a check that tests nothing, and it does so silently.
+
+---
+
+## What Phase 9 built
+
+```
+src/server/services/
+  backup.ts        §13.1 archive creation (pg_dump -Fc + data tar + manifest),
+                   §13.2 retention with the never-delete-to-zero floor (D-73),
+                   §13.4's escalation ladder and copy log. offsiteLevelFor /
+                   offsiteMessageFor are pure, so the boundaries are cheap to
+                   test.
+  maintenance.ts   The remaining §11 jobs: session + idempotency-key cleanup
+                   (closes D-16), low-stock scan, weekly nag, and
+                   syncBackupAlerts (D-75). Alerts go to SystemAlert, which the
+                   Phase 3 dashboard already renders.
+  audit-log.ts     §4.16's reader. Owner-only, read-only, cursor-paged (D-76).
+  settings.ts      TOUCHED: + updateBusinessDayStartHour (D-77).
+
+src/server/jobs/
+  scheduler.ts     TOUCHED: all six §11 jobs now registered. `register()`
+                   contains errors so one failing job cannot take the
+                   scheduler — and therefore the backup — down.
+
+src/app/(app)/settings/backups/
+  page.tsx + backup-screen.tsx   §13.4's three controls. The red state has no
+                   dismiss path, by design (D-72).
+
+src/app/(app)/settings/audit-log/page.tsx    §4.16 viewer.
+src/app/(app)/settings/system/business-day-hour-form.tsx   §8.10 (D-77).
+
+src/app/api/
+  backups/route.ts                 GET status/archives/runs · POST take one
+  backups/download/route.ts        One-tap export. STREAMED, not buffered.
+  backups/offsite-copy/route.ts    The copy log
+  audit-log/route.ts               GET only
+  settings/business-day-start-hour/route.ts
+  health/route.ts                  TOUCHED: + backup freshness (§13.4).
+                   Unauthenticated, so it reports timestamps only — never an
+                   archive filename.
+
+scripts/
+  backup.ts        `npm run backup` — same service the cron calls, not a copy.
+  restore.sh       §13.3. Checksum, --force guard, and the manifest row-count
+                   DIFF that makes a partial restore fail loudly.
+  verify-phase9.sh 76 checks.
+
+Dockerfile         TOUCHED: postgresql-client-16 from PGDG (D-74).
+next.config.ts     TOUCHED: three more modules excluded from the edge bundle
+                   (D-47's list). `reports` is the one that matters — it
+                   reaches argon2 and stops the dev server booting outright.
+```
+
+**No migration.** `BackupRun` and `AppSetting` have existed since the Phase 0
+schema, so PRD §6 still matches `prisma/schema.prisma`.
+
+**§16 criterion:**
+
+| Criterion | Status |
+|---|---|
+| A full restore reproduces the system exactly, verified against the manifest | ✅ **mechanically, on this machine.** `verify-phase9.sh` takes a real backup, restores it into a scratch database and compares all 32 tables against the manifest — 1711 sales, 200 customers, 496 attendance rows, 12 photo files, all exact. Three mutations confirm the script goes red, including §13.3's own worked case: a restore quietly missing 90 sales fails loudly and names the shortfall. |
+| **…and you have personally rehearsed it once, start to finish** | ⬜ **OUTSTANDING — this one is the owner's.** |
+
+**Why Phase 9 is 🟨 and not ✅.** §16's acceptance has two halves and the second
+is explicitly a human act: *"a full restore onto a clean machine … and you have
+personally rehearsed it once, start to finish."* Everything provable from a
+shell has been proven, but the rehearsal on a **second physical machine** —
+which is what proves the archive is portable, the `.env` is reproducible, and
+the owner can actually do it under pressure — has not happened. It is also, per
+§15's manual checklist, a go-live requirement.
+
+Phases 4 and 6 are waiting on their own device passes. **All three are hands-on
+and could be done in one sitting.**
+
+---
+
 ## What Phase 8 built
 
 ```
@@ -1994,7 +2261,7 @@ APIs: `/api/auth/{login,logout,me,change-password,[...all]}`,
 ```bash
 npm run typecheck                 # clean
 npm run lint                      # clean
-npm test                          # 167 tests (D-26) — safe to re-run, no residue
+npm test                          # 180 tests (D-26) — safe to re-run, no residue
 docker compose build              # succeeds (catches Linux case-sensitivity)
 bash scripts/verify-phase1.sh     # 21/21 acceptance checks, needs npm run dev
 bash scripts/verify-phase2.sh     # 30/30 acceptance checks, needs npm run dev
@@ -2004,7 +2271,14 @@ bash scripts/verify-phase5.sh     # 42 checks, needs npm run dev
 bash scripts/verify-phase6.sh     # 41 checks, needs npm run dev
 bash scripts/verify-phase7.sh     # 44 checks, needs npm run dev
 bash scripts/verify-phase8.sh     # 93 checks, needs npm run dev AND --demo data
+bash scripts/verify-phase9.sh     # 76 checks, needs npm run dev
 ```
+
+**`verify-phase9.sh` writes.** It creates real archives under `backups/`, and
+creates and drops a scratch database called `marblehouse_verify9`. It never
+touches `marblehouse_dev`'s data, and it restores the copy log to "now" before
+finishing. It needs `pg_dump`, `pg_restore`, `psql` and `createdb` on PATH —
+Homebrew Postgres 16 provides all four on this Mac.
 
 **`verify-phase8.sh` needs the demo dataset** (`npm run db:seed -- --demo`) and
 the Phase 8 test accounts. It reads only — it creates no rows of its own — so it
@@ -2084,8 +2358,12 @@ OWNER can merge and the merged caches reconcile to the moved ledgers.
 | ~~Expense screen has no filters~~ | **Built — D-69.** Date presets, custom range, category chips, shop, and §8.8's "load more". |
 | Report pagination | §9's tabular reports return every row for the period. `customerReport` caps at 200 by construction, but sales-by-day over a year is 365 rows in one response. NF-4 wants 50-row pages on list screens. Not urgent at three branches; revisit before the pilot widens. |
 | ~~`Shop.dayStartHour` still exists~~ | **Resolved same day — see D-18.** Dropped; the cutoff is global at 04:00. |
-| No UI for the business-day hour | §8.10 puts it under Owner → System. It is set by seed/migration only. Build the screen in Phase 9 with the other owner settings; changing it needs a warning that it does not restamp history (D-18). |
-| Idempotency keys are never deleted | D-16. The cleanup job is Phase 9. Rows accumulate one per mutation until then; harmless but unbounded. |
+| ~~No UI for the business-day hour~~ | **Built — D-77.** Owner → System, two-step with a warning that it does not restamp history. |
+| ~~Idempotency keys are never deleted~~ | **Fixed — D-16 closed.** The §11 cleanup job runs at 04:00 and reclaims keys past the 24 h TTL. |
+| Backups are unencrypted | **Owner decision, 8 Aug 2026 — D-71.** Deliberate, not an oversight. Revisit if archives ever leave the owner's own control. |
+| No automatic off-machine copy | **Owner decision, 8 Aug 2026 — D-72.** No USB copy and no rclone. The manual copy log plus the escalating alert are therefore the ONLY protection against total loss; treat them as load-bearing. |
+| Backup alerts have no email/Telegram | §13.4 mentions notification "if you later configure email or Telegram". Nothing is wired, and §5.4/D-1 keep every email path deliberately disabled. The dashboard alert is the whole channel. Worth revisiting only if the owner stops opening the dashboard daily. |
+| `verify-phase9.sh` restores locally, not to a second machine | The script proves the archive restores and matches its manifest, but into a scratch database on the SAME Mac. §16's rehearsal — and §15's manual checklist — want a second physical machine. That is the outstanding Phase 9 gate. |
 | Void reason uses `window.prompt` | Functional and accessible, but ugly on a tablet and it cannot enforce the 3-character minimum client-side (the server does). Replace with a proper dialog in Phase 10's polish pass. **The Phase 5 transfer-cancel reason uses the same prompt and should be replaced at the same time.** |
 | Transfers are single-line in the UI | The API accepts up to 100 lines per transfer and the service handles them; the dispatch form sends one prize at a time. Multi-line dispatch is a UI change only — no service or schema work. Worth doing in Phase 10 if branches move mixed boxes often. |
 | Opname counts every stocked item | `startOpname` accepts `prizeItemIds` to count a subset, but the screen always starts a full count. §8.7 says "select items or all". Partial counts are supported server-side; the picker is not built. |

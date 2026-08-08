@@ -294,7 +294,23 @@ DASH_O=$(j -b "$O" "$B/api/dashboard")
 chk "owner dashboard is role-shaped OWNER" "$(printf '%s' "$DASH_O" | q '.role')" "OWNER"
 chk "  carries the §8.3 liability row" "$(printf '%s' "$DASH_O" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).liability.estimatedTicketLiability!==null?'yes':'no'")" "yes"
 chk "  carries the alerts panel" "$(printf '%s' "$DASH_O" | node -pe "typeof JSON.parse(require('fs').readFileSync(0,'utf8')).alerts.lowStockCount==='number'?'yes':'no'")" "yes"
-chk "  flags a missing backup as stale (§8.3, red past 36h)" "$(printf '%s' "$DASH_O" | q '.alerts.backupIsStale')" "true"
+# §8.3's backup staleness flag, checked against REALITY rather than asserted as
+# a constant. This originally hardcoded `true`, which passed only because no
+# backup had ever run — Phase 9 then made real backups and the check failed
+# without anything being broken. It was asserting a fixture, not the rule.
+#
+# The rule (§13.2): stale iff the last SUCCESSFUL backup is older than 36 h, or
+# there has never been one. Both branches are derived from the same source the
+# dashboard reads, so this now goes red for a real regression in either
+# direction.
+BK_LAST=$(j "$B/api/health" | q '.backup.lastLocalBackupAt')
+if [ -z "$BK_LAST" ]; then
+  EXPECT_STALE=true
+else
+  EXPECT_STALE=$(node -pe "((Date.now()-new Date('$BK_LAST').getTime())/3.6e6) > 36 ? 'true' : 'false'")
+fi
+chk "  backup staleness flag matches the 36h rule (§8.3)" \
+  "$(printf '%s' "$DASH_O" | q '.alerts.backupIsStale')" "$EXPECT_STALE"
 chk "  30-day trend is present" "$(printf '%s' "$DASH_O" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).trend30d.length>0?'yes':'no'")" "yes"
 
 DASH_M=$(j -b "$M" "$B/api/dashboard")

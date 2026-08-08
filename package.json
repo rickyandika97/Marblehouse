@@ -16,7 +16,8 @@
     "db:reset": "prisma migrate reset",
     "test": "vitest run",
     "test:watch": "vitest",
-    "balances:reconcile": "tsx --env-file=.env scripts/reconcile-balances.ts"
+    "balances:reconcile": "tsx --env-file=.env scripts/reconcile-balances.ts",
+    "backup": "tsx --env-file=.env scripts/backup.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

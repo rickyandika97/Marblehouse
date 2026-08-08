@@ -1,5 +1,9 @@
 import { requireOwnerPage } from "@/server/auth/page-guard";
-import { getTicketAwardReasonThreshold } from "@/server/services/settings";
+import {
+  getBusinessDayStartHour,
+  getTicketAwardReasonThreshold,
+} from "@/server/services/settings";
+import { BusinessDayHourForm } from "./business-day-hour-form";
 import { TicketAwardThresholdForm } from "./ticket-award-threshold-form";
 
 export const metadata = { title: "System settings · Marblehouse" };
@@ -16,6 +20,7 @@ export default async function SystemSettingsPage() {
         </p>
       </div>
       <TicketAwardThresholdForm initial={await getTicketAwardReasonThreshold()} />
+      <BusinessDayHourForm initial={await getBusinessDayStartHour()} />
     </div>
   );
 }

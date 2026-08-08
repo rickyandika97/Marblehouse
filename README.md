@@ -9,11 +9,18 @@ through a Cloudflare Tunnel. No cloud platform, no Vercel.
 - **Full specification:** [`docs/PRD.md`](docs/PRD.md)
 - **Rules for the coding agent:** [`CLAUDE.md`](CLAUDE.md)
 - **Status:** Phases 0–3, 5, 7 and 8 complete on a development machine.
-  Phases 4 (prizes, FIFO inventory, redemption) and 6 (attendance) are built
-  and verified on dev — engines, APIs and screens — but **not signed off**:
-  each still needs the on-device acceptance pass. Phase 6's is the most
-  important, because the camera and geolocation prompts genuinely cannot be
-  tested any other way. Phase 9 (backup and restore) is next.
+  Phases 4 (prizes, FIFO inventory, redemption), 6 (attendance) and 9 (backup
+  and restore) are built and verified on dev — engines, APIs and screens — but
+  **not signed off**. Each needs a hands-on acceptance pass:
+
+  | Phase | What is still needed |
+  |---|---|
+  | 4 | A staff member using the redemption flow on the actual tablet |
+  | 6 | A clock-in on a real device, location granted **and** denied — the camera and geolocation prompts genuinely cannot be tested any other way |
+  | 9 | **A full restore onto a second machine**, rehearsed start to finish |
+
+  All three are hands-on and can be done in one sitting. Phase 10 (polish and
+  pilot) is next after that.
 
 ---
 
@@ -151,6 +158,48 @@ Migrations apply on start. **Never create a migration on this machine** — make
 them on the Mac and commit them.
 
 ---
+
+## Backups — and the one thing you must actually do
+
+Backups run automatically at **02:00** into `backups/`, keeping the last 7.
+Each archive holds a full database dump, your attendance photos and receipts,
+and a manifest with per-table row counts and checksums.
+
+```bash
+npm run backup            # take one now, from the shell
+```
+
+**The automatic part is not the part that saves you.** The backups sit on the
+same machine as the database, so a dead disk takes both. Copying an archive off
+the machine is manual, by your own decision — so the app makes it one tap and
+nags you about it:
+
+1. **Settings → Backups → Download latest backup.**
+2. Copy it to a USB drive or cloud storage.
+3. Tap **"I copied this off-machine."**
+
+The dashboard turns amber after 7 days without that tap and **red after 14**,
+and the red warning cannot be dismissed. That is deliberate — it is the only
+thing standing between you and losing every sale, balance and attendance record
+the business has.
+
+> Archives are **not encrypted** and contain customer names, phone numbers and
+> password hashes. Keep the copies somewhere you control. (This was a
+> deliberate choice — see BUILD-LOG D-71 — and can be turned on later.)
+
+### Restoring
+
+```bash
+./scripts/restore.sh backups/marblehouse-2026-08-03-0200.tar.gz
+```
+
+It verifies the checksum, **refuses to overwrite a database that already has
+data** unless you pass `--force`, and finishes by printing a row-by-row
+comparison against the manifest. If anything is short, it fails loudly rather
+than leaving you with a restore that quietly lost 5% of your sales.
+
+**Rehearse this once on a second machine before you go live.** A backup you
+have never restored is a backup you are guessing about.
 
 ## Layout
 

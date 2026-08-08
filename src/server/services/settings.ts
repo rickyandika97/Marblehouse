@@ -52,6 +52,10 @@ export const updateTicketAwardReasonThresholdSchema = z.object({
   threshold: z.number().int().min(1).max(10_000_000),
 });
 
+export const updateBusinessDayStartHourSchema = z.object({
+  hour: z.number().int().min(0).max(23),
+});
+
 /**
  * Read the global business-day start hour.
  *
@@ -118,6 +122,59 @@ export async function updateTicketAwardReasonThreshold(
     tx
   );
   return { threshold };
+}
+
+/**
+ * Change the global business-day cutoff (§8.10, §4.2).
+ *
+ * **This is a policy decision, not a tuning knob, and the UI says so.**
+ * `businessDate` is stamped once when a record is created and is NEVER
+ * recalculated (D-18). Changing the hour therefore puts a seam in the data:
+ * records either side of the change are filed by different rules, and no
+ * report will ever tell you which is which.
+ *
+ * The change is audit-logged with both values so that seam is at least
+ * explicable later — "revenue for the 9th looks odd" has an answer if someone
+ * moved the cutoff on the 9th.
+ *
+ * Deliberately NOT offered: a "restamp history" option. Recomputing
+ * `businessDate` across existing sales, ledgers, attendance and expenses would
+ * silently rewrite every historical report the owner has already read.
+ */
+export async function updateBusinessDayStartHour(
+  actor: Actor,
+  hour: number,
+  tx: Prisma.TransactionClient,
+  meta: { ipAddress?: string | null } = {}
+): Promise<{ hour: number }> {
+  if (actor.role !== "OWNER") {
+    throw forbidden("Only the owner can change the business-day start hour.");
+  }
+
+  const before = await tx.appSetting.findUnique({
+    where: { key: BUSINESS_DAY_START_HOUR_KEY },
+  });
+  const previous = coerceHour(before?.value);
+
+  await tx.appSetting.upsert({
+    where: { key: BUSINESS_DAY_START_HOUR_KEY },
+    update: { value: hour },
+    create: { key: BUSINESS_DAY_START_HOUR_KEY, value: hour },
+  });
+  await writeAudit(
+    actor,
+    {
+      entity: "AppSetting",
+      entityId: BUSINESS_DAY_START_HOUR_KEY,
+      action: "UPDATE",
+      before: { hour: previous },
+      after: { hour },
+      ipAddress: meta.ipAddress ?? null,
+    },
+    tx
+  );
+
+  return { hour };
 }
 
 /**

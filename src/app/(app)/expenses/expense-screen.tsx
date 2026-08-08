@@ -1,7 +1,8 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Loader2, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -41,12 +42,15 @@ export function ExpenseScreen({
   shops,
   categories,
   initialExpenses,
+  nextCursor,
 }: {
   currentShopId: string;
   shops: { id: string; name: string }[];
   categories: CategoryOption[];
   initialExpenses: ExpenseRow[];
   canManageCategories: boolean;
+  /** Opaque continuation from `listExpenses`; null when this is the last page. */
+  nextCursor?: string | null;
 }) {
   const router = useRouter();
 
@@ -201,8 +205,11 @@ export function ExpenseScreen({
       <section className="space-y-2">
         <h2 className="font-medium">Recent</h2>
         {initialExpenses.length === 0 ? (
+          // Deliberately does not say "for this branch" — with a filter applied
+          // that would be wrong, and it is the case where a puzzled reader most
+          // needs the message to be accurate.
           <p className="rounded-xl border p-4 text-sm text-muted-foreground">
-            No expenses recorded for this branch yet.
+            No expenses match. Try a wider date range or clear the filters.
           </p>
         ) : (
           <ul className="space-y-2">
@@ -225,7 +232,34 @@ export function ExpenseScreen({
             ))}
           </ul>
         )}
+
+        {nextCursor && <LoadMore cursor={nextCursor} />}
       </section>
     </div>
+  );
+}
+
+/**
+ * §8.8's paging. NF-4 caps every list at 50 rows, so a branch with a year of
+ * expenses needs a way to reach the rest.
+ *
+ * A link rather than a fetch: it carries the CURRENT filters forward by
+ * building on the existing search params, so paging inside a filtered view
+ * stays inside that view. Appending a cursor to a bare path would silently
+ * drop the filters and show the wrong second page.
+ */
+function LoadMore({ cursor }: { cursor: string }) {
+  const searchParams = useSearchParams();
+  const params = new URLSearchParams(searchParams.toString());
+  params.set("cursor", cursor);
+
+  return (
+    <Link
+      href={`/expenses?${params}`}
+      scroll={false}
+      className="flex min-h-11 w-full items-center justify-center rounded-xl border text-sm font-medium hover:bg-muted"
+    >
+      Load more
+    </Link>
   );
 }

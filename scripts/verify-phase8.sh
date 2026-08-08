@@ -371,6 +371,72 @@ GHOST_MGR=$(c -b "$M" "$B/reports/sales?shopId=no-such-shop")
 chk "  and a MANAGER gets 403 first, so ids cannot be probed" "$GHOST_MGR" "403"
 
 # ═════════════════════════════════════════════════════════════════════════
+printf "\n════ Dashboard shop picker (§8.3) and expense filters (§8.8) ════\n"
+# ═════════════════════════════════════════════════════════════════════════
+
+# Money renders with a non-breaking space inside the currency format, so pull
+# the figure out of the element rather than grepping for "Rp ".
+money_on() { j -b "$1" "$B$2" | grep -oE 'tabular-nums">[^<]+' | head -1 | sed 's/.*">//'; }
+
+DASH_OWNER_HTML=$(j -b "$O" "$B/dashboard")
+chk "an OWNER gets the §8.3 shop picker" \
+  "$(printf '%s' "$DASH_OWNER_HTML" | grep -c 'All shops')" "1"
+# §3.4: a manager is locked to one shop, so the control would be a lie.
+chk "a MANAGER gets no dashboard shop picker (§3.4)" \
+  "$(j -b "$M" "$B/dashboard" | grep -c 'All shops')" "0"
+
+DASH_ALL=$(money_on "$O" "/dashboard")
+DASH_ONE=$(money_on "$O" "/dashboard?shopId=$FIRST_SHOP")
+if [ "$DASH_ALL" = "$DASH_ONE" ]; then
+  fail "the dashboard shop picker changes the figure" "both $DASH_ALL"
+else
+  pass "the dashboard shop picker changes the figure"
+fi
+chk "  and the header says which it is showing" \
+  "$(j -b "$O" "$B/dashboard?shopId=$FIRST_SHOP" | grep -c 'One shop, today')" "1"
+
+# ── Expenses (§8.8): date range, category, shop, running total, paging ──
+EXP_CAT=$(sql "SELECT id FROM \"ExpenseCategory\" WHERE name = 'Rent' LIMIT 1")
+
+chk "the expense filter bar renders" \
+  "$(j -b "$O" "$B/expenses" | grep -c 'Last month')" "1"
+
+EXP_ALL=$(money_on "$O" "/expenses?from=$FROM&to=$TO")
+EXP_CATONLY=$(money_on "$O" "/expenses?from=$FROM&to=$TO&categoryId=$EXP_CAT")
+if [ "$EXP_ALL" = "$EXP_CATONLY" ]; then
+  fail "the expense CATEGORY filter changes the total" "both $EXP_ALL"
+else
+  pass "the expense category filter changes the total"
+fi
+
+EXP_NARROW=$(money_on "$O" "/expenses?from=$TO&to=$TO")
+if [ "$EXP_ALL" = "$EXP_NARROW" ]; then
+  fail "the expense DATE filter changes the total" "both $EXP_ALL"
+else
+  pass "the expense date filter changes the total"
+fi
+
+EXP_ONE_SHOP=$(money_on "$O" "/expenses?from=$FROM&to=$TO&shopId=$FIRST_SHOP")
+if [ "$EXP_ALL" = "$EXP_ONE_SHOP" ]; then
+  fail "the expense SHOP filter changes the total" "both $EXP_ALL"
+else
+  pass "the expense shop filter changes the total"
+fi
+
+# The running total must cover the whole filtered range, not just the page —
+# it comes from the same WHERE clause as the rows (§8.8).
+SQL_EXP_TOTAL=$(sql "SELECT COALESCE(SUM(amount),0)::text FROM \"Expense\" WHERE \"isDeleted\"=false AND \"businessDate\" BETWEEN '$FROM' AND '$TO'")
+API_EXP_TOTAL=$(j -b "$O" "$B/api/expenses?from=$FROM&to=$TO" | q ".total")
+chk "the expense running total matches independent SQL" "$API_EXP_TOTAL" "${SQL_EXP_TOTAL%.00}"
+
+# A date from the URL bar can be anything; a page has no handleRoute, so an
+# unhandled throw is a 500 rather than a usable screen (D-68's lesson).
+for BAD in "from=banana" "from=2026-02-31&to=$TO" "from=$TO&to=$FROM" "categoryId=nope" "cursor=garbage"; do
+  CODE=$(c -b "$O" "$B/expenses?$BAD")
+  chk "  /expenses?$BAD does not 500" "$CODE" "200"
+done
+
+# ═════════════════════════════════════════════════════════════════════════
 printf "\n════ CSV export mechanics (§7.8) ════\n"
 # ═════════════════════════════════════════════════════════════════════════
 

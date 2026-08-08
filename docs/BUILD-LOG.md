@@ -1454,6 +1454,65 @@ would hide a real bug.
 Verified by 14 new checks in `verify-phase8.sh` and 2 new unit tests, with the
 manager "All shops" check confirmed to go red under mutation.
 
+### D-69 · Dashboard shop picker and expense filters — and a test that passed for the wrong reason
+
+**Owner request, 8 Aug 2026.** Closes two of the three debts D-68 left open.
+
+**The dashboard picker (§8.3) is a SEPARATE component from the report filters.**
+`ReportFilters` carries a date range; the dashboard has no range to set —
+§8.3 fixes its periods (today, this month, last 30 days). Reusing it would have
+rendered date inputs that do nothing, which teaches people the controls are
+unreliable. `dashboard/shop-picker.tsx` is owner-only and returns null below
+two shops, because one shop is not a filter.
+
+**The expense category chips are NOT the add form's category chips.** They look
+identical and mean opposite things: one asks *"show me Rent"*, the other arms
+the form to *record* a Rent expense. Sharing state would mean choosing a
+category to record silently re-filtered the list out from under you. Separate
+components, separate state — deliberately.
+
+**Expense shop resolution has three cases**, and the middle one is the
+interesting one:
+
+| URL | Shows |
+|---|---|
+| explicit `?shopId=` | that shop |
+| any *other* filter present | all the actor's shops |
+| no filters at all | the work-session shop |
+
+Someone filtering by "Rent" across the business expects every branch's rent,
+not just the branch they happen to be sitting in. `listExpenses` still scopes a
+manager to their assignments in SQL, so this widens the *view*, never the
+*permission*.
+
+§8.8's **"load more"** is now wired to the `nextCursor` the service has always
+returned. It is a link that builds on the current search params, so paging
+inside a filtered view stays inside it — appending a cursor to a bare path
+would silently drop the filters and show the wrong second page.
+
+Both screens sanitise dates from the URL the way D-68 taught: malformed,
+impossible (`2026-02-31`) and inverted ranges all resolve rather than 500.
+
+#### A mutation that did NOT go red, and why that was still worth knowing
+
+The check *"a MANAGER gets no dashboard shop picker"* passed even after the
+component's `isOwner` guard was deliberately removed. Not a broken check — a
+check with **three** independent guards behind it:
+
+1. the page passes `shops: []` for a non-owner,
+2. the component returns null below two shops,
+3. `DashboardView` renders it only when `isOwner`.
+
+The test account was assigned to one shop, so guard 2 alone was enough. Only
+after assigning that manager a second shop **and** removing guards 1 and 3 did
+the check go red — which it then did, correctly.
+
+**The lesson is not "the test was wrong".** It is that a fixture can make a
+mutation unobservable, and a green result under mutation means *either* a weak
+check *or* a redundant guard — you cannot tell which without looking. D-62 was
+the first case; this is the second, with the opposite conclusion. Check the
+fixture before rewriting the test.
+
 ---
 
 ## What Phase 8 built
@@ -1487,6 +1546,10 @@ src/app/(app)/reports/
 
 src/app/(app)/reports/report-filters.tsx        D-68's filter bar: presets,
                   custom dates, shop picker. Client component; navigates by URL.
+src/app/(app)/dashboard/shop-picker.tsx         D-69. §8.3's All-shops/one-shop
+                  selector. Separate from the report filters — no date range.
+src/app/(app)/expenses/expense-filters.tsx      D-69. §8.8's range, category and
+                  shop filters. Its chips are NOT the add form's chips.
 
 src/server/auth/page-guard.ts   TOUCHED: asPageError now maps NOT_FOUND too
                   (D-68), not only FORBIDDEN.
@@ -1508,7 +1571,7 @@ D-33's slug rule is not caught by typecheck or lint.
 
 | Criterion | Status |
 |---|---|
-| Every metric in §9 matches a hand-calculation against the demo dataset | ✅ `verify-phase8.sh` recomputes revenue, transactions, unique customers, walk-ins, payment split, prize expense, shrinkage, operating expenses, gross and net profit, tickets awarded/redeemed, outstanding marbles and tickets, estimated liability, stock valuation, late count and late rate — all in **independent SQL** that never calls the engine. 65/65 pass. Four mutations confirm the script goes red (D-62's fourth is the one that mattered). |
+| Every metric in §9 matches a hand-calculation against the demo dataset | ✅ `verify-phase8.sh` recomputes revenue, transactions, unique customers, walk-ins, payment split, prize expense, shrinkage, operating expenses, gross and net profit, tickets awarded/redeemed, outstanding marbles and tickets, estimated liability, stock valuation, late count and late rate — all in **independent SQL** that never calls the engine. 79/79 pass. Mutations confirm the script goes red (D-62's fourth is the one that mattered). |
 
 Also verified: a plain manager sees no cost value or cost column on **any**
 report or export; staff are refused on all sixteen endpoint/export combinations;
@@ -1892,7 +1955,7 @@ bash scripts/verify-phase4.sh     # 35 checks, needs npm run dev
 bash scripts/verify-phase5.sh     # 42 checks, needs npm run dev
 bash scripts/verify-phase6.sh     # 41 checks, needs npm run dev
 bash scripts/verify-phase7.sh     # 44 checks, needs npm run dev
-bash scripts/verify-phase8.sh     # 65 checks, needs npm run dev AND --demo data
+bash scripts/verify-phase8.sh     # 79 checks, needs npm run dev AND --demo data
 ```
 
 **`verify-phase8.sh` needs the demo dataset** (`npm run db:seed -- --demo`) and
@@ -1968,8 +2031,8 @@ OWNER can merge and the merged caches reconcile to the moved ledgers.
 | ~~Dashboard screen~~ | **Built in Phase 8.** §8.3's five rows, §8.4's stripped manager variant. |
 | Nine §9 report screens not built | D-66. Sales by Staff, Sales by Shop, Payment Method Breakdown, Customer Spend Leaderboard, Prize Redemption, Shrinkage, and Expense Report all have a working service **and** a CSV export today — they need only a page. §8.9's attendance heatmap and weekly trend need a chart (use Recharts there, not the dashboard's inline SVG — D-67). No service or schema work in any of them. |
 | ~~No date-range picker on report screens~~ | **Built — D-68.** Presets plus custom dates and a shop picker, shared across all seven screens via `ReportShell`. |
-| No shop filter control on the owner **dashboard** | §8.3 specifies an `All shops` / single-shop selector. `/dashboard?shopId=` works and is permission-checked, but the *dashboard* has no picker — D-68 added it to the report screens only. `filterPropsFor()` in `report-shell.tsx` is reusable; this is a small job. |
-| Expense screen still has no filters | §8.8 asks for date-range and category filters plus a running total on `/expenses`. D-68's control is built for the reports' `from/to/shopId` shape and does not cover a category chip; adapting it is the obvious route. |
+| ~~No shop filter control on the owner dashboard~~ | **Built — D-69.** Owner-only, hidden below two shops. |
+| ~~Expense screen has no filters~~ | **Built — D-69.** Date presets, custom range, category chips, shop, and §8.8's "load more". |
 | Report pagination | §9's tabular reports return every row for the period. `customerReport` caps at 200 by construction, but sales-by-day over a year is 365 rows in one response. NF-4 wants 50-row pages on list screens. Not urgent at three branches; revisit before the pilot widens. |
 | ~~`Shop.dayStartHour` still exists~~ | **Resolved same day — see D-18.** Dropped; the cutoff is global at 04:00. |
 | No UI for the business-day hour | §8.10 puts it under Owner → System. It is set by seed/migration only. Build the screen in Phase 9 with the other owner settings; changing it needs a warning that it does not restamp history (D-18). |

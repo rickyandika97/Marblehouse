@@ -13,6 +13,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatAmount, formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import type { Dashboard } from "@/server/services/dashboard";
+import { DashboardShopPicker } from "./shop-picker";
 
 /**
  * Dashboard presentation (§8.3, §8.4).
@@ -23,20 +24,31 @@ import type { Dashboard } from "@/server/services/dashboard";
  * component never decides who may see what — that was decided server-side
  * before the data reached it (§7.5).
  */
-export function DashboardView({ dashboard }: { dashboard: Dashboard }) {
+export function DashboardView({
+  dashboard,
+  shops = [],
+  shopId,
+}: {
+  dashboard: Dashboard;
+  shops?: { id: string; name: string }[];
+  shopId?: string;
+}) {
   const isOwner = dashboard.role === "OWNER";
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {isOwner
-            ? dashboard.isAllShops
-              ? "All shops, today."
-              : "One shop, today."
-            : `${dashboard.shopName}, today.`}
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {isOwner
+              ? dashboard.isAllShops
+                ? "All shops, today."
+                : "One shop, today."
+              : `${dashboard.shopName}, today.`}
+          </p>
+        </div>
+        {isOwner && <DashboardShopPicker shopId={shopId} shops={shops} />}
       </div>
 
       {/* ── Row 1: today ── */}

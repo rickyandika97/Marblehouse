@@ -1,4 +1,5 @@
 import { requireManagerOrOwnerPage, asPageError } from "@/server/auth/page-guard";
+import { selectableShops } from "@/server/auth/context";
 import { getDashboard } from "@/server/services/dashboard";
 import { DashboardView } from "./dashboard-view";
 
@@ -30,5 +31,11 @@ export default async function DashboardPage({
     asPageError
   );
 
-  return <DashboardView dashboard={dashboard} />;
+  // Only an owner gets the picker (§8.3). A manager is locked to one shop
+  // (§3.4), so fetching options for them would be work with nothing to show.
+  const shops = (await selectableShops(actor)).map((s) => ({ id: s.id, name: s.name }));
+
+  return (
+    <DashboardView dashboard={dashboard} shops={shops} shopId={shopId} />
+  );
 }

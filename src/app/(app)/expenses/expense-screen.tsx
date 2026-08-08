@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
+import { EditExpense } from "./edit-expense";
 
 /**
  * The §8.8 expense screen: a list with a running total, and an add form.
@@ -43,6 +44,7 @@ export function ExpenseScreen({
   categories,
   initialExpenses,
   nextCursor,
+  canEdit = false,
 }: {
   currentShopId: string;
   shops: { id: string; name: string }[];
@@ -51,6 +53,13 @@ export function ExpenseScreen({
   canManageCategories: boolean;
   /** Opaque continuation from `listExpenses`; null when this is the last page. */
   nextCursor?: string | null;
+  /**
+   * OWNER only — edit and delete are owner-only in the service (§7.6).
+   * Hiding the control is NOT the permission: `updateExpense` and
+   * `deleteExpense` both re-check the role server-side. This only avoids
+   * offering a manager a button that would 403.
+   */
+  canEdit?: boolean;
 }) {
   const router = useRouter();
 
@@ -228,6 +237,7 @@ export function ExpenseScreen({
                 <p className="shrink-0 font-semibold tabular-nums">
                   {formatMoney(e.amount)}
                 </p>
+                {canEdit && <EditExpense expense={e} categories={categories} />}
               </li>
             ))}
           </ul>

@@ -119,6 +119,7 @@ export default async function ExpensesPage({
         initialExpenses={listing.expenses}
         canManageCategories={actor.role === "OWNER"}
         nextCursor={listing.nextCursor}
+        canEdit={actor.role === "OWNER"}
       />
     </div>
   );

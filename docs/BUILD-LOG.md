@@ -1513,6 +1513,51 @@ check *or* a redundant guard — you cannot tell which without looking. D-62 was
 the first case; this is the second, with the opposite conclusion. Check the
 fixture before rewriting the test.
 
+### D-70 · Expense edit: what is editable, and the first real reason dialog
+
+**Owner decisions, 8 Aug 2026.** Closes the last §8.8 UI gap. Receipt upload was
+explicitly deferred — the endpoint and storage exist and are tested (D-57), and
+the owner does not need the screen yet.
+
+**Category, amount and note are editable. Shop and business date are not.**
+That is `updateExpenseSchema`'s existing shape, and the owner confirmed it
+should stay. A cost recorded against the wrong branch or the wrong reporting day
+is not a typo — it is a different event. Silently moving the figure would change
+a report someone may already have read, and §4.2 stamps `businessDate` once and
+never recalculates it (D-18). **The fix for a wrong shop or date is
+delete-with-a-reason and re-record**, which leaves both rows in the audit trail
+and makes the correction visible rather than invisible.
+
+The edit dialog says so on its face — *"the branch and date cannot be changed"* —
+rather than leaving it to be discovered as two missing fields.
+
+**The delete reason is a real dialog, not `window.prompt`.** Three other sites
+(sale void, transfer cancel, attendance excuse) still use the prompt and are due
+a Phase 10 sweep. The owner chose to build this one properly rather than add a
+fourth instance of a known debt: **`edit-expense.tsx` is the shape that sweep
+should copy.** The prompt cannot enforce the server's 3-character minimum, so a
+short reason there costs a round trip and an error toast; this one disables the
+button until the reason is long enough.
+
+**`canEdit` is not a permission.** `updateExpense` and `deleteExpense` both
+throw `FORBIDDEN` for a non-owner regardless of what the UI renders — verified
+by calling both endpoints directly as a manager (403 each). The prop only avoids
+offering a button that would fail.
+
+Verified end to end on the demo data: an edit changes amount and category and
+writes an audit row carrying the **old** amount; a 2-character reason is 422; a
+real reason soft-deletes, the row survives flagged `isDeleted`, the reason lands
+in the audit log, and the expense leaves the list and the totals. Two mutations
+confirm the checks go red — dropping the audit write, and showing the control to
+managers. The audit one was caught only by **D-43's empty-value guard**; a naive
+comparison would have matched `""` against `""` and passed.
+
+**One counting trap worth recording.** `grep -c` counts *lines*, not matches,
+and this app renders its HTML on one line — so `grep -c 'aria-label="Edit '`
+returned `1` for a page with nine edit buttons. Use `grep -o … | wc -l`. The
+same mistake would understate any rendered-HTML assertion to exactly 1 or 0,
+which looks plausible enough to accept.
+
 ---
 
 ## What Phase 8 built
@@ -1550,6 +1595,9 @@ src/app/(app)/dashboard/shop-picker.tsx         D-69. §8.3's All-shops/one-shop
                   selector. Separate from the report filters — no date range.
 src/app/(app)/expenses/expense-filters.tsx      D-69. §8.8's range, category and
                   shop filters. Its chips are NOT the add form's chips.
+src/app/(app)/expenses/edit-expense.tsx         D-70. Owner-only edit + soft
+                  delete. THE reference shape for a reason dialog — Phase 10's
+                  window.prompt sweep should copy this, not invent one.
 
 src/server/auth/page-guard.ts   TOUCHED: asPageError now maps NOT_FOUND too
                   (D-68), not only FORBIDDEN.
@@ -1571,7 +1619,7 @@ D-33's slug rule is not caught by typecheck or lint.
 
 | Criterion | Status |
 |---|---|
-| Every metric in §9 matches a hand-calculation against the demo dataset | ✅ `verify-phase8.sh` recomputes revenue, transactions, unique customers, walk-ins, payment split, prize expense, shrinkage, operating expenses, gross and net profit, tickets awarded/redeemed, outstanding marbles and tickets, estimated liability, stock valuation, late count and late rate — all in **independent SQL** that never calls the engine. 79/79 pass. Mutations confirm the script goes red (D-62's fourth is the one that mattered). |
+| Every metric in §9 matches a hand-calculation against the demo dataset | ✅ `verify-phase8.sh` recomputes revenue, transactions, unique customers, walk-ins, payment split, prize expense, shrinkage, operating expenses, gross and net profit, tickets awarded/redeemed, outstanding marbles and tickets, estimated liability, stock valuation, late count and late rate — all in **independent SQL** that never calls the engine. 93/93 pass. Mutations confirm the script goes red (D-62's fourth is the one that mattered). |
 
 Also verified: a plain manager sees no cost value or cost column on **any**
 report or export; staff are refused on all sixteen endpoint/export combinations;
@@ -1955,7 +2003,7 @@ bash scripts/verify-phase4.sh     # 35 checks, needs npm run dev
 bash scripts/verify-phase5.sh     # 42 checks, needs npm run dev
 bash scripts/verify-phase6.sh     # 41 checks, needs npm run dev
 bash scripts/verify-phase7.sh     # 44 checks, needs npm run dev
-bash scripts/verify-phase8.sh     # 79 checks, needs npm run dev AND --demo data
+bash scripts/verify-phase8.sh     # 93 checks, needs npm run dev AND --demo data
 ```
 
 **`verify-phase8.sh` needs the demo dataset** (`npm run db:seed -- --demo`) and
@@ -2021,10 +2069,11 @@ OWNER can merge and the merged caches reconcile to the moved ledgers.
 | Clock-out has no UI | `POST /api/attendance/clock-out` exists, is tested and works; nothing calls it. §4.13 says v1 lateness is clock-in only, so this is not on the critical path — but a shift with no clock-out looks unfinished on the team screen. Wire a button into the attendance screen in Phase 10. |
 | Clock-out photo is not captured | `Shop.requireClockOutPhoto` and `Attendance.clockOutPhotoPath` both exist and the purge job already clears the file. Nothing writes it. §4.13 makes it optional and per-shop; build it with the clock-out button. |
 | No attendance reporting surfaces | §8.9 also asks for a calendar heatmap, a ranked lateness table and a weekly trend chart. Those are reporting, and Phase 8 owns reports — the data (`isLate`, `lateMinutes`, `businessDate`) is all recorded and indexed for them. |
-| No expense edit or receipt UI | `PATCH /api/expenses/:id` and `POST /api/expenses/:id/receipt` both exist, are permission-checked and are covered by tests; no screen calls either. §8.8 asks for an optional receipt photo on the add form. The service and storage are done — this is a UI-only gap. |
+| ~~No expense edit UI~~ | **Built — D-70.** Owner-only edit of category, amount and note, plus soft delete with a mandatory reason in a real dialog. |
+| No receipt upload UI | `POST /api/expenses/:id/receipt` exists, is permission-checked and is covered by tests; no screen calls it. §8.8 asks for an optional receipt photo on the add form. **Deferred by owner decision on 8 Aug 2026** — not needed yet. Service and storage are done (D-57), so this stays UI-only whenever it is wanted. |
 | Expense list has no filters or pagination UI | The service takes `categoryId`, `from`, `to` and a cursor, and returns `nextCursor`; the screen renders the first page for the work-session shop with no date-range or category filter and no "load more". §8.8 specifies all three. Phase 8 owns expense *reporting* and is the natural place. |
 | Expenses live under Settings | D-58. Reachable but not where anyone looks for a daily task. Phase 10's "More" tab (D-36) should carry it. |
-| Excuse reason uses `window.prompt` | Third site now, after the sale void and the transfer cancel. Replace all three together in Phase 10. |
+| Excuse reason uses `window.prompt` | Third site, after the sale void and the transfer cancel. **A real dialog now exists** — `expenses/edit-expense.tsx` (D-70) — so Phase 10's sweep should copy that shape rather than invent one. The prompt cannot enforce the server's minimum reason length; the dialog does. |
 | Shop switcher is 32px tall | The top-bar "Branch 1" control in `app-shell.tsx` (Phase 1) is below NF-3's 44px floor. Allowed by §8.11 only because a larger equivalent exists at Settings → Current shop, so it is not the *only* way to switch. Raise it in Phase 10's responsive pass. Found by measuring the rendered page (D-51). |
 | Duplicate shifts render unfiltered | The clock-in chooser showed **11** shifts at BR-1, including four identical `Verify Shift` rows — accumulated `verify-phase6.sh` data, not a code bug (`npm run db:reset` clears it). But nothing in the UI or the service guards against genuinely duplicate shift names, and staff would see the same confusing list. Consider a uniqueness rule or a dedupe on the chooser when shift management gets its Phase 10 pass. |
 | ~~`Button render={<a>}` a11y warning~~ | **Fixed 7 Aug 2026 — see D-53.** `nativeButton` is now derived in the wrapper, covering all eight sites and every future one. |

@@ -437,6 +437,66 @@ for BAD in "from=banana" "from=2026-02-31&to=$TO" "from=$TO&to=$FROM" "categoryI
 done
 
 # ═════════════════════════════════════════════════════════════════════════
+printf "\n════ Expense edit and delete (§7.6, §8.8) — OWNER only ════\n"
+# ═════════════════════════════════════════════════════════════════════════
+# Creates ONE throwaway expense, edits it, deletes it, and removes it plus its
+# audit rows at the end, so the demo totals are unchanged by a run.
+
+EDIT_SHOP=$(sql "SELECT id FROM \"Shop\" WHERE code = 'DEMO-A' LIMIT 1")
+EDIT_CAT=$(sql "SELECT id FROM \"ExpenseCategory\" WHERE name = 'Supplies' LIMIT 1")
+EDIT_CAT2=$(sql "SELECT id FROM \"ExpenseCategory\" WHERE name = 'Rent' LIMIT 1")
+
+PROBE=$(j -b "$O" -X POST "$B/api/expenses" -H 'Content-Type: application/json' \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -d "{\"shopId\":\"$EDIT_SHOP\",\"categoryId\":\"$EDIT_CAT\",\"amount\":\"111000\",\"note\":\"VERIFY-EDIT-PROBE\"}" | q ".id")
+chk "a probe expense is created" "$([ -n "$PROBE" ] && echo yes)" "yes"
+
+# The edit control is owner-only. Hiding it is NOT the permission — the two
+# checks below prove the SERVER refuses a manager regardless.
+chk "the OWNER sees an edit control on the list" \
+  "$(j -b "$O" "$B/expenses" | grep -o 'aria-label="Edit ' | wc -l | tr -d ' ' | awk '{print ($1>0)?"yes":"no"}')" "yes"
+chk "a MANAGER sees none" \
+  "$(j -b "$M" "$B/expenses" | grep -o 'aria-label="Edit ' | wc -l | tr -d ' ')" "0"
+
+EDITED=$(j -b "$O" -X PATCH "$B/api/expenses/$PROBE" -H 'Content-Type: application/json' \
+  -d "{\"categoryId\":\"$EDIT_CAT2\",\"amount\":\"222000\",\"note\":\"verify edited\"}")
+chk "the OWNER can edit the amount" "$(printf '%s' "$EDITED" | q '.amount')" "222000"
+chk "  and the category" "$(printf '%s' "$EDITED" | q '.category.id')" "$EDIT_CAT2"
+
+# §7.6: edit and delete are owner-only.
+chk "a MANAGER is 403 on PATCH" \
+  "$(c -b "$M" -X PATCH "$B/api/expenses/$PROBE" -H 'Content-Type: application/json' -d '{"amount":"999"}')" "403"
+chk "a MANAGER is 403 on DELETE" \
+  "$(c -b "$M" -X DELETE "$B/api/expenses/$PROBE" -H 'Content-Type: application/json' -d '{"reason":"should not work"}')" "403"
+
+# The edit must be audit-logged with BEFORE and AFTER (§4.16) — that record is
+# the only evidence of what a figure used to be.
+AUDIT_BEFORE=$(sql "SELECT (before->>'amount') FROM \"AuditLog\" WHERE \"entityId\" = '$PROBE' AND action = 'UPDATE' LIMIT 1")
+chk "the edit is audit-logged with the OLD amount" "$AUDIT_BEFORE" "111000"
+
+# Deleting money without saying why is the case worth a paper trail (§4.3).
+chk "a too-short delete reason is refused" \
+  "$(c -b "$O" -X DELETE "$B/api/expenses/$PROBE" -H 'Content-Type: application/json' -d '{"reason":"ab"}')" "422"
+chk "a real reason deletes" \
+  "$(c -b "$O" -X DELETE "$B/api/expenses/$PROBE" -H 'Content-Type: application/json' -d '{"reason":"Verification probe"}')" "200"
+
+# §6.1.5: anything touching money is SOFT deleted — the row must survive.
+STILL_THERE=$(sql "SELECT \"isDeleted\"::text FROM \"Expense\" WHERE id = '$PROBE'")
+chk "  and the delete is SOFT — the row survives, flagged" "$STILL_THERE" "true"
+DELETE_REASON=$(sql "SELECT reason FROM \"AuditLog\" WHERE \"entityId\" = '$PROBE' AND action = 'DELETE' LIMIT 1")
+chk "  with the reason in the audit log" "$DELETE_REASON" "Verification probe"
+
+# A soft-deleted expense must leave the totals (§9 "where not deleted").
+GONE_FROM_TOTAL=$(j -b "$O" "$B/api/expenses?shopId=$EDIT_SHOP" | grep -c "VERIFY-EDIT-PROBE")
+chk "  and it no longer appears in the list" "$GONE_FROM_TOTAL" "0"
+
+# Remove the probe entirely so re-running the script does not accumulate rows.
+sql "DELETE FROM \"AuditLog\" WHERE \"entityId\" = '$PROBE'" >/dev/null
+sql "DELETE FROM \"Expense\" WHERE id = '$PROBE'" >/dev/null
+LEFTOVER=$(sql "SELECT COUNT(*)::text FROM \"Expense\" WHERE note = 'VERIFY-EDIT-PROBE'")
+chk "the probe is cleaned up, leaving the demo totals untouched" "$LEFTOVER" "0"
+
+# ═════════════════════════════════════════════════════════════════════════
 printf "\n════ CSV export mechanics (§7.8) ════\n"
 # ═════════════════════════════════════════════════════════════════════════
 

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { MapPinOff, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { ReasonDialog } from "@/components/reason-dialog";
 import { cn } from "@/lib/utils";
 
 interface Row {
@@ -44,16 +45,16 @@ export function AttendanceList({
   const router = useRouter();
   const [scope, setScope] = useState<"mine" | "team">("mine");
   const [open, setOpen] = useState<Row | null>(null);
+  // Separate from `open`: the detail panel stays visible behind the dialog, so
+  // the owner can still see the photo they are judging while typing the reason.
+  const [excusing, setExcusing] = useState<Row | null>(null);
   const [busy, setBusy] = useState(false);
 
   const visible = rows.filter((r) =>
     scope === "mine" ? r.user.id === selfUserId : true
   );
 
-  async function excuse(row: Row) {
-    const note = window.prompt("Why is this being excused?")?.trim();
-    if (!note) return;
-
+  async function excuse(row: Row, note: string) {
     setBusy(true);
     try {
       const response = await fetch(`/api/attendance/${row.id}`, {
@@ -67,6 +68,7 @@ export function AttendanceList({
         return;
       }
       toast.success("Excused — lateness cleared for that day.");
+      setExcusing(null);
       setOpen(null);
       router.refresh();
     } catch {
@@ -185,7 +187,7 @@ export function AttendanceList({
             <Button
               variant="outline"
               className="w-full"
-              onClick={() => excuse(open)}
+              onClick={() => setExcusing(open)}
               disabled={busy}
             >
               {busy && <Loader2 className="size-4 animate-spin" />}
@@ -194,6 +196,35 @@ export function AttendanceList({
           )}
         </div>
       )}
+
+      {/* The server accepts an excuse with no note (`editAttendanceSchema` makes
+          it optional), so the 3-character minimum here is a UI rule rather than
+          a mirrored one — an excuse with a blank reason tells the owner nothing
+          when they read it back. See the note in ReasonDialog. */}
+      <ReasonDialog
+        open={excusing !== null}
+        onOpenChange={(next) => {
+          if (!next) setExcusing(null);
+        }}
+        title="Excuse this record?"
+        description={
+          excusing
+            ? `${excusing.user.displayName} · ${excusing.businessDate}${
+                excusing.isLate ? ` · ${excusing.lateMinutes} min late` : ""
+              }`
+            : undefined
+        }
+        consequence="The record is kept and the lateness is cleared for that day, so it stops counting towards the late rate. The original clock-in time and photo are unchanged."
+        label="Why is it being excused?"
+        placeholder="Approved late start — hospital appointment"
+        helpText="At least 3 characters. This is recorded on the attendance record."
+        confirmLabel="Excuse record"
+        confirmVariant="default"
+        submitting={busy}
+        onConfirm={(note) => {
+          if (excusing) return excuse(excusing, note);
+        }}
+      />
     </div>
   );
 }

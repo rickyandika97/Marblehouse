@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Marblehouse">
+  <!-- Home-screen icon (§8.11). A marble, which is the unit the whole business
+       runs on. Drawn rather than imported so no binary asset or build-time
+       download is involved (D-7). -->
+  <rect width="512" height="512" rx="112" fill="#dc2626"/>
+  <circle cx="256" cy="256" r="132" fill="#ffffff"/>
+  <!-- The swirl, so it reads as a marble rather than a plain dot at 48px. -->
+  <path d="M168 300c40-96 136-136 216-112" stroke="#dc2626" stroke-width="26"
+        stroke-linecap="round" fill="none"/>
+  <!-- Highlight: sells the sphere at small sizes. -->
+  <circle cx="212" cy="208" r="30" fill="#dc2626" opacity="0.25"/>
+</svg>

@@ -27,11 +27,12 @@ import { cn } from "@/lib/utils";
  * may already have read. The fix for those is delete-with-a-reason and
  * re-record, which leaves both rows in the audit trail.
  *
- * The delete reason uses a real dialog rather than `window.prompt`. Three other
- * screens still use the prompt and are due a Phase 10 sweep; this is the shape
- * that sweep should copy, not a fourth instance of the debt. The prompt cannot
- * enforce the server's 3-character minimum, so a too-short reason there is a
- * round trip and an error toast.
+ * The delete reason uses a real dialog rather than `window.prompt`. This was the
+ * first such dialog (D-70) and the shape Phase 10's sweep copied: the other
+ * three sites — sale void, transfer cancel, attendance excuse — now share
+ * `components/reason-dialog.tsx`. This one stays inline because its dialog does
+ * double duty as the *edit* form; the shared component only handles the
+ * reason-then-confirm case.
  */
 interface CategoryOption {
   id: string;

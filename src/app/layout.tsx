@@ -18,6 +18,21 @@ const FONT_STACK =
 export const metadata: Metadata = {
   title: "Marblehouse",
   description: "Pinball arcade management",
+  // §8.11's "Add to home screen". The manifest itself is app/manifest.ts;
+  // these are the parts iOS does not read from it.
+  manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    title: "Marblehouse",
+    // Matches themeColor below, so the iOS status bar blends into the app bar
+    // instead of sitting in a black strip above it.
+    statusBarStyle: "black-translucent",
+  },
+  icons: {
+    icon: "/icon.svg",
+    // iOS ignores the manifest's icons array entirely and looks for this.
+    apple: "/icon.svg",
+  },
 };
 
 export const viewport: Viewport = {

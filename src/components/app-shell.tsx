@@ -92,9 +92,17 @@ export function AppShell({
       {/* Top bar (§8.0): shop name, user, role chip, logout. */}
       <header className="sticky top-0 z-40 border-b bg-background">
         <div className="mx-auto flex h-14 w-full max-w-5xl items-center gap-3 px-4">
+          {/*
+            min-h-11 is §8.11's 44px floor, not decoration. This shipped at
+            ~32px (px-2 py-1 on a text-sm line) and was allowed only by the
+            escape clause — a larger equivalent exists at Settings → Current
+            shop. Raising it here removes the need for that exemption, which
+            matters because switching branch mid-day is exactly the action a
+            manager takes one-handed while holding something else.
+          */}
           <Link
             href="/settings/shop"
-            className="flex min-w-0 items-center gap-2 rounded-lg px-2 py-1 hover:bg-muted"
+            className="flex min-h-11 min-w-0 items-center gap-2 rounded-lg px-2 hover:bg-muted"
             title="Change today's shop"
           >
             <Store className="size-4 shrink-0 text-muted-foreground" />

@@ -6,6 +6,7 @@ import { Loader2, PackagePlus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ReasonDialog } from "@/components/reason-dialog";
 import { formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import type { PrizeDTO, PrizeCostDTO } from "@/server/dto/prize";
@@ -374,6 +375,10 @@ function TransfersPanel({
   const [prizeItemId, setPrizeItemId] = useState("");
   const [qty, setQty] = useState("");
   const [busy, setBusy] = useState(false);
+  // The transfer the cancel dialog is open for, so it can name the destination
+  // and contents rather than asking about "this transfer" in the abstract.
+  const [cancelTarget, setCancelTarget] = useState<TransferRow | null>(null);
+  const [cancelling, setCancelling] = useState(false);
 
   const parsedQty = Number(qty);
   const canSubmit =
@@ -429,17 +434,18 @@ function TransfersPanel({
     }
   }
 
-  async function cancel(id: string) {
-    // §4.10 + D-38. window.prompt is ugly on a tablet and is already logged as
-    // a debt for the void flow; Phase 10's polish pass replaces both.
-    const reason = window.prompt("Why is this transfer being cancelled?")?.trim();
-    if (!reason) return;
-    if (reason.length < 3) {
-      toast.error("Give a slightly longer reason.");
-      return;
-    }
-    if (await post(`/api/transfers/${id}/cancel`, { reason })) {
-      toast.success("Cancelled — the stock is back at this branch.");
+  // §4.10 + D-38: the reason is mandatory and audit-logged, because a cancel
+  // after the box has physically left is indistinguishable in the data from a
+  // mis-keyed dispatch. The reason is what separates them later.
+  async function cancel(id: string, reason: string) {
+    setCancelling(true);
+    try {
+      if (await post(`/api/transfers/${id}/cancel`, { reason })) {
+        toast.success("Cancelled — the stock is back at this branch.");
+        setCancelTarget(null);
+      }
+    } finally {
+      setCancelling(false);
     }
   }
 
@@ -531,12 +537,35 @@ function TransfersPanel({
               size="sm"
               variant="outline"
               disabled={busy}
-              onClick={() => cancel(t.id)}
+              onClick={() => setCancelTarget(t)}
             >
               Cancel
             </Button>
           ) : null
         }
+      />
+
+      <ReasonDialog
+        open={cancelTarget !== null}
+        onOpenChange={(next) => {
+          if (!next) setCancelTarget(null);
+        }}
+        title="Cancel this transfer?"
+        description={
+          cancelTarget
+            ? `To ${cancelTarget.toShop.name} · ${cancelTarget.lines
+                .map((l) => `${l.qty} × ${l.prizeItem.name}`)
+                .join(", ")}`
+            : undefined
+        }
+        consequence="The stock returns to this branch at its original cost and FIFO position. If the box is genuinely lost, cancel it here and then write it off through opname — a real loss should show as shrinkage, not disappear inside a cancelled transfer."
+        label="Why is it being cancelled?"
+        placeholder="Sent to the wrong branch"
+        confirmLabel="Cancel transfer"
+        submitting={cancelling}
+        onConfirm={(reason) => {
+          if (cancelTarget) return cancel(cancelTarget.id, reason);
+        }}
       />
     </div>
   );

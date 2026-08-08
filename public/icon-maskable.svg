@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Marblehouse">
+  <!-- Maskable variant (§8.11). Android crops this to a circle, squircle or
+       other platform shape, so every meaningful pixel stays inside the safe
+       zone: a circle of radius 205 centred at 256 (the 80% the spec guarantees
+       will survive any mask). The artwork is therefore SMALLER than icon.svg's,
+       not merely re-cropped — shrinking it here is the whole point.
+
+       The background is deliberately full-bleed edge to edge: a maskable icon
+       with transparent corners gets a white box drawn behind it by the OS. -->
+  <rect width="512" height="512" fill="#dc2626"/>
+  <circle cx="256" cy="256" r="104" fill="#ffffff"/>
+  <path d="M187 291c31-76 107-107 170-88" stroke="#dc2626" stroke-width="21"
+        stroke-linecap="round" fill="none"/>
+  <circle cx="222" cy="219" r="24" fill="#dc2626" opacity="0.25"/>
+</svg>

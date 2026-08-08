@@ -25,6 +25,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Loader2, Search, UserRound, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ReasonDialog } from "@/components/reason-dialog";
 import { cn } from "@/lib/utils";
 import { formatMoney, parseAmount } from "@/lib/money";
 import { CustomerPicker, type PickedCustomer } from "./customer-picker";
@@ -318,19 +319,17 @@ function TodayStrip({
 }) {
   const router = useRouter();
   const [voiding, setVoiding] = useState<string | null>(null);
+  // The sale the reason dialog is open for, or null. Holding the row rather
+  // than a boolean means the dialog can name the amount being voided.
+  const [voidTarget, setVoidTarget] = useState<RecentSale | null>(null);
 
-  async function voidSale(sale: RecentSale) {
-    const reason = window.prompt(
-      `Void ${formatMoney(sale.amount)}? Give a reason — this is recorded.`
-    );
-    if (!reason?.trim()) return;
-
+  async function voidSale(sale: RecentSale, reason: string) {
     setVoiding(sale.id);
     try {
       const res = await fetch(`/api/sales/${sale.id}/void`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reason: reason.trim() }),
+        body: JSON.stringify({ reason }),
       });
       const body = await res.json().catch(() => null);
 
@@ -340,8 +339,11 @@ function TodayStrip({
       }
 
       toast.success("Sale voided");
+      setVoidTarget(null);
       onChanged();
       router.refresh();
+    } catch {
+      toast.error("No connection. Check the wifi and try again.");
     } finally {
       setVoiding(null);
     }
@@ -389,7 +391,7 @@ function TodayStrip({
                   size="sm"
                   className="shrink-0 text-destructive"
                   disabled={voiding === sale.id}
-                  onClick={() => voidSale(sale)}
+                  onClick={() => setVoidTarget(sale)}
                 >
                   {voiding === sale.id ? "…" : "Void"}
                 </Button>
@@ -402,6 +404,29 @@ function TodayStrip({
           ))}
         </ul>
       )}
+
+      <ReasonDialog
+        open={voidTarget !== null}
+        onOpenChange={(next) => {
+          if (!next) setVoidTarget(null);
+        }}
+        title="Void this sale?"
+        description={
+          voidTarget
+            ? `${formatMoney(voidTarget.amount)} · ${
+                voidTarget.customer?.name ?? "Walk-in"
+              }`
+            : undefined
+        }
+        consequence="The sale is kept and marked voided, so the audit trail stays intact. It stops counting towards today's revenue."
+        label="Why is it being voided?"
+        placeholder="Rung up twice by mistake"
+        confirmLabel="Void sale"
+        submitting={voiding !== null}
+        onConfirm={(reason) => {
+          if (voidTarget) return voidSale(voidTarget, reason);
+        }}
+      />
     </section>
   );
 }

@@ -6,6 +6,7 @@
  */
 import { PrismaClient } from "@prisma/client";
 import { auth } from "../src/server/auth/auth";
+import { seedDemo, resetDemo } from "./demo";
 
 const prisma = new PrismaClient();
 
@@ -52,7 +53,42 @@ function requireEnv(name: string): string {
   return value;
 }
 
+/**
+ * Demo data must never reach a production database (§10: "you do not want it
+ * drifting into production"). A flag is easy to type by accident on the wrong
+ * shell, so this refuses outright unless the database name marks it as
+ * disposable — the same guard the test suite uses (D-26).
+ */
+function assertDemoAllowed(flag: string): void {
+  const url = process.env.DATABASE_URL ?? "";
+  const dbName = url.split("/").pop()?.split("?")[0] ?? "";
+  if (!/_dev$|_test$/.test(dbName)) {
+    throw new Error(
+      `Refusing to run ${flag}: DATABASE_URL points at "${dbName}", which is ` +
+        `not a _dev or _test database. Demo data must never enter production.`
+    );
+  }
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(`Refusing to run ${flag} with NODE_ENV=production.`);
+  }
+}
+
 async function main() {
+  const args = process.argv.slice(2);
+  const wantsDemo = args.includes("--demo");
+  const wantsResetDemo = args.includes("--reset-demo");
+
+  if (wantsDemo && wantsResetDemo) {
+    throw new Error("Pass either --demo or --reset-demo, not both.");
+  }
+
+  if (wantsResetDemo) {
+    assertDemoAllowed("--reset-demo");
+    console.log("\n  Removing demo data…");
+    await resetDemo(prisma);
+    return;
+  }
+
   const ownerUsername = requireEnv("SEED_OWNER_USERNAME").toLowerCase();
   const ownerPassword = requireEnv("SEED_OWNER_PASSWORD");
   const shopName = process.env.SEED_SHOP_NAME?.trim() || "Branch 1";
@@ -182,6 +218,13 @@ async function main() {
 
   console.log(`\n  Seed complete. Log in as "${ownerUsername}".`);
   console.log(`  You will be asked to change the password on first login.\n`);
+
+  // Demo generation runs AFTER the base seed, because it depends on the
+  // expense categories and the global settings created above.
+  if (wantsDemo) {
+    assertDemoAllowed("--demo");
+    await seedDemo(prisma);
+  }
 }
 
 main()

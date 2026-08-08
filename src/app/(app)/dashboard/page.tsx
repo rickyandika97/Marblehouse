@@ -1,5 +1,6 @@
-import { requireManagerOrOwnerPage } from "@/server/auth/page-guard";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { requireManagerOrOwnerPage, asPageError } from "@/server/auth/page-guard";
+import { getDashboard } from "@/server/services/dashboard";
+import { DashboardView } from "./dashboard-view";
 
 export const metadata = { title: "Dashboard · Marblehouse" };
 export const dynamic = "force-dynamic";
@@ -7,40 +8,27 @@ export const dynamic = "force-dynamic";
 /**
  * Dashboard (§8.3 owner / §8.4 manager).
  *
- * Phase 1 establishes the ROUTE and its permission boundary only. The metrics
- * belong to Phase 8 and depend on sales, stock and attendance data that does
- * not exist yet — showing zeroes here would be indistinguishable from a
- * genuinely quiet day, which is worse than showing nothing.
+ * The permission boundary was settled in Phase 1; Phase 8 fills in the metrics.
  *
- * STAFF is blocked server-side. This is the address-bar test: a staff account
- * typing /dashboard gets a 403 page, not a render.
+ * The service is called on the SERVER and its result handed to a presentational
+ * component. That matters for more than performance: `getDashboard` returns a
+ * different TYPE per role, so a manager's payload has no cost keys on it at
+ * all. A client-side fetch would have shipped whatever the endpoint returned
+ * and left the stripping to the component, which is the shape §7.5 forbids.
  */
-export default async function DashboardPage() {
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ shopId?: string }>;
+}) {
   const actor = await requireManagerOrOwnerPage();
+  const { shopId } = await searchParams;
 
-  return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {actor.role === "OWNER"
-            ? "All shops."
-            : "Your shop, one at a time."}
-        </p>
-      </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Nothing to report yet</CardTitle>
-        </CardHeader>
-        <CardContent className="text-sm text-muted-foreground">
-          <p>
-            Revenue, sales, stock and attendance figures arrive with the phases
-            that record them. This screen exists now so its permissions are
-            settled: managers and owners reach it, staff cannot.
-          </p>
-        </CardContent>
-      </Card>
-    </div>
+  // An owner may narrow to one shop; a manager's scope is resolved from their
+  // work session and cannot be widened from the query string (resolveScope).
+  const dashboard = await getDashboard(actor, shopId ? { shopId } : {}).catch(
+    asPageError
   );
+
+  return <DashboardView dashboard={dashboard} />;
 }

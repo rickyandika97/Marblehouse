@@ -8,12 +8,12 @@ through a Cloudflare Tunnel. No cloud platform, no Vercel.
 
 - **Full specification:** [`docs/PRD.md`](docs/PRD.md)
 - **Rules for the coding agent:** [`CLAUDE.md`](CLAUDE.md)
-- **Status:** Phases 0–3 complete. Phases 4 (prizes, FIFO inventory,
-  redemption), 5 (transfers and opname) and 6 (attendance) are built and
-  verified on a development machine — engines, APIs and screens — but **none
-  is signed off**: each still needs the on-device acceptance pass. Phase 6's
-  is the most important, because the camera and geolocation prompts genuinely
-  cannot be tested any other way.
+- **Status:** Phases 0–3, 5, 7 and 8 complete on a development machine.
+  Phases 4 (prizes, FIFO inventory, redemption) and 6 (attendance) are built
+  and verified on dev — engines, APIs and screens — but **not signed off**:
+  each still needs the on-device acceptance pass. Phase 6's is the most
+  important, because the camera and geolocation prompts genuinely cannot be
+  tested any other way. Phase 9 (backup and restore) is next.
 
 ---
 
@@ -46,7 +46,19 @@ npm run db:studio         # browse the data in a GUI
 npm run typecheck
 npm test                  # unit + integration tests (FIFO, transfers, attendance)
 npm run db:reset          # wipe and re-seed when the schema churns
+
+npm run db:seed -- --demo        # add a realistic 60-day dataset
+npm run db:seed -- --reset-demo  # remove it again, leaving your real data
 ```
+
+**The demo dataset** gives the dashboards and reports something to show: three
+extra branches, 200 customers, ~1700 sales, prize batches, redemptions and 60
+days of attendance. It is generated from a **fixed random seed**, so the same
+command always produces the same numbers — which is what makes it possible to
+check a report by hand and trust the answer next week.
+
+Both flags refuse to run against anything but a `_dev` or `_test` database.
+Every row is tagged, and `--reset-demo` removes exactly those.
 
 `npm test` runs against your **development database** rather than a mock,
 because the rules it checks — FIFO order, "stock can never go negative" — are

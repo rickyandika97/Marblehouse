@@ -26,8 +26,8 @@ why, not an edit to the old one.
 | 5 | Transfers and opname | ✅ Done — all §16 criteria verified on dev |
 | 6 | Attendance | ✅ Done on dev — awaiting the on-device acceptance pass |
 | 7 | Expenses | ✅ Done on dev — all §16 criteria verified |
-| 8 | Dashboards and reports | ⬜ Next |
-| 9 | Backup, restore, hardening | ⬜ |
+| 8 | Dashboards and reports | ✅ Done on dev — §16 criterion verified; see D-66 for the deferred report screens |
+| 9 | Backup, restore, hardening | ⬜ Next |
 | 10 | Polish and pilot | ⬜ |
 
 ---
@@ -1210,6 +1210,254 @@ written about, reproduced a phase later.
 
 ---
 
+## Decisions taken during Phase 8
+
+### D-60 · An unscoped MANAGER report means THEIR shop, not all shops
+
+**Owner decision, 8 Aug 2026. This resolves a real contradiction in the spec.**
+
+§7.8 grants `/api/reports/sales` and `/api/reports/attendance` to **O/M**. But
+§3.4 says a manager views reports "one shop at a time", and CLAUDE.md's cost
+section says a manager still gets `403` on **all-shops** endpoints. So a manager
+calling a report endpoint with **no `shopId`** was undefined: it could mean "all
+shops" (forbidden) or "my shop" (fine).
+
+Three options were put to the owner. They chose **implicit scoping**:
+`resolveScope()` collapses an unscoped MANAGER/STAFF request to their
+work-session shop, falling back to `defaultShopId`, and throws
+`NO_WORK_SESSION` if neither exists. It never returns a cross-shop aggregate
+for a manager. An OWNER with no `shopId` still gets every shop.
+
+**Why not 403 on the unscoped form**, which is the strictest reading: it would
+refuse a manager loading their own dashboard, and that is *exactly* the D-34 bug
+class — a permission that depends on whether a parameter is present, correct on
+one branch and wrong on the other. D-34 cost a real 403 in Phase 4 for the same
+reason.
+
+**Both branches are tested, twice.** `reports.test.ts` asserts the unscoped form
+resolves to one shop and the explicit form is honoured;
+`verify-phase8.sh` re-checks both over HTTP plus a foreign `shopId` (403). A
+mutation that let a manager fall through to the owner branch was caught by
+seven checks.
+
+### D-61 · The demo seed is REPRODUCIBLE, and that is the point
+
+§16 accepts Phase 8 when "every metric matches a hand-calculation against the
+demo dataset". §10's `--demo` flag did not exist, so it was built first.
+
+Every random choice comes from `mulberry32` seeded with a **fixed constant**
+(`prisma/demo.ts`). Verified: two full runs, separated by a `--reset-demo`,
+produced identical row counts and an identical revenue total to the rupiah
+(`295570000`). **Do not replace those calls with `Math.random()`** — a
+hand-calculation against a dataset that changes on every run is worthless the
+moment you re-run it.
+
+The data is deliberately **not uniform**: three branches at different volumes,
+one branch with a 12% shrinkage rate, one staff member per shop awarding roughly
+double the tickets, ~3% of sales voided, 30% walk-ins, weekend peaks. Flat data
+would let a broken report look correct — every shop showing the same number
+hides a grouping bug, and the §4.6 fraud ratio would have no outlier to detect.
+
+`--reset-demo` deletes by `DEMO-` shop code, `DEMO-SKU-` prefix and a `[demo]`
+name tag, in foreign-key order. Verified to leave exactly the base seed behind
+(2 shops, 1 owner). Both flags **refuse to run** unless `DATABASE_URL` names a
+`_dev`/`_test` database and `NODE_ENV` is not production — §10 warns about demo
+data drifting into production, and a flag is easy to type on the wrong shell.
+
+**The seed's FIFO consumer is a deliberate second implementation.**
+`consumeFifoForDemo` does not call `services/inventory.ts`, because that engine
+takes an `Actor` and the seed has no request context to give it; inventing a
+fake actor would be worse. CLAUDE.md's "FIFO lives in one file" rule governs the
+**application**. If you are tempted to import the seed's copy anywhere in
+`src/`, that is the wrong instinct — call the real engine.
+
+### D-62 · The cost gate is `every`, not `some` — and 33 passing tests missed it
+
+**Read this before touching `assertCanSeeCost`.**
+
+The gate intersects `canSeeCostForShop` across every shop in scope. A deliberate
+`every` → `some` mutation **passed the entire 33-test suite**, because every
+existing test used a single-shop scope, where the two operators are identical.
+
+With `some`, a Purchasing manager assigned to **one** shop would read a cost
+figure blended across shops they do not manage — a straight §7.5 violation
+("their assigned shops ONLY").
+
+`reports.test.ts` now has an explicit **mixed-scope** test: a manager assigned to
+shopA only, handed a scope of `[shopA, shopB]`, must be refused — and the
+single-shop scope they *are* entitled to must still pass, so the guard is
+refusing the mix rather than refusing everything. Re-running the mutation with
+that test present catches it.
+
+**This is the strongest argument yet for CLAUDE.md gate 3's "seen to fail"
+rule.** Three other mutations this phase were caught immediately; this one was
+not, and it was the most dangerous of the four.
+
+### D-63 · CSV is its own cost-leak surface, and its role test must match the service's
+
+§15 requires no cost value in a manager or staff body "on any endpoint
+**including CSV exports** and error payloads". A JSON DTO gate does nothing for
+a CSV, which is built from whatever rows the caller hands over.
+
+So `reports-export.ts` either calls a **cost-gated service** (which 403s before
+any CSV exists) or emits cost-free columns from a cost-free query. There is
+deliberately **no "strip these headers" helper** — that shape is what leaks.
+
+**A real bug came out of this.** The liability export gated its valued columns
+on `canSeeCost(actor)`, but `liabilityReport` populates those fields only for
+`role === "OWNER"`. A Purchasing manager passes `canSeeCost`, so their CSV
+carried *"Blended COGS per ticket"* and *"Estimated ticket liability"* headers
+over permanently **empty cells** — an export promising a figure it can never
+produce. Now gated on `role === "OWNER"`, matching the service exactly.
+
+**The general rule:** when a DTO and its exporter both branch on role, they must
+branch on the *same predicate*. Two nearly-identical gates that disagree is
+worse than one, because the mismatch is invisible until someone reads the output.
+
+Found by sweeping every endpoint as every role, not by reading the diff.
+
+### D-64 · A page needs `asPageError`; a service throwing `AppError` is a 500 without it
+
+**Found by loading every new page as each role — gate 5's rendering step.**
+
+`/reports/prize-expense` and `/reports/stock-valuation` returned **500** to a
+plain manager. The services correctly throw `AppError("FORBIDDEN")` (CLAUDE.md
+rule 10), and `handleRoute` converts that for API routes — but a **page** has no
+such wrapper, so the throw escaped as a server error.
+
+`asPageError` has existed since Phase 1 for exactly this and simply was not
+used. Every report page now ends its service call with `.catch(asPageError)`,
+which also covers a foreign `shopId` in the query string (verified: 403, not
+500).
+
+**The lesson is D-33's, one layer up:** `typecheck` and `lint` both pass on a
+page that 500s for half its intended audience. Only rendering it as each role
+shows it. That step has now caught a defect in three consecutive phases (D-33,
+D-34, this).
+
+### D-65 · A verification query must use DATE LITERALS, not JS `Date`
+
+**This one briefly made the ENGINE look wrong when the CHECK was wrong.**
+
+The first independent SQL cross-check reported revenue of `291040000` against
+the API's `295570000`, and tickets awarded `440711` against `444918`. Prize
+expense, shrinkage, opex and balances all matched, which made it look like a
+targeted bug in two metrics.
+
+The cause: `businessDate` is a Postgres **`date`**, and binding a JS `Date`
+through Prisma's `$queryRaw` sends a **`timestamptz`**. The comparison shifted
+the boundary and silently dropped the final day (`6760000`) plus part of the
+first. Re-running the identical query with **date literals** (`'2026-06-10'`)
+returned `295570000.00` — matching the API exactly.
+
+`verify-phase8.sh` therefore uses `$queryRawUnsafe` with interpolated date
+literals throughout, and says so in a header comment. **Do not "tidy" that into
+parameter binding.**
+
+This is D-43's lesson with a new mechanism: a check that computes the wrong
+thing is worse than no check, because it costs a session's confidence in
+correct code.
+
+### D-66 · Phase 8 shipped the engine and six screens, not all fifteen
+
+**Owner decision, 8 Aug 2026.**
+
+§9 lists **15 report screens**. Building all of them was offered and the owner
+chose the narrower scope: the **full metrics engine** (every §9 metric), both
+dashboards, CSV export for eleven reports, and **six screens** — Daily Sales,
+Profit & Loss, Prize Expense, Stock Valuation, Liability, Attendance & Lateness
+— plus Low Stock, which came free.
+
+The reasoning: the engine is where money correctness lives and the screens are
+repetition over it. Fifteen screens of shallow verification is worse than six
+screens over an engine whose every metric has been checked against independent
+SQL. The remaining screens are thin readers over functions that already exist
+and are already proven — `salesByStaff`, `customerReport` and `expenseReport`
+all have JSON endpoints and CSV exports today, with no screen.
+
+**Remaining §9 screens** — Sales by Staff, Sales by Shop, Payment Method
+Breakdown, Customer Spend Leaderboard, Prize Redemption, Shrinkage, Expense
+Report, and the §8.9 attendance heatmap/trend charts — are recorded under
+*Known issues / debts*. None needs new service work.
+
+### D-67 · Recharts is in the stack but the dashboard uses inline SVG
+
+§5.2 lists Recharts, and it remains the right tool for the richer report charts
+(§8.9's heatmap and weekly trend). The dashboard's 30-day sparkline and the
+revenue-by-shop bars are **hand-rolled inline SVG and divs** instead.
+
+Why: the dashboard is a **server component** with no other client JavaScript.
+Pulling in Recharts would have made it a client component and shipped a charting
+bundle to a tablet on shop wifi, to draw a 30-point line. NF-1's budget is two
+seconds on 4G.
+
+This is not a rejection of Recharts — when Phase 8b or Phase 10 builds the
+attendance heatmap, use it there. The rule of thumb: a chart with axes,
+tooltips or interaction earns a library; a sparkline does not.
+
+The top-8-plus-Others rule (§5.6) is enforced in **`dashboard.ts`**, not in the
+component, so every consumer of that payload gets the same shape and nobody can
+re-introduce a 30-series chart from the UI side.
+
+---
+
+## What Phase 8 built
+
+```
+prisma/
+  demo.ts         §10's --demo / --reset-demo. FIXED SEED (D-61). Refuses any
+                  database not named _dev/_test.
+  seed.ts         TOUCHED: --demo / --reset-demo flag handling + the guard.
+
+src/server/services/
+  reports.ts      THE metrics engine. Every §9 metric. resolveScope() is the
+                  single place shop scoping is decided (D-60); assertCanSeeCost
+                  is `every`, not `some` (D-62).
+  dashboard.ts    §8.3 / §8.4 payloads. TWO return types, not one with optional
+                  fields — a manager's payload has no cost keys to strip.
+  reports-export.ts  CSV builders, one per report. Role branch must match the
+                  service's own (D-63).
+
+src/server/
+  csv.ts          RFC 4180 escaping, UTF-8 BOM for Excel, no-store headers.
+
+src/app/(app)/dashboard/
+  page.tsx + dashboard-view.tsx    §8.3's five rows including the alerts panel.
+
+src/app/(app)/reports/
+  report-shell.tsx   Shared shell, table and totals for every report screen.
+  page.tsx           Index; owner-only reports hidden from a manager.
+  sales/ attendance/ low-stock/ prize-expense/ stock-valuation/ profit/
+  liability/         The six screens (D-66), plus low-stock.
+
+src/server/services/__tests__/reports.test.ts   34 tests.
+scripts/verify-phase8.sh                        51 HTTP-level checks.
+```
+
+APIs: `/api/dashboard`, `/api/reports/[name]`, `/api/reports/[name]/export`.
+
+`/api/reports/tickets-awarded` (Phase 3) is a **static** sibling of the new
+dynamic `[name]` segment and takes precedence. Verified by booting the app —
+D-33's slug rule is not caught by typecheck or lint.
+
+**No migration.** Phase 8 reads; it adds no columns, so PRD §6 still matches
+`prisma/schema.prisma`.
+
+**§16 criterion:**
+
+| Criterion | Status |
+|---|---|
+| Every metric in §9 matches a hand-calculation against the demo dataset | ✅ `verify-phase8.sh` recomputes revenue, transactions, unique customers, walk-ins, payment split, prize expense, shrinkage, operating expenses, gross and net profit, tickets awarded/redeemed, outstanding marbles and tickets, estimated liability, stock valuation, late count and late rate — all in **independent SQL** that never calls the engine. 51/51 pass. Three mutations confirm the script goes red (D-62's fourth is the one that mattered). |
+
+Also verified: a plain manager sees no cost value or cost column on **any**
+report or export; staff are refused on all sixteen endpoint/export combinations;
+a Purchasing manager reads cost at their own shop but is still 403 on profit and
+on the owner customer report; both branches of the `shopId` parameter (D-34's
+lesson); and the manager dashboard has **no cost keys at all**, checked in the
+rendered HTML as well as the JSON.
+
+---
+
 ## What Phase 7 built
 
 ```
@@ -1574,7 +1822,7 @@ APIs: `/api/auth/{login,logout,me,change-password,[...all]}`,
 ```bash
 npm run typecheck                 # clean
 npm run lint                      # clean
-npm test                          # 131 tests (D-26) — safe to re-run, no residue
+npm test                          # 165 tests (D-26) — safe to re-run, no residue
 docker compose build              # succeeds (catches Linux case-sensitivity)
 bash scripts/verify-phase1.sh     # 21/21 acceptance checks, needs npm run dev
 bash scripts/verify-phase2.sh     # 30/30 acceptance checks, needs npm run dev
@@ -1583,7 +1831,14 @@ bash scripts/verify-phase4.sh     # 35 checks, needs npm run dev
 bash scripts/verify-phase5.sh     # 42 checks, needs npm run dev
 bash scripts/verify-phase6.sh     # 41 checks, needs npm run dev
 bash scripts/verify-phase7.sh     # 44 checks, needs npm run dev
+bash scripts/verify-phase8.sh     # 51 checks, needs npm run dev AND --demo data
 ```
+
+**`verify-phase8.sh` needs the demo dataset** (`npm run db:seed -- --demo`) and
+the Phase 8 test accounts. It reads only — it creates no rows of its own — so it
+is safe to re-run. It takes the account passwords from `OWNER_PASSWORD`,
+`MGR_PASSWORD`, `PURCH_PASSWORD` and `STAFF_PASSWORD` if set, and otherwise
+falls back to the values recorded under *Current database state*.
 
 **`verify-phase5.sh` and `verify-phase6.sh` were last run green on 7 Aug 2026**,
 at the end of Phase 6, together with typecheck, lint, all 116 tests and
@@ -1649,7 +1904,11 @@ OWNER can merge and the merged caches reconcile to the moved ledgers.
 | Shop switcher is 32px tall | The top-bar "Branch 1" control in `app-shell.tsx` (Phase 1) is below NF-3's 44px floor. Allowed by §8.11 only because a larger equivalent exists at Settings → Current shop, so it is not the *only* way to switch. Raise it in Phase 10's responsive pass. Found by measuring the rendered page (D-51). |
 | Duplicate shifts render unfiltered | The clock-in chooser showed **11** shifts at BR-1, including four identical `Verify Shift` rows — accumulated `verify-phase6.sh` data, not a code bug (`npm run db:reset` clears it). But nothing in the UI or the service guards against genuinely duplicate shift names, and staff would see the same confusing list. Consider a uniqueness rule or a dedupe on the chooser when shift management gets its Phase 10 pass. |
 | ~~`Button render={<a>}` a11y warning~~ | **Fixed 7 Aug 2026 — see D-53.** `nativeButton` is now derived in the wrapper, covering all eight sites and every future one. |
-| Dashboard screen | Route + permission boundary only. Metrics are Phase 8. |
+| ~~Dashboard screen~~ | **Built in Phase 8.** §8.3's five rows, §8.4's stripped manager variant. |
+| Nine §9 report screens not built | D-66. Sales by Staff, Sales by Shop, Payment Method Breakdown, Customer Spend Leaderboard, Prize Redemption, Shrinkage, and Expense Report all have a working service **and** a CSV export today — they need only a page. §8.9's attendance heatmap and weekly trend need a chart (use Recharts there, not the dashboard's inline SVG — D-67). No service or schema work in any of them. |
+| No date-range picker on report screens | Every report accepts `?from=&to=&shopId=` and defaults to the last 30 days, but there is no UI to change it — you type the query string. §8.8 asks for range and category filters on expenses specifically. A single shared control on `report-shell.tsx` would cover all seven screens at once; worth doing early in Phase 10. |
+| No shop filter control on the owner dashboard | §8.3 specifies an `All shops` / single-shop selector. The payload and `?shopId=` both support it; only the control is missing. |
+| Report pagination | §9's tabular reports return every row for the period. `customerReport` caps at 200 by construction, but sales-by-day over a year is 365 rows in one response. NF-4 wants 50-row pages on list screens. Not urgent at three branches; revisit before the pilot widens. |
 | ~~`Shop.dayStartHour` still exists~~ | **Resolved same day — see D-18.** Dropped; the cutoff is global at 04:00. |
 | No UI for the business-day hour | §8.10 puts it under Owner → System. It is set by seed/migration only. Build the screen in Phase 9 with the other owner settings; changing it needs a warning that it does not restamp history (D-18). |
 | Idempotency keys are never deleted | D-16. The cleanup job is Phase 9. Rows accumulate one per mutation until then; harmless but unbounded. |
@@ -1665,6 +1924,57 @@ OWNER can merge and the merged caches reconcile to the moved ledgers.
 ---
 
 ## Current database state
+
+> **The dev database was RESET on 8 Aug 2026, at the start of Phase 8.**
+> `prisma migrate reset` plus `npm run db:seed -- --demo`. Everything described
+> below this line from earlier phases — the Phase 1–7 verification rows, the
+> `owner`/`manager1`/`staff1` trio, `purchaser1`, the accumulated `P5`/`P7`
+> fixtures — **is gone from `marblehouse_dev`.** It is kept here because it
+> describes what each `verify-phase*.sh` script *creates* when you re-run it,
+> which is still accurate.
+>
+> **To restore a working Phase 1–7 environment:** `npm run db:reset`, then run
+> `verify-phase1.sh` before `verify-phase2.sh`, in numeric order.
+
+### What is in `marblehouse_dev` right now (Phase 8)
+
+Base seed: shops `BR-1` and `HQ`, one owner, ten expense categories.
+
+**Demo dataset** (`npm run db:seed -- --demo`, D-61) — reproducible from a fixed
+seed, so these numbers are exact and will recur:
+
+| | |
+|---|---|
+| Branches | `DEMO-A` Mall, `DEMO-B` Plaza, `DEMO-C` Station (12% shrinkage) |
+| Staff | 9 — `demo_mgr1..3`, `demo_staff1..6`, password `DemoPass2026!` |
+| Customers | 200, phones `+6299…` (a reserved prefix — cannot collide with a real customer) |
+| Prizes | 12, two batches each per branch at different costs |
+| Sales | 1711 (1679 completed, ~3% voided) over 60 business days |
+| Revenue | **295.570.000** — the figure `verify-phase8.sh` checks against |
+| Redemptions | 193, with real FIFO consumption rows |
+| Attendance | 496 records, ~20% late |
+| Expenses | 27 |
+
+**Phase 8 test accounts** — created through the API during verification:
+
+| Username | Password | Role |
+|---|---|---|
+| `owner` | `Phase8Owner2026!` | OWNER (seeded, password changed on first login) |
+| `p8mgr` | `P8MgrPass2026!x` | MANAGER, plain — no cost visibility |
+| `p8purch` | `P8PurPass2026!x` | MANAGER **with Purchasing**, `DEMO-A` only |
+| `p8staff` | `P8StfPass2026!x` | STAFF |
+
+The trailing `x` is not a typo: each account was created with the base password
+and then completed its forced first-login change (§5.4), which appends it.
+
+`verify-phase8.sh` reads only — it adds no rows — so it is re-runnable as is.
+
+---
+
+### Historical — from the Phase 1–7 verification runs
+
+**These rows are no longer present** (see the reset note above). This section
+records what each script creates when re-run.
 
 Left over from the Phase 1 verification run — **test accounts, not real ones**:
 

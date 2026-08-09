@@ -140,15 +140,24 @@ export async function resolveScope(
  * `assertOwner` instead, per CLAUDE.md's cost-visibility section.
  */
 export function assertCanSeeCost(actor: Actor, scope: ResolvedScope): void {
-  // `every`, NOT `some`. With `some`, a Purchasing manager assigned to one
-  // shop would read a figure blended across shops they do not manage. A
-  // single-shop scope cannot distinguish the two, so this is covered by an
-  // explicit mixed-scope test — a deliberate every→some mutation passed the
-  // entire suite until that test existed.
-  const permitted = scope.shopIds.every((id) => canSeeCostForShop(actor, id));
-  if (!permitted) {
+  // The `every` that makes this correct lives in canSeeCostForScope below —
+  // read the note there before touching it (D-62).
+  if (!canSeeCostForScope(actor, scope)) {
     throw forbidden("You do not have access to cost figures for these shops.");
   }
+}
+
+/**
+ * The non-throwing form of `assertCanSeeCost`, for a report whose *rows* a
+ * manager may read while its *cost columns* stay owner/Purchasing-only.
+ *
+ * **`every`, not `some` — for the same reason `assertCanSeeCost` uses it
+ * (D-62).** With `some`, a Purchasing manager handed a mixed scope would get a
+ * cost figure blended across shops they do not manage. The two functions must
+ * agree; if you change one, change both, and re-run the mixed-scope test.
+ */
+export function canSeeCostForScope(actor: Actor, scope: ResolvedScope): boolean {
+  return scope.shopIds.every((id) => canSeeCostForShop(actor, id));
 }
 
 function assertOwner(actor: Actor): void {
@@ -539,6 +548,301 @@ export async function prizeExpenseReport(
         expense: v.expense.toString(),
       }))
       .sort((a, b) => new Prisma.Decimal(b.expense).comparedTo(a.expense)),
+  };
+}
+
+/**
+ * §9 Shrinkage Report — where stock went missing, and how.
+ *
+ * `prizeExpenseReport` already returns the shrinkage *total*, and that total is
+ * what P&L consumes. This report exists because a single number cannot answer
+ * the question it raises: §9 keeps shrinkage separate from prize expense
+ * precisely because "mixing it into prize expense hides theft" — but a lone
+ * total hides it almost as well. One branch losing the same item every week is
+ * a different problem from occasional breakage spread across everything, and
+ * they are indistinguishable until the figure is broken down.
+ *
+ * **The OPNAME_LOSS / DAMAGE split is the point, not decoration.** They are
+ * different events: DAMAGE is *declared* by someone at the moment it happens,
+ * OPNAME_LOSS is *discovered* at a physical count with nobody's name against
+ * it. A branch whose shrinkage is all opname loss is the one worth visiting.
+ * Do not collapse these into one column.
+ *
+ * Cost-bearing, so it is gated exactly like `prizeExpenseReport` — via
+ * `assertCanSeeCost`, which intersects EVERY shop in scope (D-62's `every`, not
+ * `some`).
+ */
+export interface ShrinkageReport {
+  totalShrinkage: string;
+  opnameLoss: string;
+  damage: string;
+  totalUnits: number;
+  byItem: {
+    prizeItemId: string;
+    prizeName: string;
+    qty: number;
+    opnameLossValue: string;
+    damageValue: string;
+    value: string;
+  }[];
+  byShop: {
+    shopId: string;
+    shopName: string;
+    qty: number;
+    value: string;
+  }[];
+}
+
+export async function shrinkageReport(
+  actor: Actor,
+  input: ReportRangeInput
+): Promise<ShrinkageReport & { scope: ResolvedScope }> {
+  const scope = await resolveScope(actor, input);
+  assertCanSeeCost(actor, scope);
+
+  const rows = await prisma.stockConsumption.findMany({
+    where: {
+      movement: {
+        type: { in: ["OPNAME_LOSS", "DAMAGE"] },
+        shopId: { in: scope.shopIds },
+        businessDate: { gte: scope.from, lte: scope.to },
+      },
+    },
+    select: {
+      qty: true,
+      unitCogsAtConsumption: true,
+      movement: { select: { prizeItemId: true, shopId: true, type: true } },
+    },
+  });
+
+  // Decimal arithmetic throughout (§4.1). Every accumulator starts at ZERO and
+  // is only ever `.add()`ed — never converted to a number for summing.
+  let opnameLoss = ZERO;
+  let damage = ZERO;
+  let totalUnits = 0;
+
+  const byItem = new Map<
+    string,
+    { qty: number; opname: Prisma.Decimal; damage: Prisma.Decimal }
+  >();
+  const byShop = new Map<string, { qty: number; value: Prisma.Decimal }>();
+
+  for (const row of rows) {
+    const value = row.unitCogsAtConsumption.mul(row.qty);
+    const isDamage = row.movement.type === "DAMAGE";
+
+    if (isDamage) damage = damage.add(value);
+    else opnameLoss = opnameLoss.add(value);
+    totalUnits += row.qty;
+
+    const itemKey = row.movement.prizeItemId;
+    const item = byItem.get(itemKey) ?? { qty: 0, opname: ZERO, damage: ZERO };
+    byItem.set(itemKey, {
+      qty: item.qty + row.qty,
+      opname: isDamage ? item.opname : item.opname.add(value),
+      damage: isDamage ? item.damage.add(value) : item.damage,
+    });
+
+    const shopKey = row.movement.shopId;
+    const shop = byShop.get(shopKey) ?? { qty: 0, value: ZERO };
+    byShop.set(shopKey, {
+      qty: shop.qty + row.qty,
+      value: shop.value.add(value),
+    });
+  }
+
+  const [items, shops] = await Promise.all([
+    prisma.prizeItem.findMany({
+      where: { id: { in: [...byItem.keys()] } },
+      select: { id: true, name: true },
+    }),
+    prisma.shop.findMany({
+      where: { id: { in: [...byShop.keys()] } },
+      select: { id: true, name: true },
+    }),
+  ]);
+  const itemName = new Map(items.map((i) => [i.id, i.name]));
+  const shopName = new Map(shops.map((s) => [s.id, s.name]));
+
+  return {
+    scope,
+    totalShrinkage: opnameLoss.add(damage).toString(),
+    opnameLoss: opnameLoss.toString(),
+    damage: damage.toString(),
+    totalUnits,
+    // Sorted by value lost, descending: the worst item is the one the owner
+    // opened this screen to find, so it goes at the top.
+    byItem: [...byItem.entries()]
+      .map(([prizeItemId, v]) => ({
+        prizeItemId,
+        prizeName: itemName.get(prizeItemId) ?? "Unknown prize",
+        qty: v.qty,
+        opnameLossValue: v.opname.toString(),
+        damageValue: v.damage.toString(),
+        value: v.opname.add(v.damage).toString(),
+      }))
+      .sort((a, b) => new Prisma.Decimal(b.value).comparedTo(a.value)),
+    byShop: [...byShop.entries()]
+      .map(([shopId, v]) => ({
+        shopId,
+        shopName: shopName.get(shopId) ?? "Unknown shop",
+        qty: v.qty,
+        value: v.value.toString(),
+      }))
+      .sort((a, b) => new Prisma.Decimal(b.value).comparedTo(a.value)),
+  };
+}
+
+/**
+ * §9 Prize Redemption Report — what customers actually took home.
+ *
+ * Deliberately **not** cost-gated at the top. Quantities, ticket spend and
+ * redemption counts are operational facts a manager needs to restock, and §7.5
+ * restricts *cost*, not activity. So the cost fields are resolved per-caller
+ * instead: `canSeeCost` decides whether `cogs` is populated at all, and the
+ * restricted branch never reads `unitCogsAtConsumption` — the D-63 rule that a
+ * DTO and its exporter must branch on the same predicate applies here too.
+ *
+ * `tickets` comes from `RedemptionLine.ticketCostTotal`, the price snapshotted
+ * at redemption — never the prize's current `ticketCost`. The price may have
+ * changed since (§4.8 audits exactly that), and this report has to say what the
+ * customer actually paid.
+ *
+ * A voided redemption is excluded (`isVoided: false`), matching how §9 defines
+ * revenue as completed sales only. Note `Redemption` uses a boolean rather than
+ * the `status` enum `Sale` has — they are not the same shape.
+ */
+export interface PrizeRedemptionReport {
+  redemptions: number;
+  itemsGiven: number;
+  ticketsSpent: number;
+  /** Null for a caller who may not see cost (§7.5). */
+  totalCogs: string | null;
+  byItem: {
+    prizeItemId: string;
+    prizeName: string;
+    qty: number;
+    tickets: number;
+    cogs: string | null;
+  }[];
+}
+
+/**
+ * Redemption lines for a scope, with `cogsTotal` present ONLY when permitted.
+ *
+ * Two separate queries rather than one conditional `select`, because the
+ * restricted branch must not name the cost column at all (§7.5) — and because a
+ * conditional select object widens the result to `unknown` and would push us
+ * toward a cast, which is exactly how a cost field leaks back in.
+ *
+ * The restricted branch returns `cogsTotal: null`, so every caller has to make
+ * a deliberate decision about the null rather than silently summing a zero it
+ * mistook for a real figure.
+ */
+export async function redemptionLinesForScope(
+  scope: ResolvedScope,
+  withCost: boolean
+): Promise<
+  { qty: number; ticketCostTotal: number; prizeItemId: string; cogsTotal: Prisma.Decimal | null }[]
+> {
+  const where = {
+    redemption: {
+      shopId: { in: scope.shopIds },
+      businessDate: { gte: scope.from, lte: scope.to },
+      isVoided: false,
+    },
+  };
+
+  if (withCost) {
+    return prisma.redemptionLine.findMany({
+      where,
+      select: {
+        qty: true,
+        ticketCostTotal: true,
+        prizeItemId: true,
+        cogsTotal: true,
+      },
+    });
+  }
+
+  const rows = await prisma.redemptionLine.findMany({
+    where,
+    select: { qty: true, ticketCostTotal: true, prizeItemId: true },
+  });
+  return rows.map((r) => ({ ...r, cogsTotal: null }));
+}
+
+export async function prizeRedemptionReport(
+  actor: Actor,
+  input: ReportRangeInput
+): Promise<PrizeRedemptionReport & { scope: ResolvedScope }> {
+  const scope = await resolveScope(actor, input);
+  const withCost = canSeeCostForScope(actor, scope);
+
+  const [redemptionCount, lines] = await Promise.all([
+    prisma.redemption.count({
+      where: {
+        shopId: { in: scope.shopIds },
+        businessDate: { gte: scope.from, lte: scope.to },
+        isVoided: false,
+      },
+    }),
+    redemptionLinesForScope(scope, withCost),
+  ]);
+
+  let itemsGiven = 0;
+  let ticketsSpent = 0;
+  let totalCogs = ZERO;
+  const byItem = new Map<
+    string,
+    { qty: number; tickets: number; cogs: Prisma.Decimal }
+  >();
+
+  for (const line of lines) {
+    // ticketCostTotal is ALREADY qty × ticketCostEach — multiplying by qty
+    // again would square the quantity and silently inflate every figure here.
+    const tickets = line.ticketCostTotal;
+    // null on the restricted branch by construction, never a real zero.
+    const cogs = line.cogsTotal ?? ZERO;
+
+    itemsGiven += line.qty;
+    ticketsSpent += tickets;
+    totalCogs = totalCogs.add(cogs);
+
+    const current = byItem.get(line.prizeItemId) ?? {
+      qty: 0,
+      tickets: 0,
+      cogs: ZERO,
+    };
+    byItem.set(line.prizeItemId, {
+      qty: current.qty + line.qty,
+      tickets: current.tickets + tickets,
+      cogs: current.cogs.add(cogs),
+    });
+  }
+
+  const items = await prisma.prizeItem.findMany({
+    where: { id: { in: [...byItem.keys()] } },
+    select: { id: true, name: true },
+  });
+  const nameById = new Map(items.map((i) => [i.id, i.name]));
+
+  return {
+    scope,
+    redemptions: redemptionCount,
+    itemsGiven,
+    ticketsSpent,
+    totalCogs: withCost ? totalCogs.toString() : null,
+    byItem: [...byItem.entries()]
+      .map(([prizeItemId, v]) => ({
+        prizeItemId,
+        prizeName: nameById.get(prizeItemId) ?? "Unknown prize",
+        qty: v.qty,
+        tickets: v.tickets,
+        cogs: withCost ? v.cogs.toString() : null,
+      }))
+      // Most-redeemed first: this report's job is to say what is moving.
+      .sort((a, b) => b.qty - a.qty),
   };
 }
 

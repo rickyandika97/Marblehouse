@@ -20,11 +20,13 @@ import {
   liabilityReport,
   lowStockReport,
   prizeExpenseReport,
+  prizeRedemptionReport,
   profitReport,
   reportRangeSchema,
   salesByShop,
   salesByStaff,
   salesSummary,
+  shrinkageReport,
   stockValuation,
   type ReportRangeInput,
 } from "@/server/services/reports";
@@ -40,6 +42,13 @@ const REPORTS: Record<
     byShop: (await salesByShop(actor, input)).rows,
     byStaff: (await salesByStaff(actor, input)).rows,
   }),
+  // The `sales` entry above bundles these, but §7.8 gives every §9 report its
+  // own address, and the CSV registry already exposes both names. A name that
+  // exports but cannot be fetched as JSON is the kind of asymmetry that turns
+  // into a 404 for whoever wires up the next screen.
+  "sales-by-shop": salesByShop,
+  "sales-by-staff": salesByStaff,
+  expenses: expenseReport,
   customers: customerReport,
   "prize-expense": prizeExpenseReport,
   "stock-valuation": stockValuation,
@@ -47,6 +56,8 @@ const REPORTS: Record<
   profit: profitReport,
   attendance: attendanceReport,
   "low-stock": lowStockReport,
+  shrinkage: shrinkageReport,
+  "prize-redemption": prizeRedemptionReport,
 };
 
 export async function GET(

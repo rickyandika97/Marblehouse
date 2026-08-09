@@ -32,6 +32,9 @@ import {
   lowStockReport,
   resolveScope,
   assertCanSeeCost,
+  shrinkageReport,
+  prizeRedemptionReport,
+  redemptionLinesForScope,
 } from "@/server/services/reports";
 import { getDashboard } from "@/server/services/dashboard";
 
@@ -791,5 +794,193 @@ describe("lowStockReport (§4.8)", () => {
     });
     const silent = await lowStockReport(actorFor("OWNER"), { shopId: shopA });
     expect(silent.rows.find((r) => r.prizeItemId === prizeId)).toBeUndefined();
+  });
+});
+
+// ─────────────────── SHRINKAGE & PRIZE REDEMPTION (Phase 10) ───────────────────
+
+/** A completed redemption with one line, at known ticket and cost values. */
+async function makeRedemption(args: {
+  shopId: string;
+  qty: number;
+  ticketCostTotal: number;
+  cogsTotal: number;
+  isVoided?: boolean;
+  businessDate?: Date;
+}) {
+  return prisma.redemption.create({
+    data: {
+      shopId: args.shopId,
+      customerId,
+      userId: staffId,
+      totalTickets: args.ticketCostTotal,
+      totalCogs: new Prisma.Decimal(args.cogsTotal),
+      isVoided: args.isVoided ?? false,
+      businessDate: args.businessDate ?? DAY,
+      lines: {
+        create: {
+          prizeItemId: prizeId,
+          qty: args.qty,
+          ticketCostEach: Math.round(args.ticketCostTotal / args.qty),
+          ticketCostTotal: args.ticketCostTotal,
+          cogsTotal: new Prisma.Decimal(args.cogsTotal),
+        },
+      },
+    },
+  });
+}
+
+describe("shrinkageReport (§9)", () => {
+  it("splits OPNAME_LOSS from DAMAGE and totals both", async () => {
+    // 2 × 1.500 lost at a count, 3 × 1.000 declared damaged = 3.000 + 3.000.
+    await consume({ shopId: shopA, qty: 2, unitCogs: 1_500, type: "OPNAME_LOSS" });
+    await consume({ shopId: shopA, qty: 3, unitCogs: 1_000, type: "DAMAGE" });
+    // A REDEEM must never land in shrinkage — that is §9's "mixing it into
+    // prize expense hides theft", in the other direction.
+    await consume({ shopId: shopA, qty: 10, unitCogs: 9_999, type: "REDEEM" });
+
+    const r = await shrinkageReport(actorFor("OWNER"), { shopId: shopA, ...range });
+
+    expect(r.opnameLoss).toBe("3000");
+    expect(r.damage).toBe("3000");
+    expect(r.totalShrinkage).toBe("6000");
+    expect(r.totalUnits).toBe(5);
+  });
+
+  it("breaks the loss down by item, keeping the two causes apart", async () => {
+    await consume({ shopId: shopA, qty: 2, unitCogs: 1_500, type: "OPNAME_LOSS" });
+    await consume({ shopId: shopA, qty: 1, unitCogs: 1_000, type: "DAMAGE" });
+
+    const r = await shrinkageReport(actorFor("OWNER"), { shopId: shopA, ...range });
+    const row = r.byItem.find((i) => i.prizeItemId === prizeId);
+
+    expect(row?.opnameLossValue).toBe("3000");
+    expect(row?.damageValue).toBe("1000");
+    expect(row?.value).toBe("4000");
+    expect(row?.qty).toBe(3);
+  });
+
+  it("attributes loss to the shop it happened at", async () => {
+    await consume({ shopId: shopA, qty: 2, unitCogs: 1_000, type: "OPNAME_LOSS" });
+    await consume({ shopId: shopB, qty: 1, unitCogs: 5_000, type: "DAMAGE" });
+
+    const r = await shrinkageReport(actorFor("OWNER", { shopIds: [shopA, shopB] }), {
+      ...range,
+    });
+
+    expect(r.byShop.find((s) => s.shopId === shopA)?.value).toBe("2000");
+    expect(r.byShop.find((s) => s.shopId === shopB)?.value).toBe("5000");
+    // Sorted worst-first, which is the whole point of the screen.
+    expect(r.byShop[0]?.shopId).toBe(shopB);
+  });
+
+  it("refuses a plain MANAGER — it is a cost report (§7.5)", async () => {
+    await expect(
+      shrinkageReport(actorFor("MANAGER"), { shopId: shopA, ...range })
+    ).rejects.toThrow();
+  });
+
+  it("refuses a Purchasing manager a scope containing an unassigned shop (D-62)", async () => {
+    const purchasing = actorFor("MANAGER", {
+      shopIds: [shopA],
+      canEnterCost: true,
+    });
+    // Their OWN shop is fine...
+    await expect(
+      shrinkageReport(purchasing, { shopId: shopA, ...range })
+    ).resolves.toBeDefined();
+
+    // ...but a scope spanning a shop they do not manage must be refused, or
+    // they read a figure blended across it. This is the `every`-not-`some`
+    // case; with `some` the call below would succeed.
+    const mixed = actorFor("MANAGER", {
+      shopIds: [shopA, shopB],
+      canEnterCost: false,
+    });
+    await expect(shrinkageReport(mixed, { ...range })).rejects.toThrow();
+  });
+});
+
+describe("prizeRedemptionReport (§9)", () => {
+  it("counts redemptions, items and tickets, excluding voided ones", async () => {
+    await makeRedemption({ shopId: shopA, qty: 2, ticketCostTotal: 200, cogsTotal: 3_000 });
+    await makeRedemption({ shopId: shopA, qty: 1, ticketCostTotal: 100, cogsTotal: 1_000 });
+    // A voided redemption returned its stock and its tickets; counting it here
+    // would overstate what customers actually took home.
+    await makeRedemption({
+      shopId: shopA,
+      qty: 9,
+      ticketCostTotal: 9_999,
+      cogsTotal: 99_999,
+      isVoided: true,
+    });
+
+    const r = await prizeRedemptionReport(actorFor("OWNER"), { shopId: shopA, ...range });
+
+    expect(r.redemptions).toBe(2);
+    expect(r.itemsGiven).toBe(3);
+    // 200 + 100 — NOT multiplied by qty again. ticketCostTotal is already the
+    // line total, and squaring it is the obvious bug in this function.
+    expect(r.ticketsSpent).toBe(300);
+    expect(r.totalCogs).toBe("4000");
+  });
+
+  it("gives a plain MANAGER the activity but NO cost figure (§7.5)", async () => {
+    await makeRedemption({ shopId: shopA, qty: 2, ticketCostTotal: 200, cogsTotal: 3_000 });
+
+    const r = await prizeRedemptionReport(actorFor("MANAGER"), {
+      shopId: shopA,
+      ...range,
+    });
+
+    // The activity is operational and a manager needs it to restock.
+    expect(r.redemptions).toBe(1);
+    expect(r.itemsGiven).toBe(2);
+    expect(r.ticketsSpent).toBe(200);
+    // The cost is not theirs to see, and null rather than "0" so nobody can
+    // mistake a withheld figure for a real zero.
+    expect(r.totalCogs).toBeNull();
+    expect(r.byItem[0]?.cogs).toBeNull();
+  });
+
+  it("gives a Purchasing manager the cost at their own shop", async () => {
+    await makeRedemption({ shopId: shopA, qty: 1, ticketCostTotal: 100, cogsTotal: 2_500 });
+
+    const r = await prizeRedemptionReport(
+      actorFor("MANAGER", { shopIds: [shopA], canEnterCost: true }),
+      { shopId: shopA, ...range }
+    );
+
+    expect(r.totalCogs).toBe("2500");
+  });
+
+  /**
+   * Asserts the QUERY, not just the output.
+   *
+   * A mutation that made the restricted branch select `cogsTotal` anyway passed
+   * every other test in this file, because `withCost` still nulls the figure on
+   * the way out. That is D-62 exactly: the guard downstream hid a broken guard
+   * upstream. §7.5 requires the restricted path to not READ the cost column —
+   * "do not implement this by deleting keys from a full object" — so the check
+   * has to look at what came back from the database.
+   */
+  it("never reads the cost column at all on the restricted branch (§7.5)", async () => {
+    await makeRedemption({ shopId: shopA, qty: 1, ticketCostTotal: 100, cogsTotal: 7_777 });
+    const scope = await resolveScope(actorFor("OWNER"), { shopId: shopA, ...range });
+
+    const restricted = await redemptionLinesForScope(scope, false);
+    expect(restricted).toHaveLength(1);
+    expect(restricted[0]!.cogsTotal).toBeNull();
+
+    const permitted = await redemptionLinesForScope(scope, true);
+    expect(permitted[0]!.cogsTotal?.toString()).toBe("7777");
+  });
+
+  it("ranks by quantity given, most-redeemed first", async () => {
+    await makeRedemption({ shopId: shopA, qty: 5, ticketCostTotal: 500, cogsTotal: 100 });
+
+    const r = await prizeRedemptionReport(actorFor("OWNER"), { shopId: shopA, ...range });
+    expect(r.byItem[0]?.qty).toBe(5);
+    expect(r.byItem[0]?.prizeName).toContain("R8 Prize");
   });
 });

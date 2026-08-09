@@ -22,9 +22,11 @@ import {
   liabilityReport,
   lowStockReport,
   prizeExpenseReport,
+  prizeRedemptionReport,
   profitReport,
   salesByShop,
   salesByStaff,
+  shrinkageReport,
   stockValuation,
   type ReportRangeInput,
 } from "./reports";
@@ -257,6 +259,61 @@ const EXPORTS: Record<string, Builder> = {
               },
             ]
           : quantityColumns
+      ),
+    };
+  },
+
+  /**
+   * Shrinkage (§9). Cost-gated by the SERVICE — `shrinkageReport` calls
+   * `assertCanSeeCost`, so an unentitled caller gets a 403 and no CSV is ever
+   * built. There is deliberately no cost-free variant of this export: every
+   * column on it is a money figure, so a stripped version would be an empty
+   * file promising data it cannot contain (the D-63 defect).
+   */
+  shrinkage: async (actor, input) => {
+    const report = await shrinkageReport(actor, input);
+    return {
+      filename: `shrinkage-${range(report.scope)}.csv`,
+      csv: toCsv(
+        report.byItem,
+        cols<(typeof report.byItem)[number]>([
+          { header: "Prize", value: (r) => r.prizeName },
+          { header: "Units lost", value: (r) => r.qty },
+          { header: "Lost at count", value: (r) => r.opnameLossValue },
+          { header: "Damaged", value: (r) => r.damageValue },
+          { header: "Total value lost", value: (r) => r.value },
+        ])
+      ),
+    };
+  },
+
+  /**
+   * Prize Redemption (§9). NOT gated at the top: quantities and ticket spend
+   * are operational, and a manager needs them to restock.
+   *
+   * The cost column branches on `totalCogs !== null` — the value the SERVICE
+   * decided — rather than on a role test of its own. D-63: when a DTO and its
+   * exporter both branch on role, they must branch on the same predicate, and
+   * the safest way to guarantee that is to not have a second predicate.
+   */
+  "prize-redemption": async (actor, input) => {
+    const report = await prizeRedemptionReport(actor, input);
+    const activityColumns = cols<(typeof report.byItem)[number]>([
+      { header: "Prize", value: (r) => r.prizeName },
+      { header: "Items given", value: (r) => r.qty },
+      { header: "Tickets spent", value: (r) => r.tickets },
+    ]);
+
+    return {
+      filename: `prize-redemption-${range(report.scope)}.csv`,
+      csv: toCsv(
+        report.byItem,
+        report.totalCogs !== null
+          ? [
+              ...activityColumns,
+              { header: "Prize cost", value: (r) => r.cogs ?? "" },
+            ]
+          : activityColumns
       ),
     };
   },

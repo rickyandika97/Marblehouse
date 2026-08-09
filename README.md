@@ -8,19 +8,21 @@ through a Cloudflare Tunnel. No cloud platform, no Vercel.
 
 - **Full specification:** [`docs/PRD.md`](docs/PRD.md)
 - **Rules for the coding agent:** [`CLAUDE.md`](CLAUDE.md)
-- **Status:** Phases 0–3, 5, 7 and 8 complete on a development machine.
-  Phases 4 (prizes, FIFO inventory, redemption), 6 (attendance) and 9 (backup
-  and restore) are built and verified on dev — engines, APIs and screens — but
-  **not signed off**. Each needs a hands-on acceptance pass:
+- **Status:** every phase is **code complete on a development machine.**
+  Phases 0–3, 5, 7 and 8 are signed off. Phases 4, 6, 9 and 10 are built and
+  verified on dev — engines, APIs and screens — but **not signed off**. Each
+  needs a hands-on pass that cannot be done from a shell:
 
   | Phase | What is still needed |
   |---|---|
   | 4 | A staff member using the redemption flow on the actual tablet |
   | 6 | A clock-in on a real device, location granted **and** denied — the camera and geolocation prompts genuinely cannot be tested any other way |
   | 9 | **A full restore onto a second machine**, rehearsed start to finish |
+  | 10 | A responsive pass on the real tablets, then **the one-branch pilot** |
 
-  All three are hands-on and can be done in one sitting. Phase 10 (polish and
-  pilot) is next after that.
+  The first three are one sitting. The fourth is the pilot itself: run one
+  branch on the app *and* on paper for a week, reconciling daily, before
+  rolling out to the rest. That is the last gate.
 
 ---
 

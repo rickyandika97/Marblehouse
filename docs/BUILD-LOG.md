@@ -28,7 +28,7 @@ why, not an edit to the old one.
 | 7 | Expenses | ✅ Done on dev — all §16 criteria verified |
 | 8 | Dashboards and reports | ✅ Done on dev — §16 criterion verified; see D-66 for the deferred report screens |
 | 9 | Backup, restore, hardening | 🟨 Built + verified on dev — awaiting the owner's own restore rehearsal on a second machine |
-| 10 | Polish and pilot | ⬜ Next |
+| 10 | Polish and pilot | 🟨 Code complete on dev — awaiting the on-device responsive pass and the one-branch pilot |
 
 ---
 
@@ -1754,6 +1754,328 @@ expected value ages into a check that tests nothing, and it does so silently.
 
 ---
 
+## Decisions taken during Phase 10
+
+### D-79 · The three remaining `window.prompt` sites share ONE dialog
+
+**Phase 10's first sweep.** Sale void, transfer cancel and attendance excuse all
+moved to `src/components/reason-dialog.tsx`, modelled on D-70's
+`expenses/edit-expense.tsx`.
+
+**One shared component rather than three copies of D-70's shape.** Three copies
+would be three places for the minimum-length rule to drift, and the next change
+would miss one — the same argument D-32 makes for keeping the ticket guard in
+one place. `edit-expense.tsx` stays inline because its dialog does double duty
+as the *edit* form; the shared component only handles reason-then-confirm.
+
+**The debt entry was WRONG about one of the three, and this matters.** It said
+all three needed the server's 3-character minimum. Checking the schemas:
+
+| Site | Server rule |
+|---|---|
+| Sale void — `voidSaleSchema` | `min(3)` |
+| Transfer cancel — `cancelTransferSchema` | `min(3)` |
+| **Attendance excuse — `editAttendanceSchema`** | **`note` is `.optional()`** |
+
+So the excuse dialog's 3-character requirement is a **UI rule**, not a mirrored
+server constraint, and `reason-dialog.tsx` says so in its header. Do not "tidy"
+that into a claim the server enforces it, and do not relax the other two, where
+it genuinely does. An excuse is also a *correction* rather than a reversal, so
+it confirms in the `default` button variant — colouring an approval red misreads
+what the owner is doing.
+
+What the prompt structurally could not do, and this does: enforce the minimum
+**before** the round trip. Verified in a browser at the boundary — empty and
+`ab` leave the button disabled, `abc` enables it, and **five spaces stay
+disabled** because the check trims first. That last case is a real bypass a
+naive `length >= 3` would have allowed.
+
+### D-80 · The PWA manifest is `app/manifest.ts`, and it is NOT offline support
+
+§8.11 calls the manifest optional-but-cheap. Built as a typed
+`src/app/manifest.ts` rather than a static `public/manifest.json` so Next serves
+it at `/manifest.webmanifest` with the right content type and the fields stay
+typed.
+
+Icons are **SVG**, drawn in-repo (`public/icon.svg`, `icon-maskable.svg`). No
+binary asset, and nothing is fetched at build time — the same constraint that
+keeps `next/font/google` out of `layout.tsx` (D-7). The maskable variant has
+deliberately *smaller* artwork inside the 80% safe zone, because Android crops
+it; a re-crop of the same file would clip.
+
+**§8.11 is explicit that a manifest does not add offline support, and the file
+says so where someone would go looking.** There is no service worker and no
+cache. A staff member whose wifi drops sees exactly what they see in a browser
+tab. Offline sales would need real conflict rules for money and are out of scope
+for v1 (§1.5) — do not let "we have a manifest" become "we work offline".
+
+iOS ignores the manifest's icon array entirely, so `appleWebApp` metadata is
+declared separately in `layout.tsx`.
+
+### D-81 · Clock-out shows the shift's end time instead of nagging
+
+**Owner decision, 9 Aug 2026.** `POST /api/attendance/clock-out` had existed and
+been tested since Phase 6 with **nothing calling it**, so a shift could be
+started and never finished — the "looks unfinished on the team screen" debt.
+
+The owner was offered three placements and chose none of them, pointing out
+instead that *the hour is set per shift*. That is the better answer, and it came
+from the data: `Attendance.shiftId` links each record to its shift, and
+`Shift.endTime` is stored, so the app already knows when each person is
+scheduled to finish. The card shows that (`P10 ClockOut Shift ends 17:00`).
+
+**So there is deliberately NO second banner.** §4.13 specifies exactly one — the
+red clock-in banner — and a persistent amber "still clocked in" bar would
+compete with it for the same strip while eating vertical space §8.11 wants the
+sale screen to keep. Information beats a nag.
+
+**`endTime` is read LIVE, not snapshotted.** There is no `shiftEndAtCapture`
+column to match `shiftStartAtCapture`, and none was added: the end time here is
+context for a decision being made *now*, never used to judge a past record, so
+§4.14's "editing a shift must not rewrite past lateness" still holds.
+
+**The note is optional, matching `clockOutSchema`** — which is why this is NOT
+the shared `ReasonDialog` (D-79). That component's whole shape is "you may not
+confirm until the reason is long enough"; here you always may. A blank note
+sends `{}`, never `{"note":""}` — verified by intercepting the request in the
+browser, and the row stored `null`.
+
+History rows now read `09:02 → 17:16`, or `→ still in` while open. Collapsing
+those two is what made the screen look unfinished in the first place.
+
+### D-82 · Phase 10 built SEVEN report screens, and two needed new services
+
+**Owner decision, 9 Aug 2026.** D-66 left nine §9 screens unbuilt and *Known
+issues* claimed they "all have a working service **and** a CSV export today —
+they need only a page". **That was true for five of them and wrong for two:**
+
+| Screen | What actually existed |
+|---|---|
+| Sales by Staff · Sales by Shop · Payment Method · Customer Leaderboard · Expense Report | service ✅ export ✅ — genuinely page-only |
+| **Shrinkage** | only a single `shrinkageExpenseValue` **total** inside `prizeExpenseReport`; no breakdown, no export |
+| **Prize Redemption** | **no report service at all** — only `listRedemptions`, an operational paged list |
+
+The owner chose to build all seven rather than defer the two. The attendance
+heatmap and weekly trend (§8.9) stay deferred — they need Recharts, which D-67
+reserves for exactly that job.
+
+**`shrinkageReport()` splits OPNAME_LOSS from DAMAGE, and that split is the
+point.** §9 keeps shrinkage out of prize expense because "mixing it into prize
+expense hides theft"; splitting *declared* damage from *discovered* opname loss
+is the same argument one level down. Damage has a name against it at the moment
+it happened. An opname loss is what a count found missing with nobody
+accountable — so a branch whose shrinkage is nearly all opname loss is the one
+to visit, and merging the columns destroys that signal. Owner and Purchasing
+only, via `assertCanSeeCost`.
+
+**`prizeRedemptionReport()` is deliberately NOT cost-gated at the top.**
+Quantities and ticket spend are operational facts a manager needs to restock,
+and §7.5 restricts *cost*, not activity. The cost is resolved per-caller
+instead: `cogs` comes back **`null`** — never `0`, which would be
+indistinguishable from a real zero — and the restricted query never names the
+cost column.
+
+`tickets` reads `RedemptionLine.ticketCostTotal`, which is **already** qty ×
+ticketCostEach. Multiplying by qty again squares the quantity; the mutation
+below proves the test catches it.
+
+### D-83 · `canSeeCostForScope` — the non-throwing twin, and it must stay `every`
+
+`prizeRedemptionReport` needs "may this caller see cost?" as a **boolean**, not
+a throw, so `assertCanSeeCost` was refactored to delegate to a new exported
+`canSeeCostForScope`.
+
+**It uses `every`, not `some`, for exactly D-62's reason** — with `some`, a
+Purchasing manager handed a mixed scope reads a figure blended across shops they
+do not manage. The two functions now share one implementation so they *cannot*
+drift, which is stronger than the comment that used to guard it. The mixed-scope
+test from D-62 still covers it: an `every → some` mutation fails it.
+
+### D-84 · A cost leak the output-level tests could not see
+
+**The most valuable thing this phase found. Read it before touching a
+restricted query.**
+
+`prizeRedemptionReport`'s restricted branch runs a **separate query that does
+not select `cogsTotal`**, per §7.5's "the restricted builder physically does not
+read the cost columns — do not implement this by deleting keys from a full
+object".
+
+A mutation that made the restricted branch select `cogsTotal` anyway **passed
+every test in the file**, because `withCost` still nulled the figure on the way
+out. The downstream guard hid the broken upstream one. That is D-62's shape
+repeating: a green suite under mutation means either a weak test or a redundant
+guard, and you cannot tell which without looking.
+
+The fix is a test that asserts on the **query result**, not the output —
+`redemptionLinesForScope` is exported solely so it can be called directly. With
+it, the same mutation fails immediately (`expected 7777 to be null`). **If you
+refactor that function, re-run the mutation.**
+
+### D-85 · Two `Number()`-on-money slips, caught before commit
+
+Both new "share of total" columns were first written with
+`Number(revenue) / total`, which violates CLAUDE.md rule 5 — `Number()` on a
+14-digit Decimal is lossy *before* the divide. Both are now
+`new Prisma.Decimal(x).div(total)`.
+
+Worth recording because the pull toward it is strong on a *display-only*
+percentage, where the value is never stored. The rule has no display exemption,
+and a figure someone reads off a screen and types into a spreadsheet is not
+display-only in practice. The only JS-number arithmetic on these pages is over
+marble and ticket **counts**, which are integers.
+
+### D-86 · Screens whose API 404s, found by the role sweep
+
+The seven screens shipped, typechecked and rendered — and `sales-by-staff`,
+`sales-by-shop` and `expenses` had **no JSON report registered**, so
+`/api/reports/sales-by-staff` returned 404 while the screen worked. The CSV
+registry already knew two of those names; the JSON registry did not.
+
+Nothing in typecheck, lint or the tests could see this: the screens call the
+*services* directly, not the API. It surfaced only from sweeping every report
+name as every role. §7.8 gives every §9 report its own address, and an asymmetry
+where a name exports but cannot be fetched is how the next person wiring up a
+screen loses an afternoon. `verify-phase10.sh` now checks all six names.
+
+**This is D-33/D-34/D-64's lesson in a fourth consecutive phase.**
+
+### D-87 · `costOnly` on the reports index — D-34 in its "hidden" form
+
+Shrinkage is cost-bearing but **not owner-only**: a Purchasing manager may read
+it for their own shops. Marking it `ownerOnly` in the index would have hidden a
+screen they are entitled to — D-34's bug wearing a different coat, since a
+hidden door and a 403 are the same outcome for the person who needs it.
+
+So the index gained a `costOnly` flag filtered through **`canSeeCost`**, the
+same predicate the services use, and the two therefore cannot disagree.
+Verified three ways: the owner and a Purchasing manager are offered Shrinkage, a
+plain manager is not, and flipping `costOnly` to `ownerOnly` turns
+`verify-phase10.sh` red.
+
+### D-88 · Loading skeletons echo the layout; the 404 page finally exists
+
+Every report page is `force-dynamic` and runs real aggregates, and Next renders
+**nothing** until the server component resolves. A blank screen for a second
+reads as broken and gets the page reloaded, which starts the query again.
+
+`loading.tsx` sits at the **reports segment root**, so all fifteen screens get
+it from one file rather than fifteen that drift. The blocks are a *layout echo*,
+not a spinner, so nothing jumps when data lands.
+
+Separately: `notFound()` had been called from three places since Phase 8 (D-68's
+`asPageError` among them) with **no `not-found.tsx` to render it**, so those
+paths fell through to Next's stock page with no way back into the app.
+`src/app/not-found.tsx` now matches `forbidden.tsx`'s tone. The string "404"
+appears nowhere on it — it means nothing to the staff member reading it.
+
+### D-89 · "Printable receipts" in §16's Phase 10 line was NOT built
+
+§16's Phase 10 scope names "printable receipts". **CLAUDE.md's do-not-reopen
+table says "No receipt printing in v1 — on-screen confirmation only."**
+
+CLAUDE.md wins: it is the higher-precedence document, and the decision is listed
+among those explicitly not to reopen. Flagged to the owner rather than silently
+skipped, and recorded here so a future reader finds the contradiction already
+resolved instead of re-litigating it. If receipts are ever wanted, that table is
+the entry to change first.
+
+### D-90 · `verify-phase10.sh` was proven by four mutations — one of which passed
+
+D-43's rule again. 56 checks passed first run, which is when to be suspicious:
+
+| Mutation | Result |
+|---|---|
+| `withCost = true` — leak cost to a plain manager | **caught** by 3 checks (JSON, per-item, CSV) |
+| `costOnly` → `ownerOnly` — hide Shrinkage from Purchasing | **caught** |
+| every → some in `canSeeCostForScope` | **caught** by D-62's mixed-scope test |
+| **DAMAGE misfiled as OPNAME_LOSS** | **PASSED — the script was blind to it** |
+
+The fourth is the one worth reading. The check compared
+`opnameLoss + damage == totalShrinkage`, and **a reclassification does not
+change a sum**. Worse, the demo dataset has 12 `OPNAME_LOSS` movements and
+**zero `DAMAGE`**, so the bug was unobservable in the fixture as well.
+
+Both halves had to be fixed: the check now recomputes the split from the
+**database in independent SQL** and compares it field-by-field, so it catches
+misclassification in either direction regardless of what the seed contains. The
+same mutation now reports `got: 0|93500` against a real `93500|0`.
+
+**D-69's lesson, third occurrence:** a green result under mutation means either
+a weak check or a fixture that cannot express the bug. Check the fixture before
+rewriting the test — and here it was genuinely both.
+
+---
+
+## What Phase 10 built
+
+```
+src/components/
+  reason-dialog.tsx      D-79. THE shared reason-then-confirm dialog. minLength
+                         is per-site because the SERVER rules differ — read the
+                         header before changing it.
+  skeleton.tsx           D-88. Skeleton + ReportSkeleton. Layout echo, not a
+                         spinner.
+
+src/app/
+  manifest.ts            D-80. §8.11's PWA manifest. NOT offline support.
+  not-found.tsx          D-88. The 404 that notFound() has needed since Phase 8.
+  layout.tsx             TOUCHED: manifest link + appleWebApp metadata.
+
+public/
+  icon.svg               D-80. Drawn in-repo; no binary, no build-time fetch.
+  icon-maskable.svg      Smaller artwork inside Android's 80% safe zone.
+
+src/app/(app)/attendance/
+  clock-out-card.tsx     D-81. The caller POST /api/attendance/clock-out never
+                         had. Shows the shift's scheduled end instead of nagging.
+
+src/app/(app)/reports/
+  loading.tsx            D-88. One file; every report screen inherits it.
+  sales-by-staff/ sales-by-shop/ payment-methods/ customers/ expenses/
+  shrinkage/ prize-redemption/     The seven new §9 screens (D-82).
+  page.tsx               TOUCHED: + costOnly (D-87) and the seven entries.
+
+src/app/(app)/dashboard/loading.tsx    D-88.
+
+src/server/services/
+  reports.ts             + shrinkageReport, prizeRedemptionReport (D-82),
+                         canSeeCostForScope (D-83), redemptionLinesForScope
+                         (D-84 — exported ONLY so its query can be tested).
+  reports-export.ts      + shrinkage and prize-redemption CSV builders.
+  attendance.ts          TOUCHED: attendanceStatus now returns shopName and the
+                         shift's endTime (D-81).
+
+src/app/api/reports/[name]/route.ts    TOUCHED: + shrinkage, prize-redemption,
+                         sales-by-shop, sales-by-staff, expenses (D-86).
+
+src/components/app-shell.tsx   TOUCHED: shop switcher raised 32px → 44px.
+
+scripts/verify-phase10.sh      57 checks. Proven by four mutations (D-90).
+```
+
+**No migration.** Phase 10 reads; it adds no columns, so PRD §6 still matches
+`prisma/schema.prisma`.
+
+**§16 criteria:**
+
+| Criterion | Status |
+|---|---|
+| Loading and empty states | ✅ D-88 |
+| Error copy in plain language | ✅ 404 page added; service copy was already plain |
+| PWA manifest | ✅ D-80, verified served with the right content type |
+| Printable receipts | ⛔ **Deliberately not built — D-89.** CLAUDE.md forbids it in v1 |
+| **Responsive pass on real devices** | ⬜ **OUTSTANDING — needs a tablet** |
+| **One-branch pilot for a week** | ⬜ **OUTSTANDING — the owner's, and the real gate** |
+
+**Why Phase 10 is 🟨.** Everything provable from a shell and a desktop browser
+is proven. The two things §16 actually asks for at the end — a responsive pass
+on **real devices** and a **one-week single-branch pilot run alongside paper** —
+are hands-on and cannot be closed from here. They join the Phase 4, 6 and 9
+device passes.
+
+---
+
 ## What Phase 9 built
 
 ```
@@ -2261,7 +2583,7 @@ APIs: `/api/auth/{login,logout,me,change-password,[...all]}`,
 ```bash
 npm run typecheck                 # clean
 npm run lint                      # clean
-npm test                          # 180 tests (D-26) — safe to re-run, no residue
+npm test                          # 193 tests (D-26) — safe to re-run, no residue
 docker compose build              # succeeds (catches Linux case-sensitivity)
 bash scripts/verify-phase1.sh     # 21/21 acceptance checks, needs npm run dev
 bash scripts/verify-phase2.sh     # 30/30 acceptance checks, needs npm run dev
@@ -2272,7 +2594,17 @@ bash scripts/verify-phase6.sh     # 41 checks, needs npm run dev
 bash scripts/verify-phase7.sh     # 44 checks, needs npm run dev
 bash scripts/verify-phase8.sh     # 93 checks, needs npm run dev AND --demo data
 bash scripts/verify-phase9.sh     # 76 checks, needs npm run dev
+bash scripts/verify-phase10.sh    # 57 checks, needs npm run dev AND --demo data
 ```
+
+**`verify-phase10.sh` reads only** — it creates no rows and is safe to re-run.
+It needs the demo dataset for the reports to have anything in them, and it sets
+a work session for each test account first: without one, §4.7 redirects every
+page to `/select-shop` and every check reports 307, which looks exactly like a
+permission bug.
+
+`npm test` is now **193 tests** (was 180): +3 for the clock-out card's service
+fields (D-81) and +10 for the two new report services (D-82, D-84).
 
 **`verify-phase9.sh` writes.** It creates real archives under `backups/`, and
 creates and drops a scratch database called `marblehouse_verify9`. It never
@@ -2340,19 +2672,19 @@ OWNER can merge and the merged caches reconcile to the moved ledgers.
 | Edge Runtime build warning | From `jose` inside Better Auth. Harmless — we do not use the Edge Runtime (§5.2 forbids it) and nothing enables it. |
 | Phases 1–3 have no unit tests | Vitest landed in Phase 4 (D-26), and `npm test` is a phase gate from Phase 4 onward (D-37). Phases 1–3 shipped before either existed and are covered only by the curl-based `verify-phase{1,2,3}.sh`. §15's remaining unit tests — business-date boundaries at 03:59/04:00/23:59, lateness at the grace boundary, phone normalisation — have no home yet. **Add each as its phase comes up** (lateness with Phase 6, for example) rather than in one late sweep; the business-date cases are the exception and are worth backfilling sooner, since every phase stamps `businessDate` and D-18 made the rule global. |
 | ~~Red attendance banner~~ | **Built in Phase 6.** Not dismissible, and it does not block work (D-45). |
-| Clock-out has no UI | `POST /api/attendance/clock-out` exists, is tested and works; nothing calls it. §4.13 says v1 lateness is clock-in only, so this is not on the critical path — but a shift with no clock-out looks unfinished on the team screen. Wire a button into the attendance screen in Phase 10. |
+| ~~Clock-out has no UI~~ | **Built — D-81.** A card on /attendance showing the shift's scheduled end time. Deliberately no second banner. |
 | Clock-out photo is not captured | `Shop.requireClockOutPhoto` and `Attendance.clockOutPhotoPath` both exist and the purge job already clears the file. Nothing writes it. §4.13 makes it optional and per-shop; build it with the clock-out button. |
 | No attendance reporting surfaces | §8.9 also asks for a calendar heatmap, a ranked lateness table and a weekly trend chart. Those are reporting, and Phase 8 owns reports — the data (`isLate`, `lateMinutes`, `businessDate`) is all recorded and indexed for them. |
 | ~~No expense edit UI~~ | **Built — D-70.** Owner-only edit of category, amount and note, plus soft delete with a mandatory reason in a real dialog. |
 | No receipt upload UI | `POST /api/expenses/:id/receipt` exists, is permission-checked and is covered by tests; no screen calls it. §8.8 asks for an optional receipt photo on the add form. **Deferred by owner decision on 8 Aug 2026** — not needed yet. Service and storage are done (D-57), so this stays UI-only whenever it is wanted. |
 | Expense list has no filters or pagination UI | The service takes `categoryId`, `from`, `to` and a cursor, and returns `nextCursor`; the screen renders the first page for the work-session shop with no date-range or category filter and no "load more". §8.8 specifies all three. Phase 8 owns expense *reporting* and is the natural place. |
 | Expenses live under Settings | D-58. Reachable but not where anyone looks for a daily task. Phase 10's "More" tab (D-36) should carry it. |
-| Excuse reason uses `window.prompt` | Third site, after the sale void and the transfer cancel. **A real dialog now exists** — `expenses/edit-expense.tsx` (D-70) — so Phase 10's sweep should copy that shape rather than invent one. The prompt cannot enforce the server's minimum reason length; the dialog does. |
-| Shop switcher is 32px tall | The top-bar "Branch 1" control in `app-shell.tsx` (Phase 1) is below NF-3's 44px floor. Allowed by §8.11 only because a larger equivalent exists at Settings → Current shop, so it is not the *only* way to switch. Raise it in Phase 10's responsive pass. Found by measuring the rendered page (D-51). |
+| ~~Excuse reason uses `window.prompt`~~ | **Fixed — D-79.** All three sites now share `components/reason-dialog.tsx`. Note the excuse note is **optional** server-side; its minimum is a UI rule only. |
+| ~~Shop switcher is 32px tall~~ | **Fixed in Phase 10.** Now `min-h-11`, measured at 236×44 in a real browser rather than trusting the class name. |
 | Duplicate shifts render unfiltered | The clock-in chooser showed **11** shifts at BR-1, including four identical `Verify Shift` rows — accumulated `verify-phase6.sh` data, not a code bug (`npm run db:reset` clears it). But nothing in the UI or the service guards against genuinely duplicate shift names, and staff would see the same confusing list. Consider a uniqueness rule or a dedupe on the chooser when shift management gets its Phase 10 pass. |
 | ~~`Button render={<a>}` a11y warning~~ | **Fixed 7 Aug 2026 — see D-53.** `nativeButton` is now derived in the wrapper, covering all eight sites and every future one. |
 | ~~Dashboard screen~~ | **Built in Phase 8.** §8.3's five rows, §8.4's stripped manager variant. |
-| Nine §9 report screens not built | D-66. Sales by Staff, Sales by Shop, Payment Method Breakdown, Customer Spend Leaderboard, Prize Redemption, Shrinkage, and Expense Report all have a working service **and** a CSV export today — they need only a page. §8.9's attendance heatmap and weekly trend need a chart (use Recharts there, not the dashboard's inline SVG — D-67). No service or schema work in any of them. |
+| ~~Nine §9 report screens not built~~ | **Seven built — D-82.** All fifteen §9 screens now exist except the §8.9 attendance **heatmap and weekly trend**, which still need Recharts (D-67 reserves it for exactly that). Note this entry was **wrong**: it claimed all nine were page-only, but Shrinkage had no breakdown or export and Prize Redemption had no service at all — both were written in Phase 10. |
 | ~~No date-range picker on report screens~~ | **Built — D-68.** Presets plus custom dates and a shop picker, shared across all seven screens via `ReportShell`. |
 | ~~No shop filter control on the owner dashboard~~ | **Built — D-69.** Owner-only, hidden below two shops. |
 | ~~Expense screen has no filters~~ | **Built — D-69.** Date presets, custom range, category chips, shop, and §8.8's "load more". |
@@ -2364,13 +2696,17 @@ OWNER can merge and the merged caches reconcile to the moved ledgers.
 | No automatic off-machine copy | **Owner decision, 8 Aug 2026 — D-72.** No USB copy and no rclone. The manual copy log plus the escalating alert are therefore the ONLY protection against total loss; treat them as load-bearing. |
 | Backup alerts have no email/Telegram | §13.4 mentions notification "if you later configure email or Telegram". Nothing is wired, and §5.4/D-1 keep every email path deliberately disabled. The dashboard alert is the whole channel. Worth revisiting only if the owner stops opening the dashboard daily. |
 | `verify-phase9.sh` restores locally, not to a second machine | The script proves the archive restores and matches its manifest, but into a scratch database on the SAME Mac. §16's rehearsal — and §15's manual checklist — want a second physical machine. That is the outstanding Phase 9 gate. |
-| Void reason uses `window.prompt` | Functional and accessible, but ugly on a tablet and it cannot enforce the 3-character minimum client-side (the server does). Replace with a proper dialog in Phase 10's polish pass. **The Phase 5 transfer-cancel reason uses the same prompt and should be replaced at the same time.** |
+| ~~Void reason uses `window.prompt`~~ | **Fixed — D-79**, together with the transfer cancel. The minimum is now enforced before the round trip, including the trimmed-whitespace case. |
 | Transfers are single-line in the UI | The API accepts up to 100 lines per transfer and the service handles them; the dispatch form sends one prize at a time. Multi-line dispatch is a UI change only — no service or schema work. Worth doing in Phase 10 if branches move mixed boxes often. |
 | Opname counts every stocked item | `startOpname` accepts `prizeItemIds` to count a subset, but the screen always starts a full count. §8.7 says "select items or all". Partial counts are supported server-side; the picker is not built. |
 | No in-transit column on the On hand tab | §8.7 lists one. `inTransitTo()` exists in `transfers.ts` and returns the figure per prize, but the On hand table does not render it yet. Wire it up in Phase 8 with the other stock reporting, or sooner if a manager asks where a box went. |
 | Customer detail has no action buttons | §8.5 specifies Deposit / Withdraw / Award / Redeem. Those are Phases 3–4 and are deliberately not stubbed. |
 | Customer edit UI not built | `PATCH /api/customers/:id` exists and works; there is no edit UI yet. Owner-only merge shipped in Phase 3. |
 | ~~Phase 3 migration not committed~~ | **Resolved 7 Aug 2026 — see D-25.** The repository was initialised and the migration committed; all seven gates now pass. |
+| §8.9 attendance charts not built | D-82 deferred the calendar heatmap and weekly trend. They are the only §9 screens still missing. Use **Recharts** (D-67: a chart with axes and interaction earns a library; a sparkline does not) — it is in the stack and still has no caller. |
+| No `payment-methods` CSV export | The screen exports as `sales`, which carries the split but not as its own file. Harmless, but if someone asks for "the cash/card breakdown as a spreadsheet" it is a five-line entry in `reports-export.ts`. |
+| Demo data has no DAMAGE movements | D-90. The seed writes `OPNAME_LOSS` but never `DAMAGE`, so half of the shrinkage split is never exercised by fixture-driven checks. `verify-phase10.sh` works around it by recomputing from SQL. Worth adding a few DAMAGE rows to `prisma/demo.ts` so the fixture can express the bug. |
+| Report pages re-query per screen | Sales by Staff, Sales by Shop and Payment Method each call `salesSummary` again for their totals row. Correct, and fast enough at three branches, but it is three queries where one would do if these ever share a loader. |
 | ~~`tsconfig.tsbuildinfo` is tracked~~ | **Fixed 7 Aug 2026.** It is a TypeScript incremental-build artifact that showed as modified after every `npm run typecheck`. Added to `.gitignore` and `git rm --cached`-ed, so Phase 4's diff stays readable. |
 
 ---

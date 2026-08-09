@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
 import { requireOwnerPage } from "@/server/auth/page-guard";
 import {
   listTicketAwardReport,
@@ -25,6 +26,17 @@ export default async function TicketAwardReportPage({
     to: one(query.to),
     cursor: one(query.cursor),
   });
+
+  // This page predates `resolveScope` (Phase 3), so nothing below checks that
+  // the shop is real — it just filters on the id and finds nothing. An owner's
+  // typo then renders a calm, empty report that reads as "no tickets were
+  // awarded here" rather than "no such branch" (D-68's rule, D-96).
+  //
+  // Owner-only, so this is not a permission hole; it is a truthfulness one.
+  if (input.shopId) {
+    const exists = await prisma.shop.count({ where: { id: input.shopId } });
+    if (exists === 0) notFound();
+  }
   const [report, shops] = await Promise.all([
     listTicketAwardReport(actor, input),
     prisma.shop.findMany({

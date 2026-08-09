@@ -140,8 +140,15 @@ chk "Operating expenses matches (soft-deleted excluded)" "$API_OX" "${SQL_OX%.00
 # ── Gross / net profit arithmetic ──
 API_GP=$(printf '%s' "$PROFIT" | q ".combined.grossProfit")
 API_NP=$(printf '%s' "$PROFIT" | q ".combined.netProfit")
-GP_OK=$(node -pe "(Number('$API_REV')-Number('$API_PE')-Number('$API_SH'))===Number('$API_GP')?'yes':'no'")
-NP_OK=$(node -pe "(Number('$API_GP')-Number('$API_OX'))===Number('$API_NP')?'yes':'no'")
+# Compare with Decimal, never Number(). An expense of 1305460951.11 makes
+# `gross - opex` come back as …951.1099999 in float, so a `===` on Number()
+# reports a mismatch against an engine that is exactly right — §4.1's bug
+# reproduced inside the check that is supposed to catch it (D-96). This is
+# D-65's lesson again: a check computing the wrong thing costs a session's
+# confidence in correct code.
+DEC="const{Prisma}=require('@prisma/client');const D=(v)=>new Prisma.Decimal(v);"
+GP_OK=$(node -pe "$DEC D('$API_REV').minus('$API_PE').minus('$API_SH').equals(D('$API_GP'))?'yes':'no'")
+NP_OK=$(node -pe "$DEC D('$API_GP').minus('$API_OX').equals(D('$API_NP'))?'yes':'no'")
 chk "Gross profit = revenue − prize − shrinkage" "$GP_OK" "yes"
 chk "Net profit = gross − operating expenses" "$NP_OK" "yes"
 
@@ -171,17 +178,23 @@ chk "Outstanding tickets matches the cached balances" "$API_OT" "$SQL_OT"
 
 # Estimated liability = outstanding tickets × blended COGS per ticket (§9).
 #
-# The tolerance is RELATIVE, not absolute. `blendedCogsPerTicket` is displayed
-# rounded to 4dp while the engine multiplies at full precision and rounds once
-# at the end — which is the correct order for money. Re-multiplying the rounded
-# display value therefore differs by a few rupiah in millions, and an absolute
-# 0.02 tolerance flagged that as a failure when the engine was right.
+# `blendedCogsPerTicket` is DISPLAYED rounded to 4dp, while the engine
+# multiplies at full precision and rounds once at the end — the correct order
+# for money. So re-multiplying the displayed rate can never reproduce the
+# engine's figure exactly, and the question is only whether the gap is explained
+# by that rounding.
+#
+# The bound is DERIVED rather than picked: rounding to 4dp moves the rate by at
+# most 0.00005, so the product can move by at most 0.00005 × outstandingTickets
+# (plus a rupiah for the engine's own final rounding). A fixed relative
+# tolerance does not survive a growing ticket balance — 1e-6 passed at 300k
+# tickets and failed at 377k with nothing wrong (D-96).
 LIAB_OK=$(printf '%s' "$LIAB" | node -pe "
 const j=JSON.parse(require('fs').readFileSync(0,'utf8'));
 const e=Number(j.estimatedTicketLiability);
 const product=Number(j.blendedCogsPerTicket)*j.outstandingTickets;
-// Within one part in a million of the re-multiplied figure, or exact at zero.
-(e===0&&product===0)||Math.abs(product-e)/Math.max(e,1)<1e-6?'yes':'no'")
+const bound=0.00005*j.outstandingTickets+1;
+(e===0&&product===0)||Math.abs(product-e)<=bound?'yes':'no'")
 chk "Estimated ticket liability = outstanding × blended COGS" "$LIAB_OK" "yes"
 
 # ── Stock valuation: SUM(qtyRemaining × unitCogs) (§9) ──
@@ -469,10 +482,14 @@ chk "a probe expense is created" "$([ -n "$PROBE" ] && echo yes)" "yes"
 
 # The edit control is owner-only. Hiding it is NOT the permission — the two
 # checks below prove the SERVER refuses a manager regardless.
+# Ask for the shop the probe was actually created at. /expenses with no filters
+# shows the WORK-SESSION shop only (D-69), and the owner's session sits at BR-1
+# while the probe is at DEMO-A — so the unscoped form passed only by luck and
+# went red the moment the session moved (D-95).
 chk "the OWNER sees an edit control on the list" \
-  "$(j -b "$O" "$B/expenses" | grep -o 'aria-label="Edit ' | wc -l | tr -d ' ' | awk '{print ($1>0)?"yes":"no"}')" "yes"
+  "$(j -b "$O" "$B/expenses?shopId=$EDIT_SHOP" | grep -o 'aria-label="Edit ' | wc -l | tr -d ' ' | awk '{print ($1>0)?"yes":"no"}')" "yes"
 chk "a MANAGER sees none" \
-  "$(j -b "$M" "$B/expenses" | grep -o 'aria-label="Edit ' | wc -l | tr -d ' ')" "0"
+  "$(j -b "$M" "$B/expenses?shopId=$EDIT_SHOP" | grep -o 'aria-label="Edit ' | wc -l | tr -d ' ')" "0"
 
 EDITED=$(j -b "$O" -X PATCH "$B/api/expenses/$PROBE" -H 'Content-Type: application/json' \
   -d "{\"categoryId\":\"$EDIT_CAT2\",\"amount\":\"222000\",\"note\":\"verify edited\"}")

@@ -16,6 +16,22 @@ import { cn } from "@/lib/utils";
  *
  * `animate-pulse` only — no shimmer sweep. NF-1 budgets two seconds on 4G and
  * this must not become the reason a tablet's paint is slow.
+ *
+ * ── NOTHING RENDERS THESE RIGHT NOW. Do not delete them as dead code. ──
+ *
+ * They were used by `reports/loading.tsx` and `dashboard/loading.tsx`, both
+ * removed on 9 Aug 2026 (D-96). A `loading.tsx` wraps its segment in a
+ * Suspense boundary, and Next flushes the shell — headers included — as a
+ * **200** the moment the page suspends. That happens in the `(app)` layout,
+ * before any page code runs, so a later `forbidden()` or `notFound()` still
+ * rendered the right screen under the wrong status: a manager asking for
+ * another branch's report got the 403 page with a 200 on it.
+ *
+ * The fix that keeps both is to check permissions and existence FIRST, then
+ * wrap only the slow table in an explicit `<Suspense>` inside the page — the
+ * throw then happens before the boundary. That is planned for after the pilot
+ * (D-96 records why it was not done during pilot week), and these components
+ * are what it will use.
  */
 export function Skeleton({ className }: { className?: string }) {
   return (

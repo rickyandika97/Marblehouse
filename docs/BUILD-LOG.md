@@ -2180,6 +2180,146 @@ as the real go-live gate rather than any individual phase's green tick.
 
 ---
 
+## Post-phase debt work — 9 Aug 2026 (second batch)
+
+The three items D-95 left open, taken in order. Not a phase. The go-live gate
+D-95 asked for was run at the end and is now green.
+
+### D-96 · The 200-status defect was `loading.tsx`, not `not-found.tsx`
+
+**D-95's diagnosis was wrong in both halves, and the wrong fix would have been
+applied by anyone who trusted it. Read this before touching a `loading.tsx`.**
+
+D-95 recorded the cause as D-88's `not-found.tsx` and the blast radius as
+"every page that calls `notFound()`". Reproducing it first showed otherwise:
+
+| Path | Status | Verdict |
+|---|---|---|
+| `/customers/[id]` bad id → `notFound()` | **404** | always correct |
+| `/customers/[id]/redeem` bad id | **404** | always correct |
+| `/reports/*?shopId=ghost` | **200** | wrong |
+| `/dashboard?shopId=ghost` | **200** | wrong |
+
+The cause is the *other* half of D-88: **`loading.tsx`**. A segment with one is
+wrapped in a Suspense boundary, and Next flushes the shell — headers included —
+as a **200** the moment the page suspends. That happens in the `(app)` layout,
+before any page code runs. A later `forbidden()` or `notFound()` still renders
+the right screen; it can no longer change the status.
+
+**Proven by the cleanest available experiment:** adding a `loading.tsx` to the
+working `/customers/[id]` page flipped it 404 → 200, and removing it restored
+404. Nothing else changed.
+
+**D-95 also missed the worse half.** It only mentions the 404s. `forbidden()`
+is affected identically — a manager requesting another branch's report got the
+**403 page under a 200**. That is the R-4 property ("ids cannot be probed")
+degrading for any client that reads status codes, and it was live on every
+report screen and the dashboard.
+
+**A page-level fix is structurally impossible.** The obvious one — validate
+`shopId` before the slow queries — was built and *runs* (the shop-existence
+query fires) but changes nothing, because the layout suspends first. Anything
+inside the page is already too late. That attempt was discarded, not shipped.
+
+**What was done (owner decision, 9 Aug 2026).** Both `loading.tsx` files
+deleted. Three options were put to the owner:
+
+| | |
+|---|---|
+| **A — delete them** *(chosen)* | One line, correct statuses everywhere, verified. Costs the skeletons. |
+| B — explicit `<Suspense>` inside each page | Keeps both, but ~16 pages restructured days before the pilot. |
+| C — document and defer | Screens already render correctly; only status codes are wrong. |
+
+A now, B after the pilot. A correct 403 beats a skeleton, and B is the wrong
+shape of risk during pilot week. **`components/skeleton.tsx` is deliberately
+kept with no callers** — B needs it, and its header now explains why it must
+not be deleted as dead code.
+
+Verified across **16 pages × 4 roles, 32 checks**: bad `shopId` → 404 for an
+owner, 403 for a manager (permission before existence, so ids stay unprobeable),
+valid requests still 200, and every role gate unchanged. The two
+`verify-phase8.sh` 404 checks go red when `loading.tsx` is restored and green
+when it is removed — confirmed in both directions.
+
+### D-97 · `/reports/tickets-awarded` never checked that the shop was real
+
+Found by the 32-check sweep, not by any script. It is a Phase 3 page that
+predates `resolveScope`, so it filtered on `shopId` and simply found nothing —
+an owner's typo rendered a calm, empty report reading as "no tickets were
+awarded at this branch" rather than "no such branch". D-68 fixed exactly this
+shape everywhere else and this page was never revisited.
+
+Owner-only, so it is a truthfulness bug rather than a permission hole. Now
+`notFound()` when the id does not exist.
+
+### D-98 · Two verification scripts were computing the wrong thing
+
+Both found by the full sequential run, and **both made correct code look
+broken** — D-65's lesson twice more.
+
+**`verify-phase8.sh` net profit used `Number()` on money.** With operating
+expenses at `1305460951.11`, `gross − opex` evaluates to `…951.1099999` in
+float, and the check compared with `===`. It reported a mismatch against an
+engine that was exactly right — §4.1's own bug, reproduced inside the check
+meant to catch it. Now compared with `Prisma.Decimal`; verified it still
+catches a one-cent error.
+
+**The liability tolerance was a fixed constant that did not survive growth.**
+`blendedCogsPerTicket` is displayed at 4dp while the engine multiplies at full
+precision and rounds once — the correct order. Re-multiplying the display value
+can therefore never match exactly. The old `1e-6` relative bound passed at
+~300k outstanding tickets and failed at 377k with nothing wrong (the gap was
+Rp 17.86 on Rp 9.95M). The bound is now **derived** from what the rounding can
+actually produce — `0.00005 × outstandingTickets + 1` — so it scales with the
+data. Verified it still catches a 0.1% engine error.
+
+### D-99 · `verify-phase1.sh` was unrunnable, and nobody noticed for nine phases
+
+It hardcoded `D=/private/tmp/…/-Users-ricky-redlight/79ef0799-…/scratchpad` —
+one long-dead session's temp directory — and `cd`-ed to `/Users/ricky/redlight`,
+the project's former name. Every cookie jar and response file silently failed to
+write, so **all 21 checks reported red with nothing broken.** The other nine
+scripts all use `mktemp -d`; this one never did.
+
+Now `mktemp -d` and a path derived from the script's own location.
+
+**It was also not re-runnable**, which only a second consecutive run exposes:
+the forced first-login password change can be observed once per seeded
+database, and creating `manager1`/`staff1` returns 409 the second time. Both now
+report a **skip** (a yellow `•`) rather than a failure, with the first-run
+assertion still made when the database is genuinely fresh. Three checks that
+looked like regressions were neither.
+
+### D-100 · The go-live gate is green — 469 checks, three consecutive runs
+
+D-95 asked for every `verify-phase*.sh` in numeric order on a freshly reset
+database, as the real gate. Done, on `marblehouse_dev` reset and reseeded with
+`--demo`:
+
+```
+verify-phase1 … verify-phase10      469 ✓   0 ✗   3 skips
+```
+
+Repeated **three times back to back** with identical results, which is the
+property that matters — the first run passed and the *second* found four
+problems (D-98's two, D-99's two). A gate you can only run once is not a gate.
+
+Also green: typecheck, lint, **236 unit tests**, and `docker compose build`.
+
+**D-94's debt bites exactly as predicted.** A reset destroys the `p8mgr` /
+`p8purch` / `p8staff` accounts, and they must be recreated through
+`POST /api/users` *and* have their forced password change completed (which is
+what appends the trailing `x`). Until the demo seed owns them, that is a manual
+step before phases 8 and 10 — budget for it.
+
+**One thing to know for the next full run:** `verify-phase1.sh` changes the
+owner's password to `OwnerRealPass2026!`, while `verify-phase8.sh` defaults to
+`Phase8Owner2026!`. Export `OWNER_PASSWORD='OwnerRealPass2026!'` for phases
+8–10 after running phase 1, or they fail at login and look like a permission
+regression.
+
+---
+
 ## What Phase 10 built
 
 ```
@@ -2753,10 +2893,21 @@ APIs: `/api/auth/{login,logout,me,change-password,[...all]}`,
 
 ## Verification
 
+> **Run all ten in numeric order, not just the phase you touched (D-100).**
+> The full sequence is the go-live gate. As of 9 Aug 2026 it is **469 ✓, 0 ✗,
+> 3 skips**, stable over three consecutive runs. Two caveats that will otherwise
+> look like regressions:
+>
+> - After `verify-phase1.sh` the owner's password is `OwnerRealPass2026!`, so
+>   export `OWNER_PASSWORD='OwnerRealPass2026!'` before phases 8–10.
+> - A database reset destroys `p8mgr` / `p8purch` / `p8staff` (D-94). Recreate
+>   them via `POST /api/users` **and** complete each forced password change
+>   (that is what appends the trailing `x`) before phases 8 and 10.
+
 ```bash
 npm run typecheck                 # clean
 npm run lint                      # clean
-npm test                          # 193 tests (D-26) — safe to re-run, no residue
+npm test                          # 236 tests (D-26, D-91) — safe to re-run, no residue
 docker compose build              # succeeds (catches Linux case-sensitivity)
 bash scripts/verify-phase1.sh     # 21/21 acceptance checks, needs npm run dev
 bash scripts/verify-phase2.sh     # 30/30 acceptance checks, needs npm run dev
@@ -2776,8 +2927,10 @@ a work session for each test account first: without one, §4.7 redirects every
 page to `/select-shop` and every check reports 307, which looks exactly like a
 permission bug.
 
-`npm test` is now **193 tests** (was 180): +3 for the clock-out card's service
-fields (D-81) and +10 for the two new report services (D-82, D-84).
+`npm test` was **193 tests** at the end of Phase 10 (was 180): +3 for the
+clock-out card's service fields (D-81) and +10 for the two new report services
+(D-82, D-84). It is **236** as of 9 Aug 2026, after D-91 added the business-date
+and phone suites.
 
 **`verify-phase9.sh` writes.** It creates real archives under `backups/`, and
 creates and drops a scratch database called `marblehouse_verify9`. It never
@@ -2882,15 +3035,45 @@ OWNER can merge and the merged caches reconcile to the moved ledgers.
 | ~~Demo data has no DAMAGE movements~~ | **Fixed — D-92.** Both kinds now appear at every branch (23 `OPNAME_LOSS`, 16 `DAMAGE`), and the shrinkage rates were raised because the old ones produced only five movements in the whole dataset. D-90's previously-passing mutation is now caught by the fixture as well as by the SQL recomputation. |
 | Fixture accounts are assigned by hand, and `--reset-demo` breaks them | **D-94.** `p8mgr` / `p8purch` / `p8staff` were assigned to shop ids that `--reset-demo` destroys, so a reseed leaves them with no shops and `verify-phase10.sh` reports **409** on four checks — which reads as a permission bug and is not one. Either `verify-phase8.sh` should create and assign them the way `verify-phase4.sh` creates `purchaser1`, or the demo seed should own them. |
 | Demo figures drift silently | **D-93.** The counts recorded under *Current database state* were stale by a phase before anyone noticed, because `verify-phase8.sh` asserts relationally and never pins them. That is the right design for the script, but it means the prose table is unverified documentation — re-derive it from SQL rather than trusting it for a hand-calculation. |
-| **`notFound()` renders 404 content under a 200 status** | **D-95 — a real defect, not just a stale check.** Since D-88 added `not-found.tsx`, a bad `shopId` renders the 404 page but the response status is **200**. Wrong for monitors, crawlers and any client reading status codes, and it weakens R-4's "ids cannot be probed" property. Affects every page that calls `notFound()`. Needs an explicit 404 status; deferred from the 9 Aug debt batch because it touches page-level error handling everywhere. |
-| Two `verify-phase8.sh` checks are stale | **D-95.** The two 404 checks above, plus `the OWNER sees an edit control on the list`, which is shop-blind — it needs `?shopId=$EDIT_SHOP` because the probe is at DEMO-A while the owner's session is at BR-1. The underlying permission is correct and its three server-side checks still pass. |
-| **No one re-runs earlier phases' verification scripts** | **D-95.** Phase 10 invalidated two Phase 8 assertions and it went unnoticed, because each phase is accepted on its own script only. **Before the pilot, run every `verify-phase*.sh` in numeric order on a freshly reset database** and treat that as the go-live gate. |
+| ~~`notFound()` renders 404 content under a 200 status~~ | **Fixed 9 Aug 2026 — D-96, and D-95's diagnosis was WRONG.** The cause was not `not-found.tsx`, and it did not affect every `notFound()` caller: `/customers/[id]` was always a correct 404. It was the other half of D-88 — **`loading.tsx`**, whose Suspense boundary makes Next flush the shell as a 200 before the page resolves. It hit `forbidden()` identically, which D-95 never noticed: a manager asking for another branch's report got the 403 page under a 200. Both `loading.tsx` files removed; 32 status checks across 16 pages and 4 roles now correct. |
+| ~~Two `verify-phase8.sh` checks are stale~~ | **Fixed — D-96.** The two 404 checks pass now that the underlying defect is fixed (and go red under mutation). `the OWNER sees an edit control on the list` now requests `?shopId=$EDIT_SHOP`; the manager half is a genuine hidden-button check, since `p8mgr` is assigned to DEMO-A and gets a 200 page with zero controls. |
+| ~~No one re-runs earlier phases' verification scripts~~ | **Done 9 Aug 2026 — D-96.** All ten run clean in numeric order, three times consecutively: **469 ✓, 0 ✗, 3 documented skips.** It found four real problems no single-phase run could — see D-96. Re-run the full sequence after any cross-cutting change, not just the phase you touched. |
+| Report skeletons are gone until after the pilot | **D-96.** `reports/loading.tsx` and `dashboard/loading.tsx` were deleted to restore correct status codes, so both segments show a blank screen while the server aggregates — the exact problem D-88 built them to solve. `components/skeleton.tsx` is deliberately KEPT and unused. The fix that restores both: check permission and existence first, then wrap only the slow table in an explicit `<Suspense>` inside the page, so the throw precedes the boundary. |
+| `verify-phase1.sh` had a hardcoded scratchpad path | **Fixed — D-96.** It pointed at one session's temp directory under the project's former name (`redlight`) and `cd`-ed to an absolute path. Once that directory was gone every cookie jar silently failed to write and all 21 checks reported red with nothing broken. Now `mktemp -d` and a path relative to the script, like the other nine. |
 | Report pages re-query per screen | Sales by Staff, Sales by Shop and Payment Method each call `salesSummary` again for their totals row. Correct, and fast enough at three branches, but it is three queries where one would do if these ever share a loader. |
 | ~~`tsconfig.tsbuildinfo` is tracked~~ | **Fixed 7 Aug 2026.** It is a TypeScript incremental-build artifact that showed as modified after every `npm run typecheck`. Added to `.gitignore` and `git rm --cached`-ed, so Phase 4's diff stays readable. |
 
 ---
 
 ## Current database state
+
+> **RESET AGAIN on 9 Aug 2026 for the D-100 go-live run.** `prisma migrate
+> reset` + `npm run db:seed -- --demo`, then **all ten `verify-phase*.sh` three
+> times**. So the current contents are the demo dataset **plus three runs of
+> every script's test data** — not a clean `--demo` database.
+>
+> Counts taken from SQL immediately afterwards:
+>
+> | | in the database now | pure `--demo` alone |
+> |---|---|---|
+> | Shops | 6 | 5 (BR-1, HQ, DEMO-A/B/C) |
+> | Sales | 1840 (1784 completed) | 1715 |
+> | Revenue (completed) | 301.370.000 | — |
+> | Customers | 221 | 200 |
+> | Redemptions | 197 | 189 |
+> | Attendance | 492 | 490 |
+> | Expenses (live) | 63 | 23 |
+> | Shrinkage | 27 `OPNAME_LOSS` + 16 `DAMAGE` | 23 + 16 |
+>
+> **Do not hand-calculate against the left column** — it is demo data plus
+> accumulated fixtures. For a §16 hand-calculation, reset and seed `--demo`
+> alone. This is D-93's warning restated: these figures are documentation, not
+> assertions, and `verify-phase8.sh` deliberately checks relationally instead.
+>
+> **The owner's password is now `OwnerRealPass2026!`** (set by
+> `verify-phase1.sh`), not `Phase8Owner2026!`. The `p8mgr` / `p8purch` /
+> `p8staff` trio was recreated by hand after the reset (D-94) and each completed
+> its forced change, so the trailing `x` passwords below are current.
 
 > **The dev database was RESET on 8 Aug 2026, at the start of Phase 8.**
 > `prisma migrate reset` plus `npm run db:seed -- --demo`. Everything described

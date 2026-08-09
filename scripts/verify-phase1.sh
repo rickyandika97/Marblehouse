@@ -1,10 +1,17 @@
 #!/bin/bash
 # Phase 1 acceptance criteria — end-to-end against a freshly seeded database.
-cd /Users/ricky/redlight
+# Resolve the repo from this script's own location, like every other
+# verify-phase script. It used to `cd` to an absolute path under the project's
+# former name (`redlight`), which worked only by accident on the machine it was
+# written on.
+cd "$(dirname "$0")/.." || exit 1
 B=http://localhost:5050
-D=/private/tmp/claude-501/-Users-ricky-redlight/79ef0799-c699-48b5-9004-1287ff5a1420/scratchpad
+# A fresh temp dir per run. This was previously a hardcoded path into one
+# session's scratchpad; once that directory was gone every cookie jar and
+# response file silently failed to write, and all 21 checks reported red with
+# nothing actually broken (D-96).
+D=$(mktemp -d)
 O=$D/o.txt; M=$D/m.txt; S=$D/s.txt
-rm -f $O $M $S
 SEEDPW=$(grep SEED_OWNER_PASSWORD .env | cut -d= -f2)
 
 j() { curl -s "$@"; }          # json
@@ -16,15 +23,30 @@ chk() { [ "$2" = "$3" ] && pass "$1" || fail "$1" "$2"; }
 
 echo "════ 1. Log in as owner, manager and staff ════"
 
-# Owner: first login forces a password change.
+# ── Re-runnability ───────────────────────────────────────────────────────────
+# The forced first-login change can only be observed ONCE per seeded database,
+# and creating manager1/staff1 collides on a second run. This script used to
+# assume a virgin database, so running the whole suite twice in a row reported
+# three red checks with nothing broken — which is exactly the trap that hides a
+# real regression in the noise (D-96).
+#
+# So: perform the first-run assertion when the database is genuinely fresh, and
+# SKIP it (loudly) when it is not, rather than failing.
 j -c $O -X POST $B/api/auth/login -H 'Content-Type: application/json' \
   -d "{\"username\":\"owner\",\"password\":\"$SEEDPW\"}" > $D/r.json
-grep -q '"mustChangePassword":true' $D/r.json \
-  && pass "owner first login demands a password change" \
-  || fail "owner first login demands a password change" "$(cat $D/r.json)"
 
-j -b $O -c $O -X POST $B/api/auth/change-password -H 'Content-Type: application/json' \
-  -d '{"newPassword":"OwnerRealPass2026!"}' >/dev/null
+if grep -q '"mustChangePassword":true' $D/r.json; then
+  pass "owner first login demands a password change"
+  j -b $O -c $O -X POST $B/api/auth/change-password -H 'Content-Type: application/json' \
+    -d '{"newPassword":"OwnerRealPass2026!"}' >/dev/null
+elif j -c $O -X POST $B/api/auth/login -H 'Content-Type: application/json' \
+      -d '{"username":"owner","password":"OwnerRealPass2026!"}' \
+      | grep -q '"landingPath"'; then
+  printf "  \033[33m•\033[0m %s\n" \
+    "owner first login demands a password change  (SKIPPED — already changed by an earlier run)"
+else
+  fail "owner first login demands a password change" "$(cat $D/r.json)"
+fi
 rm -f $O
 LAND=$(j -c $O -X POST $B/api/auth/login -H 'Content-Type: application/json' \
   -d '{"username":"owner","password":"OwnerRealPass2026!"}' | grep -o '"landingPath":"[^"]*"' | cut -d'"' -f4)
@@ -35,17 +57,31 @@ SHOP=$(node -e "const{PrismaClient}=require('@prisma/client');const p=new Prisma
 j -b $O -X POST $B/api/work-session -H 'Content-Type: application/json' -d "{\"shopId\":\"$SHOP\"}" >/dev/null
 
 # Create a manager and a staff member through the owner's screen API.
+#
+# A 409 CONFLICT here means an earlier run already created them, which is a
+# PASS for "the owner can create accounts" — the account demonstrably exists.
+# Treating it as a failure is what made a second sequential run look broken
+# (D-96). A genuine failure (403, 422, 500) still fails.
+mkuser() { # label file json-body role
+  if grep -q "\"role\":\"$4\"" "$2"; then
+    pass "$1"
+  elif grep -q '"code":"CONFLICT"' "$2"; then
+    printf "  \033[33m•\033[0m %s\n" "$1  (already existed from an earlier run)"
+  else
+    fail "$1" "$(head -c 120 "$2")"
+  fi
+}
+
 j -b $O -X POST $B/api/users -H 'Content-Type: application/json' \
   -d "{\"username\":\"manager1\",\"displayName\":\"Manager One\",\"password\":\"TempMgr2026!\",\"role\":\"MANAGER\",\"shopIds\":[\"$SHOP\"],\"canEnterCost\":false}" > $D/mgr.json
-grep -q '"role":"MANAGER"' $D/mgr.json && pass "owner creates a manager account" \
-  || fail "owner creates a manager account" "$(head -c 120 $D/mgr.json)"
+mkuser "owner creates a manager account" "$D/mgr.json" "" MANAGER
 
 j -b $O -X POST $B/api/users -H 'Content-Type: application/json' \
   -d "{\"username\":\"staff1\",\"displayName\":\"Staff One\",\"password\":\"TempStaff2026!\",\"role\":\"STAFF\",\"shopIds\":[\"$SHOP\"]}" > $D/stf.json
-grep -q '"role":"STAFF"' $D/stf.json && pass "owner creates a staff account" \
-  || fail "owner creates a staff account" "$(head -c 120 $D/stf.json)"
+mkuser "owner creates a staff account" "$D/stf.json" "" STAFF
 
-# Manager + staff: clear the forced change, then log in for real.
+# Manager + staff: clear the forced change, then log in for real. On a re-run
+# the temp password is already spent, so fall back to the settled one.
 for U in "manager1:TempMgr2026!:MgrRealPass2026!:$M" "staff1:TempStaff2026!:StaffRealPass2026!:$S"; do
   IFS=: read -r NAME TMP NEW JAR <<< "$U"
   j -c $JAR -X POST $B/api/auth/login -H 'Content-Type: application/json' \

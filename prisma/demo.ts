@@ -25,6 +25,10 @@
  * tickets at roughly double the going rate. Flat data would let a broken
  * report look correct — every shop showing the same number hides a grouping
  * bug, and the §4.6 fraud ratio has nothing to detect.
+ *
+ * For the same reason, shrinkage is split across BOTH `OPNAME_LOSS` and
+ * `DAMAGE` (D-90). A category the fixture never produces is a category no
+ * fixture-driven check can test — the shrinkage split had exactly that hole.
  */
 import { PrismaClient, Prisma } from "@prisma/client";
 import type { PaymentMethod } from "@prisma/client";
@@ -121,11 +125,16 @@ export async function seedDemo(prisma: PrismaClient): Promise<void> {
   // Three EXTRA branches (§10) alongside the real seed's Branch 1. Different
   // sale volumes so a per-shop grouping bug cannot hide behind equal numbers.
   const shopSpecs = [
-    { code: "DEMO-A", name: `Demo Mall Branch ${DEMO_TAG}`, weight: 1.0, shrinkage: 0.02 },
-    { code: "DEMO-B", name: `Demo Plaza Branch ${DEMO_TAG}`, weight: 0.65, shrinkage: 0.02 },
-    // Deliberately high shrinkage: gives the §9 "shrinkage expense" line and
-    // the owner's variance report something real to surface.
-    { code: "DEMO-C", name: `Demo Station Branch ${DEMO_TAG}`, weight: 0.4, shrinkage: 0.12 },
+    // Shrinkage rates are per-DAY probabilities over 60 days. They were 0.02 /
+    // 0.02 / 0.12, which produced only ~5 shrinkage movements in the whole
+    // dataset — too thin for the §9 shrinkage report to be judged against, and
+    // thin enough that the per-shop breakdown had a branch with none at all.
+    // Raised so every branch carries both kinds (D-90).
+    { code: "DEMO-A", name: `Demo Mall Branch ${DEMO_TAG}`, weight: 1.0, shrinkage: 0.15 },
+    { code: "DEMO-B", name: `Demo Plaza Branch ${DEMO_TAG}`, weight: 0.65, shrinkage: 0.15 },
+    // Deliberately higher than the others: gives the §9 "shrinkage expense"
+    // line and the owner's variance report a branch that stands out.
+    { code: "DEMO-C", name: `Demo Station Branch ${DEMO_TAG}`, weight: 0.4, shrinkage: 0.4 },
   ];
 
   const shops = [];
@@ -510,16 +519,33 @@ export async function seedDemo(prisma: PrismaClient): Promise<void> {
       }
 
       // ── Shrinkage ──────────────────────────────────────────────────
-      // OPNAME_LOSS, never REDEEM. §9 reports shrinkage separately from prize
-      // expense precisely so theft cannot hide inside cost of goods sold.
+      // OPNAME_LOSS and DAMAGE, never REDEEM. §9 reports shrinkage separately
+      // from prize expense precisely so theft cannot hide inside cost of goods
+      // sold, and it reports the two shrinkage KINDS separately again — a
+      // count that came up short is a different problem from a crushed box.
+      //
+      // Both types must appear in the fixture. D-90: the seed used to write
+      // OPNAME_LOSS only, so a bug that misfiled DAMAGE as OPNAME_LOSS was
+      // unobservable in the demo data — `verify-phase10.sh` had to recompute
+      // the split from independent SQL to catch it. That workaround stays
+      // (it is the stronger check), but the fixture can now express the bug.
+      //
+      // The split reuses the SAME rng draw rather than adding one: a new call
+      // here would shift every subsequent draw and change every documented
+      // demo figure (D-61 — the seed is fixed so the numbers are checkable).
       if (rng.chance(spec.shrinkage)) {
         const prize = rng.pick(prizeItems);
+        const qty = rng.int(1, 3);
+        // Roughly a third damage, two thirds count shortfall. Keyed off the
+        // qty already drawn, so the mix is deterministic and needs no new
+        // randomness — qty 3 is the damage case.
+        const type = qty === 3 ? "DAMAGE" : "OPNAME_LOSS";
         await consumeFifoForDemo(
           prisma,
           shop.id,
           prize.id,
-          rng.int(1, 3),
-          "OPNAME_LOSS",
+          qty,
+          type,
           businessDate,
           midday(businessDate, 20, 0)
         );
@@ -585,7 +611,7 @@ async function consumeFifoForDemo(
   shopId: string,
   prizeItemId: string,
   qty: number,
-  type: "REDEEM" | "OPNAME_LOSS",
+  type: "REDEEM" | "OPNAME_LOSS" | "DAMAGE",
   businessDate: Date,
   occurredAt: Date
 ): Promise<{ totalCogs: Prisma.Decimal; movementId: string } | null> {
@@ -605,7 +631,13 @@ async function consumeFifoForDemo(
       qtyDelta: -qty,
       businessDate,
       occurredAt,
-      ...(type === "OPNAME_LOSS" ? { reason: `Demo shrinkage ${DEMO_TAG}` } : {}),
+      // Both shrinkage kinds carry a reason; a REDEEM does not need one. The
+      // wording differs so the movement list reads as what actually happened.
+      ...(type === "OPNAME_LOSS"
+        ? { reason: `Demo shrinkage ${DEMO_TAG}` }
+        : type === "DAMAGE"
+          ? { reason: `Demo damaged stock ${DEMO_TAG}` }
+          : {}),
     },
   });
 

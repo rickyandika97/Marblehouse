@@ -1252,6 +1252,13 @@ produced identical row counts and an identical revenue total to the rupiah
 hand-calculation against a dataset that changes on every run is worthless the
 moment you re-run it.
 
+> **The `295570000` above is Phase 8's figure and is no longer current.** The
+> seed is still reproducible — that property holds — but the *value* changed:
+> it had already drifted before D-92 (see D-93) and D-92 raised the shrinkage
+> rates. Current figures are under *Current database state*. Reproducibility
+> means "the same command gives the same database", not "this number is
+> permanent"; changing the generator changes the numbers by design.
+
 The data is deliberately **not uniform**: three branches at different volumes,
 one branch with a 12% shrinkage rate, one staff member per shop awarding roughly
 double the tickets, ~3% of sales voided, 30% walk-ins, weekend peaks. Flat data
@@ -2007,6 +2014,172 @@ rewriting the test — and here it was genuinely both.
 
 ---
 
+## Post-phase debt work — 9 Aug 2026
+
+Not a phase. Three items taken off the **Known issues / debts** table while the
+hands-on acceptance passes (Phases 4, 6, 9, 10) wait on real devices. Chosen
+deliberately because they close gaps in the safety net **without adding screens**
+— new UI landing days before the one-branch pilot is new risk during exactly the
+week the pilot exists to de-risk.
+
+### D-91 · The §15 unit tests that had no home: business date and phone
+
+The debts table flagged these as "add each as its phase comes up", with the
+business-date cases called out as worth backfilling sooner. They are now in.
+
+`src/lib/__tests__/business-date.test.ts` (19 tests) covers §15's four named
+boundaries (03:59, 04:00, 23:59, 00:01), the work-session/sale agreement case
+§15 words explicitly, month/year/leap-day rollback, and the UTC-midnight shape
+the Postgres `DATE` column depends on. `phone.test.ts` (24 tests) covers §15's
+four spellings plus the punctuation staff actually type.
+
+**Two things these tests assert that are worth knowing about:**
+
+1. **The `businessDateFor` "disagreement" case is deliberate.** A clock-in at
+   03:55 and a sale at 04:05 file under *different* business dates. That is the
+   rule working, not a bug — but the §15 pair on its own ("session and sale ten
+   minutes later agree") would pass against a function that returned a constant,
+   so the opposite side is pinned too.
+2. **Phone tests check BOTH failure directions.** Under-collapsing splits one
+   customer's balance across two records; over-collapsing *merges two real
+   customers*, which is worse and less visible. A normaliser that truncates
+   passes every "these spellings match" test ever written.
+
+**Proven by mutation** (CLAUDE.md gate 3 — a test you have not seen fail proves
+nothing). Four mutations, all caught, all reverted:
+
+| Mutation | Result |
+|---|---|
+| `hour < dayStartHour` → `<=` (cutoff off-by-one) | **caught** by 5 checks |
+| compute from UTC parts, ignoring the timezone | **caught** by 6 checks |
+| drop the `00` international-prefix strip | **caught** by 2 checks |
+| truncate the key to 12 digits (over-collapse) | **caught** by 2 checks |
+
+These are pure-function tests — no database, no fixtures — so they cost ~14ms
+and cannot flake. Suite is now **236 tests, up from 193.**
+
+### D-92 · The demo seed writes DAMAGE, and its shrinkage rates were far too low
+
+D-90 asked for "a few DAMAGE rows so the fixture can express the bug". Doing it
+surfaced a second, larger problem.
+
+**The DAMAGE split reuses an existing `rng` draw.** D-61 makes the seed
+reproducible on a fixed seed, so a *new* random call inside the day loop would
+shift every subsequent draw and change every documented figure. The type is
+therefore keyed off the `qty` already drawn (`qty === 3` → `DAMAGE`), which
+costs no extra randomness. Verified: the sale/redemption/attendance counts are
+byte-identical with and without the split.
+
+**Then the rates.** The old rates (0.02 / 0.02 / 0.12 per day over 60 days)
+produced **five shrinkage movements in the entire dataset**, and one branch had
+none at all — far too thin for the §9 shrinkage report to be judged against,
+which is what §16 accepts Phase 8 on. Raised to 0.15 / 0.15 / 0.4, giving 39
+movements with both kinds at every branch and DEMO-C still standing out.
+
+**This is the fix that mattered, and here is the proof.** D-90's fourth
+mutation — DAMAGE misfiled as OPNAME_LOSS — was the one that *passed* against
+the old fixture. Re-run against the new one:
+
+```
+MUTATED  -> opnameLoss=373500 damage=0
+RESTORED -> opnameLoss=168000 damage=205500
+```
+
+Under the old zero-DAMAGE fixture both readings were `damage=0` and the bug was
+invisible in the data. `verify-phase10.sh`'s independent-SQL recomputation
+**stays** — it is the stronger check and catches misclassification in either
+direction regardless of the seed — but the fixture can now express the bug on
+its own.
+
+### D-93 · The documented demo figures were already stale before this work
+
+Found while checking whether D-92 had disturbed the fixed seed. It had not —
+**the numbers in this log were wrong beforehand.** Baseline on unmodified code
+was 1701 sales / 211 redemptions / 501 attendance / 26 expenses, against the
+1711 / 193 / 496 / 27 recorded under *Current database state*. Something in an
+earlier phase changed the draw sequence and the table was never updated.
+
+Nothing broke, because **`verify-phase8.sh` never hardcodes these figures** — it
+computes every assertion relationally (cash + EDC reconciles to revenue, gross
+profit = revenue − prize − shrinkage) and checks the CSV against the JSON. That
+is why the drift went unnoticed for a phase, and it is an argument for keeping
+verification relational rather than pinning constants.
+
+*Current database state* is updated below with figures taken from the database
+after this reseed. **Treat a hand-calculation written against the old numbers as
+void.**
+
+### D-94 · `verify-phase10.sh` depends on shop assignments that `--reset-demo` destroys
+
+Reseeding made four Phase 10 checks fail with **409**, which reads as a
+permission bug and is not one. `--reset-demo` deletes the DEMO shops and
+recreates them with new ids; the `p8mgr` / `p8purch` / `p8staff` accounts were
+assigned to the old ids **by hand during Phase 8**, so they came back with no
+shops, no `defaultShopId`, and therefore no work session. The body says it
+plainly: `NO_WORK_SESSION`, not `FORBIDDEN`.
+
+Reassigned through `PATCH /api/users/:id` (`p8purch` → DEMO-A only, per §7.5's
+"cost at my shops, 403 at yours" criterion). All 57 checks pass again.
+
+**The debt this leaves:** the fixture accounts are set up manually and the
+scripts assume they exist and are assigned. Anyone who runs `--reset-demo` will
+hit this and may read it as a regression. Either `verify-phase8.sh` should
+create and assign them the way `verify-phase4.sh` creates `purchaser1`, or the
+demo seed should own them. Added to the debts table.
+
+**Read the error body before believing a status code.** A 409 that looks like a
+403 cost more time here than the fix did.
+
+### D-95 · `verify-phase8.sh` has three stale checks — Phase 8 is no longer green
+
+**Found by re-running it after the D-92 reseed. This is the most important
+entry in this batch, because Phase 8 is marked ✅ and currently is not.**
+
+`verify-phase8.sh` was last touched during Phase 9. Phase 10 (`b509d4c`) then
+changed behaviour it asserts, and **nobody re-ran it.** Three checks now fail:
+
+| Check | Gets | Why |
+|---|---|---|
+| `a nonexistent shopId is 404, not a silent zero` | 200 | D-88 added `src/app/not-found.tsx`. `notFound()` now renders that page, and the response carries **200** with 404 *content* rather than a 404 status. |
+| `  and a MANAGER gets 403 first, so ids cannot be probed` | 200 | Same cause. |
+| `the OWNER sees an edit control on the list` | no | The probe expense is created at **DEMO-A**; the owner's work session is at **BR-1**, and `/expenses` with no filters shows the work-session shop only. Verified: with `?shopId=<DEMO-A>` the control appears (9 of them). |
+
+**Two of these are a real regression and one is a bad assertion, and they need
+different fixes:**
+
+- **The 404s.** A page that renders "not found" under a **200** is wrong beyond
+  this script: it tells a crawler, a monitor and any client-side error handling
+  that the request succeeded. R-4's intent — that a manager cannot probe shop
+  ids for existence — also degrades if both the "exists" and "doesn't exist"
+  answers are 200 to a client reading status codes. This wants a real fix in
+  the page (an explicit 404 status), not a relaxed check.
+- **The edit control.** The check is shop-blind and only ever passed because
+  the owner's session happened to sit at the probe's shop. The permission
+  itself is correct and the three server-side checks around it still pass
+  (`OWNER can edit`, `MANAGER is 403 on PATCH`, `MANAGER is 403 on DELETE`) —
+  which is exactly why hiding a button is not a permission (CLAUDE.md #4). Fix
+  the assertion to request `?shopId=$EDIT_SHOP`.
+
+**Not fixed in this batch, deliberately.** The 404 change touches page-level
+error handling across every screen that calls `notFound()` — that is a code
+change with its own blast radius, and this batch's remit was tests, fixtures
+and docs, with the pilot imminent. It is written up here rather than silently
+left, and added to the debts table.
+
+**Phase 8's row stays ✅ in the status table** because its §16 criterion (every
+§9 metric matches a hand-calculation) is unaffected — all the metric,
+reconciliation and cost-gate checks still pass. What broke is the *script*, in
+two places, plus one genuine cross-cutting defect in 404 status codes.
+
+**The lesson, and it generalises:** a verification script is only true as of the
+last time it ran. Phase 10 was accepted on `verify-phase10.sh` alone, and
+nothing re-ran the earlier phases' scripts — so a Phase 10 change quietly
+invalidated two Phase 8 assertions. **Before the pilot, run every
+`verify-phase*.sh` in order once**, on a freshly reset database, and treat that
+as the real go-live gate rather than any individual phase's green tick.
+
+---
+
 ## What Phase 10 built
 
 ```
@@ -2670,7 +2843,8 @@ OWNER can merge and the merged caches reconcile to the moved ledgers.
 | Prisma deprecation | `package.json#prisma` moves to `prisma.config.ts` in Prisma 7. Not urgent. |
 | Dependency audit | `npm audit --omit=dev` reports 6 high advisories through Prisma's `effect` dependency and Next's PostCSS/sharp dependencies. The offered automatic fix upgrades outside the pinned stack (Prisma 6.19 / Next 16), so Phase 3 did not force it. Reassess as an explicit dependency/hardening update. |
 | Edge Runtime build warning | From `jose` inside Better Auth. Harmless — we do not use the Edge Runtime (§5.2 forbids it) and nothing enables it. |
-| Phases 1–3 have no unit tests | Vitest landed in Phase 4 (D-26), and `npm test` is a phase gate from Phase 4 onward (D-37). Phases 1–3 shipped before either existed and are covered only by the curl-based `verify-phase{1,2,3}.sh`. §15's remaining unit tests — business-date boundaries at 03:59/04:00/23:59, lateness at the grace boundary, phone normalisation — have no home yet. **Add each as its phase comes up** (lateness with Phase 6, for example) rather than in one late sweep; the business-date cases are the exception and are worth backfilling sooner, since every phase stamps `businessDate` and D-18 made the rule global. |
+| Phases 1–3 have no unit tests | Vitest landed in Phase 4 (D-26), and `npm test` is a phase gate from Phase 4 onward (D-37). Phases 1–3 shipped before either existed and are covered only by the curl-based `verify-phase{1,2,3}.sh`. **§15's named unit tests are now all in place** — lateness (Phase 6), business-date boundaries and phone normalisation (D-91). What remains uncovered is Phases 1–3's *service* logic, not §15's list. |
+| §15's "money arithmetic never produces a float artefact" has no test | The last unticked line in §15's "Unit tests — other" block. `Decimal` is used throughout and D-13/D-85 caught the `Number()` slips by review, but nothing asserts it. A cheap property-style test over the money helpers would close it. |
 | ~~Red attendance banner~~ | **Built in Phase 6.** Not dismissible, and it does not block work (D-45). |
 | ~~Clock-out has no UI~~ | **Built — D-81.** A card on /attendance showing the shift's scheduled end time. Deliberately no second banner. |
 | Clock-out photo is not captured | `Shop.requireClockOutPhoto` and `Attendance.clockOutPhotoPath` both exist and the purge job already clears the file. Nothing writes it. §4.13 makes it optional and per-shop; build it with the clock-out button. |
@@ -2705,7 +2879,12 @@ OWNER can merge and the merged caches reconcile to the moved ledgers.
 | ~~Phase 3 migration not committed~~ | **Resolved 7 Aug 2026 — see D-25.** The repository was initialised and the migration committed; all seven gates now pass. |
 | §8.9 attendance charts not built | D-82 deferred the calendar heatmap and weekly trend. They are the only §9 screens still missing. Use **Recharts** (D-67: a chart with axes and interaction earns a library; a sparkline does not) — it is in the stack and still has no caller. |
 | No `payment-methods` CSV export | The screen exports as `sales`, which carries the split but not as its own file. Harmless, but if someone asks for "the cash/card breakdown as a spreadsheet" it is a five-line entry in `reports-export.ts`. |
-| Demo data has no DAMAGE movements | D-90. The seed writes `OPNAME_LOSS` but never `DAMAGE`, so half of the shrinkage split is never exercised by fixture-driven checks. `verify-phase10.sh` works around it by recomputing from SQL. Worth adding a few DAMAGE rows to `prisma/demo.ts` so the fixture can express the bug. |
+| ~~Demo data has no DAMAGE movements~~ | **Fixed — D-92.** Both kinds now appear at every branch (23 `OPNAME_LOSS`, 16 `DAMAGE`), and the shrinkage rates were raised because the old ones produced only five movements in the whole dataset. D-90's previously-passing mutation is now caught by the fixture as well as by the SQL recomputation. |
+| Fixture accounts are assigned by hand, and `--reset-demo` breaks them | **D-94.** `p8mgr` / `p8purch` / `p8staff` were assigned to shop ids that `--reset-demo` destroys, so a reseed leaves them with no shops and `verify-phase10.sh` reports **409** on four checks — which reads as a permission bug and is not one. Either `verify-phase8.sh` should create and assign them the way `verify-phase4.sh` creates `purchaser1`, or the demo seed should own them. |
+| Demo figures drift silently | **D-93.** The counts recorded under *Current database state* were stale by a phase before anyone noticed, because `verify-phase8.sh` asserts relationally and never pins them. That is the right design for the script, but it means the prose table is unverified documentation — re-derive it from SQL rather than trusting it for a hand-calculation. |
+| **`notFound()` renders 404 content under a 200 status** | **D-95 — a real defect, not just a stale check.** Since D-88 added `not-found.tsx`, a bad `shopId` renders the 404 page but the response status is **200**. Wrong for monitors, crawlers and any client reading status codes, and it weakens R-4's "ids cannot be probed" property. Affects every page that calls `notFound()`. Needs an explicit 404 status; deferred from the 9 Aug debt batch because it touches page-level error handling everywhere. |
+| Two `verify-phase8.sh` checks are stale | **D-95.** The two 404 checks above, plus `the OWNER sees an edit control on the list`, which is shop-blind — it needs `?shopId=$EDIT_SHOP` because the probe is at DEMO-A while the owner's session is at BR-1. The underlying permission is correct and its three server-side checks still pass. |
+| **No one re-runs earlier phases' verification scripts** | **D-95.** Phase 10 invalidated two Phase 8 assertions and it went unnoticed, because each phase is accepted on its own script only. **Before the pilot, run every `verify-phase*.sh` in numeric order on a freshly reset database** and treat that as the go-live gate. |
 | Report pages re-query per screen | Sales by Staff, Sales by Shop and Payment Method each call `salesSummary` again for their totals row. Correct, and fast enough at three branches, but it is three queries where one would do if these ever share a loader. |
 | ~~`tsconfig.tsbuildinfo` is tracked~~ | **Fixed 7 Aug 2026.** It is a TypeScript incremental-build artifact that showed as modified after every `npm run typecheck`. Added to `.gitignore` and `git rm --cached`-ed, so Phase 4's diff stays readable. |
 
@@ -2737,11 +2916,18 @@ seed, so these numbers are exact and will recur:
 | Staff | 9 — `demo_mgr1..3`, `demo_staff1..6`, password `DemoPass2026!` |
 | Customers | 200, phones `+6299…` (a reserved prefix — cannot collide with a real customer) |
 | Prizes | 12, two batches each per branch at different costs |
-| Sales | 1711 (1679 completed, ~3% voided) over 60 business days |
-| Revenue | **295.570.000** — the figure `verify-phase8.sh` checks against |
-| Redemptions | 193, with real FIFO consumption rows |
-| Attendance | 496 records, ~20% late |
-| Expenses | 27 |
+| Sales | 1715 (1669 completed, ~3% voided) over 60 business days |
+| Revenue | **295.620.000** |
+| Redemptions | 189, with real FIFO consumption rows |
+| Shrinkage | 23 `OPNAME_LOSS` + 16 `DAMAGE` movements (D-92) |
+| Attendance | 490 records, ~20% late |
+| Expenses | 23 |
+
+> **These figures were re-derived from the database on 9 Aug 2026** after the
+> D-92 reseed. The previous set (1711 / 193 / 496 / 27, revenue 295.570.000) had
+> already been stale for a phase — see D-93. `verify-phase8.sh` does **not**
+> check any of them; it asserts relationally. Re-derive from SQL before using
+> them for a hand-calculation.
 
 **Phase 8 test accounts** — created through the API during verification:
 

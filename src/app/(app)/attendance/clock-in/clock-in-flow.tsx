@@ -35,11 +35,17 @@ export function ClockInFlow({
   shifts,
   alreadyClockedIn,
   record,
+  doneHref,
 }: {
   shopName: string;
   shifts: ShiftOption[];
   alreadyClockedIn: boolean;
   record: { clockInAt: string; isLate: boolean; lateMinutes: number } | null;
+  /**
+   * Where the Back / Done buttons go — the caller's role landing path, NOT a
+   * hardcoded /dashboard. Staff have no dashboard (D-113).
+   */
+  doneHref: string;
 }) {
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -206,7 +212,7 @@ export function ClockInFlow({
             correcting.
           </p>
         </div>
-        <Button render={<a href="/dashboard" />} size="lg" className="w-full">
+        <Button render={<a href={doneHref} />} size="lg" className="w-full">
           Back
         </Button>
       </div>
@@ -245,7 +251,7 @@ export function ClockInFlow({
           className="w-full rounded-xl border"
         />
 
-        <Button render={<a href="/dashboard" />} size="lg" className="w-full">
+        <Button render={<a href={doneHref} />} size="lg" className="w-full">
           Done
         </Button>
       </div>

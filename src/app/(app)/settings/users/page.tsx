@@ -1,5 +1,5 @@
 import { requireOwnerPage } from "@/server/auth/page-guard";
-import { selectableShops } from "@/server/auth/context";
+import { prisma } from "@/lib/prisma";
 import { listUsers } from "@/server/services/users";
 import { UserAdmin, type UserRow } from "./user-admin";
 
@@ -16,15 +16,38 @@ export const dynamic = "force-dynamic";
 export default async function UsersPage() {
   const actor = await requireOwnerPage();
 
+  /**
+   * EVERY shop, not `selectableShops`.
+   *
+   * `selectableShops` filters to active, non-HQ branches — right for the
+   * day-start picker, wrong here. An existing user may already be assigned to
+   * HQ (§4.12) or to a branch that has since been deactivated. If the edit form
+   * cannot render those checkboxes, saving would submit a `shopIds` array with
+   * them missing and silently strip the assignment (D-109).
+   *
+   * Inactive shops are marked so the owner can see what they are, and are not
+   * offered for a NEW assignment — `assertShopsExist` requires `isActive`, so
+   * adding one would be a 422 anyway.
+   */
   const [users, shops] = await Promise.all([
     listUsers(actor),
-    selectableShops(actor),
+    prisma.shop.findMany({
+      orderBy: [{ isActive: "desc" }, { isHqPseudoShop: "asc" }, { name: "asc" }],
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        isActive: true,
+        isHqPseudoShop: true,
+      },
+    }),
   ]);
 
   return (
     <UserAdmin
       initialUsers={users as UserRow[]}
-      shops={shops.map((s) => ({ id: s.id, code: s.code, name: s.name }))}
+      shops={shops}
+      currentUserId={actor.userId}
     />
   );
 }

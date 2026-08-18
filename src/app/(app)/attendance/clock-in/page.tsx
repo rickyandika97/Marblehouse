@@ -5,6 +5,7 @@ import {
   attendanceStatus,
   listShiftsForToday,
 } from "@/server/services/attendance";
+import { landingPathFor } from "@/server/services/auth";
 import { ClockInFlow } from "./clock-in-flow";
 
 export const metadata = { title: "Clock in · Marblehouse" };
@@ -34,6 +35,14 @@ export default async function ClockInPage() {
       shifts={shifts}
       alreadyClockedIn={status.clockedIn}
       record={status.record}
+      /**
+       * Where "Done" goes. Both buttons used to be hardcoded to /dashboard,
+       * which is MANAGER-or-OWNER only — so a STAFF member finishing a
+       * clock-in was sent straight to a 403 (D-113). `landingPathFor` already
+       * knows the answer per role; this reuses it rather than adding a second
+       * rule that can drift.
+       */
+      doneHref={landingPathFor(actor.role)}
     />
   );
 }

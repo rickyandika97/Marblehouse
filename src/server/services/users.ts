@@ -262,9 +262,18 @@ export async function createUser(
       });
     }
     if (e instanceof APIError) {
+      /**
+       * The library rejected it. The overwhelmingly likely cause is the
+       * username failing ITS validator after passing ours — which is a
+       * validation problem, not a server fault, and must not be reported as
+       * an opaque 500 (D-110). Say which field, and log the real reason for
+       * whoever reads the server output.
+       */
+      console.error("[users] Better Auth rejected createUser:", e.message);
       throw new AppError(
-        "INTERNAL",
-        "Could not create the account. Try again, and tell the owner if it keeps happening."
+        "VALIDATION_FAILED",
+        "That username was rejected. Use letters, numbers, dots, dashes or underscores only.",
+        { fields: { username: "That username was rejected." } }
       );
     }
     throw e;
@@ -506,4 +515,180 @@ export async function resetUserPassword(
 
   // A reset must evict whoever prompted it.
   await prisma.session.deleteMany({ where: { userId } });
+}
+
+// ═══════════════════ Staff assignment, per shop (§5.6, D-107) ═══════════════════
+//
+// The same `UserShop` rows `updateUser` manages, reached from the SHOP instead
+// of from the user. Opening a branch means assigning several people to one
+// shop; doing that through `updateUser` means editing each person in turn and
+// sending their whole shop array back each time — a read-modify-write that
+// silently drops a concurrent change and is easy to get wrong from a checkbox.
+//
+// These two functions touch exactly one (user, shop) pair, so nothing outside
+// that pair can be lost. Every other assignment the user has is untouched.
+
+/**
+ * Everyone assigned to one shop, plus everyone who could be.
+ *
+ * OWNER-only, matching `listUsers` — this reads the whole staff list in order
+ * to offer the unassigned, which is user administration however it is reached.
+ * OWNERs are excluded from both lists: they already reach every shop without
+ * an assignment (§3.1), so showing them here would invite an assignment that
+ * means nothing.
+ */
+export async function listShopStaff(actor: Actor, shopId: string) {
+  if (actor.role !== "OWNER") {
+    throw forbidden("Only the owner can assign staff to a shop.");
+  }
+
+  const shop = await prisma.shop.findUnique({
+    where: { id: shopId },
+    select: { id: true },
+  });
+  if (!shop) throw notFound("That shop no longer exists.");
+
+  const users = await prisma.user.findMany({
+    where: { role: { not: "OWNER" } },
+    include: { userShops: { select: { shopId: true } } },
+    orderBy: [{ banned: "asc" }, { role: "asc" }, { displayName: "asc" }],
+  });
+
+  const assigned = [];
+  const available = [];
+
+  for (const u of users) {
+    const dto = {
+      ...toUserDTO(u),
+      /**
+       * Would removing them from THIS shop leave them with none? A MANAGER or
+       * STAFF with no shop can do nothing at all — they log in to an empty
+       * picker. `updateUser` already refuses it; surfacing it lets the UI
+       * explain why instead of showing a failed toast.
+       */
+      isOnlyShop: u.userShops.length === 1 && u.userShops[0]?.shopId === shopId,
+    };
+
+    if (u.userShops.some((s) => s.shopId === shopId)) assigned.push(dto);
+    // A deactivated account is not offered for a NEW assignment — reactivate
+    // it first. It still appears under `assigned` if it already had the shop,
+    // so nobody silently vanishes from a branch's list.
+    else if (!u.banned) available.push(dto);
+  }
+
+  return { assigned, available };
+}
+
+/**
+ * Assign or unassign ONE user at ONE shop.
+ *
+ * Deliberately not a whole-array replace like `updateUser`. From a shop screen
+ * the owner is toggling one person; sending back every shop that person has
+ * would make a stale checkbox capable of silently revoking a branch nobody was
+ * looking at.
+ */
+export async function setShopAssignment(
+  actor: Actor,
+  shopId: string,
+  userId: string,
+  assigned: boolean,
+  meta: { ipAddress?: string | null } = {}
+) {
+  if (actor.role !== "OWNER") {
+    throw forbidden("Only the owner can assign staff to a shop.");
+  }
+
+  const [shop, user] = await Promise.all([
+    prisma.shop.findUnique({ where: { id: shopId }, select: { id: true, name: true } }),
+    prisma.user.findUnique({
+      where: { id: userId },
+      include: { userShops: { select: { shopId: true } } },
+    }),
+  ]);
+
+  if (!shop) throw notFound("That shop no longer exists.");
+  if (!user) throw notFound("That user no longer exists.");
+
+  // An OWNER reaches every shop without an assignment (§3.1). Creating one
+  // would be a no-op row that later reads as meaningful.
+  if (user.role === "OWNER") {
+    throw new AppError(
+      "VALIDATION_FAILED",
+      "The owner already has access to every shop and does not need assigning."
+    );
+  }
+
+  const has = user.userShops.some((s) => s.shopId === shopId);
+  if (has === assigned) {
+    // Idempotent: a double-tap on shop wifi must not be an error (NF-5's
+    // spirit — this endpoint carries no body worth keying).
+    return { ...toUserDTO(user), assigned };
+  }
+
+  // Never leave someone with no shop at all — they would log in to an empty
+  // picker and be unable to do anything. `updateUser` enforces the same rule.
+  if (!assigned && user.userShops.length === 1) {
+    throw new AppError(
+      "VALIDATION_FAILED",
+      `${user.displayName} works only at this branch. Assign them somewhere else first, or deactivate the account in Settings → Users.`,
+      { fields: { assigned: "This is their only shop." } }
+    );
+  }
+
+  const updated = await prisma.$transaction(async (tx) => {
+    if (assigned) {
+      await tx.userShop.create({ data: { userId, shopId } });
+    } else {
+      await tx.userShop.deleteMany({ where: { userId, shopId } });
+    }
+
+    /**
+     * The default shop must stay one of the assigned shops — `updateUser`
+     * enforces that invariant and unassigning here could otherwise strand a
+     * `defaultShopId` pointing at a branch the user no longer works at, which
+     * drives their business-date timezone (`actorBusinessDate`).
+     */
+    let defaultShopId = user.defaultShopId;
+    if (!assigned && defaultShopId === shopId) {
+      defaultShopId =
+        user.userShops.find((s) => s.shopId !== shopId)?.shopId ?? null;
+      await tx.user.update({ where: { id: userId }, data: { defaultShopId } });
+    } else if (assigned && !defaultShopId) {
+      defaultShopId = shopId;
+      await tx.user.update({ where: { id: userId }, data: { defaultShopId } });
+    }
+
+    const fresh = await tx.user.findUniqueOrThrow({
+      where: { id: userId },
+      include: { userShops: { select: { shopId: true } } },
+    });
+
+    await writeAudit(
+      actor,
+      {
+        entity: "User",
+        entityId: userId,
+        action: assigned ? "SHOP_ASSIGN" : "SHOP_UNASSIGN",
+        shopId,
+        before: { shopIds: user.userShops.map((s) => s.shopId) },
+        after: { shopIds: fresh.userShops.map((s) => s.shopId) },
+        ipAddress: meta.ipAddress ?? null,
+      },
+      tx
+    );
+
+    return fresh;
+  });
+
+  /**
+   * Revoking a branch must take effect now, not in up to 12 hours — the same
+   * reasoning as R-9's deactivation rule. Their work session for today may
+   * point at a shop they no longer have, and `hasShopAccess` is read from the
+   * session-loaded actor.
+   */
+  if (!assigned) {
+    await prisma.session.deleteMany({ where: { userId } });
+  }
+
+  return { ...toUserDTO(updated), assigned };
 }

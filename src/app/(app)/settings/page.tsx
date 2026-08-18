@@ -54,6 +54,14 @@ export default async function SettingsPage() {
       show: actor.role === "OWNER",
     },
     {
+      href: "/settings/shops",
+      icon: Store,
+      title: "Shops",
+      description: "Add a branch, or change its options and late grace",
+      // Shown only to the owner — but the page enforces it again server-side.
+      show: actor.role === "OWNER",
+    },
+    {
       href: "/settings/users",
       icon: Users,
       title: "Users",

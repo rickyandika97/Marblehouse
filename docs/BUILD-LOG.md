@@ -2989,10 +2989,590 @@ OWNER can merge and the merged caches reconcile to the moved ledgers.
 
 ---
 
+## Post-phase gap work — 18 Aug 2026 · Settings → Shops
+
+**Shop administration, which no phase ever built.** §5.6 and §8.10 both specify
+it; Phase 10 closed without it and it was not recorded as a debt. Adding a
+branch meant `db:studio` or editing the seed.
+
+### What was built
+
+| File | What it is |
+|---|---|
+| `src/server/services/shops.ts` | **New.** `listShops`, `getShop`, `createShop`, `updateShop`, the Zod schemas and `toShopDTO`. OWNER-gated in the service, not only at the route. |
+| `src/app/api/shops/route.ts` | **New.** `GET` (list) and `POST` (create). The collection endpoint did not exist — only `[id]/presets`, `[id]/shifts`, `[id]/prizes` did. |
+| `src/app/api/shops/[id]/route.ts` | **New.** `GET` and `PATCH`. `[id]` not `[shopId]`, matching its siblings (D-33). |
+| `src/app/(app)/settings/shops/page.tsx` | **New.** Owner-only page guard. |
+| `src/app/(app)/settings/shops/shop-admin.tsx` | **New.** List, create form, deactivate/reopen, and the empty-branch warning. |
+| `src/app/(app)/settings/page.tsx` | Adds the **Shops** row, owner-only. |
+| `src/server/services/__tests__/shops.test.ts` | **New.** 16 tests. |
+| `scripts/verify-shops.sh` | **New.** 30 HTTP checks across all three roles. Re-runnable. |
+
+`src/app/(app)/sale/page.tsx:50` already pointed the owner at "Settings →
+Shops". That reference now resolves to a real screen; it was dangling.
+
+**No migration.** The `Shop` model already had every column this needed — the
+data model was never the gap, only the UI and service on top of it.
+
+### How it was verified
+
+- `npm run typecheck`, `npm run lint` — clean.
+- `npm test` — **252 tests**, 16 files, green (236 before this change).
+- **Six mutation checks**, each confirmed to turn the suite red and then
+  reverted: the owner gate on create, the last-active-branch guard, the HQ
+  guard, reintroducing the §5.6 clone step, dropping the code's
+  `.toUpperCase()`, and making `code` mutable. Two of them exposed real bugs —
+  see D-102.
+- `scripts/verify-shops.sh` — **30/30**, run three times, plus a mutation check
+  (weakening the page guard to manager-or-owner turns it red).
+- **`docker compose build` was NOT run — the Docker daemon is not running on
+  this machine.** CLAUDE.md item 4 asks for it to catch case-sensitive import
+  bugs macOS hides. As a partial substitute every `@/` import in the new files
+  was resolved case-exactly against the filesystem, and all eight are fine. The
+  Docker build should still be run before this ships.
+
+### D-101 · Settings → Shops: a new branch starts EMPTY, with no clone step
+
+**Added 18 Aug 2026.** Shop administration was specified in §5.6 and §8.10 and
+never built — the PRD's "self-service branch creation" was a gap, not a
+deferral, and it was not in this list either. The only way to add a branch was
+`db:studio` or editing the seed. `src/app/(app)/sale/page.tsx` even told the
+owner to go to "Settings → Shops", a screen that did not exist.
+
+**§5.6 specifies a clone step and this deliberately does not implement it.**
+The spec says the new-shop flow "clones sale presets and shifts from an
+existing shop as a starting point". The owner chose the simple flow instead:
+**always start empty.**
+
+The reasoning, because a later session will otherwise "restore" the clone:
+cloning copies *money amounts* and *opening hours* from one branch to another.
+A preset that is silently wrong is worse than one that is visibly absent —
+staff would sell at the old branch's prices and nobody would have chosen that.
+Presets and shifts each already have their own screen, so the re-entry §5.6
+worried about is a few minutes, once, at a moment the owner is already
+concentrating on a new branch.
+
+**The cost is real and is paid in the UI, not hidden.** A shop with no preset
+cannot take a sale (`createSale` requires a preset or `allowCustomAmount`). So:
+
+- the create form states, before submission, that the shop starts empty and
+  names the three follow-up steps (presets, shifts, staff);
+- the success toast repeats it;
+- the shop list shows a **red warning** against any active branch with zero
+  presets and no custom amounts — "this branch cannot take a sale until you add
+  one". That warning is what makes starting empty safe to ship, and it should
+  not be softened into a muted hint.
+
+**Other decisions taken in the same change:**
+
+| Decision | Why |
+|---|---|
+| `code` is **immutable** after creation | Same call as `User.username` (D-3). The code identifies a branch on exported CSVs, in the audit log and in conversation; those references are already filed. `name` is the mutable label. It is absent from `updateShopSchema`, so sending it is a silent no-op — tested. |
+| `code` is **uppercased** by the schema | The column is `@unique`, but Postgres uniqueness is case-SENSITIVE. Without this, `br-2` and `BR-2` would both be accepted and every human reading a report would treat them as one branch. |
+| `isHqPseudoShop` is **not settable** | There is exactly one HQ (§4.12). Minting a second — or flipping a trading branch into one — would quietly remove it from every sale picker and dashboard. Absent from both schemas; create hardcodes `false`. |
+| **No day-start hour on the form** | §5.6 lists one; §5.6 predates D-18. The cutoff is global and lives in Settings → System. |
+| **No delete, only deactivate** | A shop owns sales, ledger rows, batches and attendance — CLAUDE.md's soft-delete rule covers all of it. |
+| **The last active branch cannot be retired** | Otherwise the owner reaches a state where the day-start picker is empty, nobody can declare a work session, and nothing can be recorded — recoverable only from the database. |
+| **HQ cannot be deactivated** | `expenseShops` filters on `isActive`, so closing HQ would remove the only place head-office expenses can be booked, with no obvious cause. |
+| Timezone validated against the **runtime tz database** | Via `Intl.DateTimeFormat`, not a hand-kept list. A typo misfiles every business date at that branch and would surface months later as a reporting bug. |
+
+Settings → **Shops** (plural, owner-only, branch administration) is a different
+screen from Settings → **Shop** (singular, every role, today's work-session
+picker). Both exist; the names are one letter apart and the index lists them
+separately.
+
+### D-102 · Two verification bugs the mutation checks exposed
+
+Both were found by deliberately breaking things per CLAUDE.md item 3, and
+neither would have been visible in a passing run.
+
+**1. A destructive test left the seed database broken.** The "HQ cannot be
+deactivated" and "last active branch" tests ask the service to close real seed
+rows and assert it refuses. When the mutation check *removed* those guards to
+confirm the tests go red, the calls succeeded — and HQ and BR-1 stayed
+deactivated after the run. Every later test run then failed for an unrelated
+reason, which reads as a new bug. Both tests now restore state in a `finally`,
+including the row they expected to survive.
+
+**2. `verify-shops.sh` reported permission passes it had not tested.**
+`manager1` and `staff1` do not survive a reseed (D-94), so the logins failed
+silently and every "a manager is refused" check saw **401** where it wanted
+403 — and three of them were checking a page redirect that returns 307 for an
+anonymous user. The script now creates the fixtures if missing (as
+`verify-phase4.sh` does for `purchaser1`) and **asserts each session is usable
+before running a single permission check**, aborting outright if not. A 403
+proves nothing when the alternative is that nobody was logged in.
+
+While there: `scripts/verify-phase4.sh:11` still `cd`s to
+`/Users/ricky/redlight`, the project's former name — the same defect D-99 fixed
+in `verify-phase1.sh`. Not fixed here (out of scope), recorded below.
+
+
+### D-103 · Sale prices: the screen D-101 assumed existed
+
+**Added 18 Aug 2026, immediately after D-101 — reported by the owner.** They
+created a branch, were told "No sale presets yet — this branch cannot take a
+sale until you add one", and **could not find anywhere to add one.**
+
+They were right: there was nowhere. `GET /api/shops/:id/presets` existed for
+the sale screen, but §7.2's `POST/PATCH/DELETE` were never built and no UI ever
+existed. D-101's warning pointed at a dead end, and D-101 shipped a create flow
+whose stated next step was impossible. The debt list said "worth building
+before the second branch opens"; the second branch was opened the same day.
+
+**Lesson worth keeping:** an empty-start decision is only as good as the screen
+that fills the emptiness. If a flow ends by telling the owner to go somewhere,
+that somewhere is part of the same change, not a follow-up.
+
+### What was built
+
+| File | What it is |
+|---|---|
+| `src/server/services/shops.ts` | Extended: `listPresetsForAdmin`, `createPreset`, `updatePreset`, `deletePreset`, `addDefaultPresets`, and their schemas. |
+| `src/app/api/shops/[id]/presets/route.ts` | Gains `POST`. `GET` now serves two audiences — see below. |
+| `src/app/api/shops/[id]/presets/[presetId]/route.ts` | **New.** `PATCH` and `DELETE`. |
+| `src/app/(app)/settings/shops/[id]/presets/{page,preset-admin}.tsx` | **New.** The owner's price manager. |
+| `src/app/(app)/settings/shops/shop-admin.tsx` | The warning is now a **link** to this screen, and every branch row gets a "Prices" button with its count. |
+
+### Decisions
+
+| Decision | Why |
+|---|---|
+| **`?admin=1` splits one URL between two audiences** | Default `GET` is the SALE SCREEN's list — active only, no use counts, readable by anyone with shop access. Staff must keep reading it or they cannot ring up a sale. `?admin=1` is the owner's list: active *and* retired, each with its sales count, OWNER-only. Two guards, one route, because they are genuinely the same resource seen at two permission levels. |
+| **§4.3's supersede rule is implemented, not approximated** | A `Sale` stores `presetId`, not a copy of the amount. Editing 50.000 → 60.000 in place would silently restate every historical sale pointing at it — last month's revenue would change with nothing explaining why. So: amount changed **and** the preset has sales → the old row is deactivated and a **new** preset created, in one transaction. The response carries `supersededId` and the UI warns *before* saving, because an unexplained extra row reads as a duplicate-creation bug. |
+| Amount edits **in place** when the preset was never sold | Nothing points at it, so there is no history to protect. Fixing a typo should not litter the list with retired rows. |
+| **Delete only when unused** | §13.5 explicitly permits a hard delete for an unused sale preset, which is why this is a real delete. Once a sale references it, `DELETE` is a 409 naming the count and pointing at retiring instead — and the UI does not offer the button at all. |
+| **A "use the standard prices" button, not §5.6's clone** | An empty branch offers the five documented defaults (20/50/100/200/500k) in one tap. This is **not** the clone step D-101 rejected: cloning copies another branch's real, possibly-tuned prices with no indication of their origin; this inserts the *documented defaults*, on an explicit tap, only when the shop has none, with every one editable straight after. Refuses with 409 if any price already exists, so a second tap cannot duplicate. |
+| Duplicate **active** amounts refused per shop | Two buttons at the same price on one till is a mis-tap waiting to happen. Scoped per shop — the same amount at a different branch is fine and is tested. |
+| Whole rupiah only, as a **string** | `^\d+$`, parsed to `Decimal`. A JSON number would already have been through a double (D-13). |
+| New prices append to the end | A new price must not silently jump to the front of the till. |
+
+### How it was verified
+
+- `npm run typecheck`, `npm run lint` — clean.
+- `npm test` — **267 tests** (was 252). 15 new, covering the supersede rule from
+  both sides, the delete refusal with its count, cross-shop scoping, and the
+  OWNER gate on all five operations.
+- **Four mutation checks**, each confirmed red then reverted: turning supersede
+  into an in-place edit (the money bug), allowing a used preset to be deleted,
+  dropping the cross-shop ownership check, and removing the owner gate.
+- `scripts/verify-shops.sh` — extended to **53 checks**, all green, run twice.
+  Section 10 records a real sale against a preset and then asserts the old row
+  keeps `20000` and the historical sale is untouched after a re-price.
+- Rendered end to end as the owner: empty branch → warning link → defaults →
+  five prices live on the sale screen's own endpoint.
+- **`docker compose build` still not run** — the Docker daemon is not running on
+  this machine (same as D-101). Imports were checked case-exactly instead.
+
+### D-104 · A greedy `sed` made a verification check lie
+
+`verify-shops.sh` extracted a preset id with `sed 's/.*"id":"\([^"]*\)".*/\1/p'`.
+The JSON body is a **single line** and `.*` is greedy, so it returned the
+**last** id in the list, not the first — the script recorded a sale against the
+500.000 preset and then asserted the old amount was 20.000. It reported a
+failure that did not exist.
+
+Now `first_id()`, a `grep -o | head -1`, and no greedy form remains in the file.
+Worth knowing because two other call sites used the same pattern and were
+correct only by accident — they happened to parse single-object responses.
+
+
+### D-105 · Shifts: the other half of the empty branch
+
+**Added 18 Aug 2026.** The twin of D-103, and the last of D-101's three
+follow-up steps. `POST/PATCH/DELETE /api/shops/:id/shifts` and
+`src/server/services/shifts.ts` have existed since **Phase 6** — complete,
+correct, and unreachable. No screen ever called them.
+
+**Why this one mattered more quietly than prices.** No prices *blocks* selling,
+so it announces itself. No shifts does not block anything: `clockIn` only
+computes lateness when a shift is matched (`attendance.ts` — `isLate` stays
+`false` with no shift), so a branch with none records **every arrival as
+punctual**. The owner sets a 5-minute grace, sees perfect attendance, and has
+no reason to suspect the control was never running.
+
+### What was built
+
+| File | What it is |
+|---|---|
+| `src/app/(app)/settings/shops/[id]/shifts/{page,shift-admin}.tsx` | **New.** The shift manager. |
+| `src/app/(app)/settings/shops/shop-admin.tsx` | A **Shifts** button per branch with its count, plus a second warning row. |
+| `src/server/services/__tests__/shifts.test.ts` | **New.** 14 tests — `shifts.ts` had none since Phase 6. |
+| `scripts/verify-shops.sh` | Section 11: 19 more checks. **72 total.** |
+
+No service or API changes. Phase 6 built those correctly, including the
+crosses-midnight case and the no-recompute rule; this is purely the missing UI.
+
+### Decisions
+
+| Decision | Why |
+|---|---|
+| **MANAGER *or* owner, not owner-only** | Unlike Settings → Shops itself and the price screen. §3.4 delegates shift configuration, and `assertCanManageShifts` already implemented exactly that. The page mirrors the service rather than inventing a stricter rule — a manager held to a lateness rule should be able to see the shift it is measured from. They remain confined to their own branches (tested from both sides). |
+| **STAFF are refused the page outright** | See D-106 — this was wrong on the first attempt. |
+| A **"use the standard shifts" button** | Morning 10:00–18:00 and Evening 18:00–23:00, the seed's own defaults, on an empty branch. Same reasoning as D-103's price defaults, and equally not a clone of another branch. There is no bulk endpoint, so it POSTs each in turn and **stops at the first failure** rather than reporting a partial result as success. |
+| The **empty state names the consequence** | "Staff can still clock in, but with no shift to measure against **nobody is ever recorded as late**." The silent-disable above is the whole risk; a neutral "no shifts yet" would hide it. |
+| The **crosses-midnight case is labelled, not corrected** | A 22:00–06:00 night shift is legitimate (§4.14). The DTO already exposed `crossesMidnight`; the row and the form both say "runs past midnight" so it does not read as a data error. A mutation test pins this — the tempting "fix" of rejecting `end <= start` is exactly what must not happen. |
+| The edit form **says editing is safe** | §4.14 snapshots the shift start on each attendance row, so a correction never restamps history. Saying so matters: fear of retroactively marking staff late is precisely what stops someone fixing a wrong time. |
+| Removal wording follows what the server **actually did** | `deleteShift` returns `{deactivated, deleted}` — a shift with attendance is retired so historical rows keep resolving their name; one with none is deleted. The toast reports whichever happened rather than guessing. |
+
+### How it was verified
+
+- `npm run typecheck`, `npm run lint` — clean.
+- `npm test` — **281 tests / 17 files** (was 267 / 16).
+- **Five mutation checks**, each red then reverted: always hard-deleting a used
+  shift, dropping the STAFF refusal, dropping the manager's shop confinement,
+  rejecting cross-midnight shifts, and restamping past attendance on edit. The
+  last is the one that silently rewrites history.
+- `scripts/verify-shops.sh` — **72 checks**, green twice, and the STAFF check
+  confirmed to go red when the page guard is weakened.
+- **`docker compose build` still not run** — the Docker daemon is not running on
+  this machine (as in D-101 and D-103). This change adds two `.tsx` files whose
+  imports were checked case-exactly; the build should still be run before ship.
+
+### D-106 · The shifts page rendered for STAFF with the buttons hidden
+
+Caught by `verify-shops.sh` section 11 on its first run: **200 where 403 was
+expected.**
+
+The first version guarded the page with `requireActorPage()` and passed a
+`canManage={actor.role !== "STAFF"}` flag down to hide the controls. The
+reasoning was that `shifts.ts` refuses STAFF every mutation anyway — which is
+true, and beside the point. A staff account could open a configuration screen
+and read the branch's full shift setup, including retired shifts, because
+`listShifts` deliberately permits a staff READ (the clock-in chooser needs it).
+
+CLAUDE.md rule 4 and §3.4 both say it plainly: **hiding a button is not a
+permission.** The page now uses `requireManagerOrOwnerPage()` and the
+`canManage` prop is gone entirely rather than left as a dead constant.
+
+Two things worth carrying forward:
+
+1. **A service that allows a read and refuses the writes does not settle who
+   may see the SCREEN.** Those are three separate questions, and the page has
+   to answer the third itself.
+2. This is the second time in this run of work that a permission bug was
+   invisible to `typecheck`, `lint` and the unit suite, and visible immediately
+   in a rendered page as a role (D-34's lesson, again). The `verify-shops.sh`
+   page-load checks earn their keep.
+
+
+### D-107 · Staff assignment from the shop — and `PATCH /api/users/:id` had no caller
+
+**Added 18 Aug 2026.** The last of D-101's three follow-up steps, and it turned
+out to be more than the wayfinding gap the debt list described.
+
+`/settings/users` is **create-only**. `PATCH /api/users/:id` and `updateUser`
+exist, are owner-gated and are tested — and **nothing in the UI has ever called
+them.** So shop access could be set when an account was created and never
+changed again. Same shape as D-103 and D-105: a complete, correct service
+reachable only by curl.
+
+### What was built
+
+| File | What it is |
+|---|---|
+| `src/server/services/users.ts` | Extended: `listShopStaff`, `setShopAssignment`. |
+| `src/app/api/shops/[id]/staff/route.ts` | **New.** `GET` and `PATCH`, OWNER only. |
+| `src/app/(app)/settings/shops/[id]/staff/{page,staff-admin}.tsx` | **New.** |
+| `src/server/services/shops.ts` | `toShopDTO` gains `staffCount`. |
+| `src/app/(app)/settings/shops/shop-admin.tsx` | A **Staff** button per branch, and a third warning row. |
+
+### Decisions
+
+| Decision | Why |
+|---|---|
+| **One (user, shop) pair per request**, not a whole-array replace | `updateUser` replaces a user's ENTIRE `shopIds` array. Driving that from a shop screen means read-modify-write, so a stale checkbox could revoke a branch nobody was looking at. `setShopAssignment` touches exactly one pair; a test asserts the user's other branches survive. |
+| **OWNER-only**, unlike the shifts screen | §3.4 puts "set shop access" in the owner column alone. Shifts are delegated to managers; this is not. |
+| **Nobody can be left with zero shops** | A MANAGER or STAFF with no assignment logs in to an empty picker and can do nothing. `updateUser` already refused it; this refuses it per-pair, and the DTO carries `isOnlyShop` so the UI explains it *before* the tap rather than via a failed toast. |
+| **The default shop follows an unassignment** | `defaultShopId` drives the actor's timezone in `actorBusinessDate`. Left pointing at a branch the user no longer works at, it silently misfiles their business date. It moves to a remaining shop, or null. |
+| **Sessions are revoked on removal** | Same reasoning as R-9's deactivation rule: their live work session may point at a shop they no longer have, and `hasShopAccess` reads from the session-loaded actor. Up to 12 hours of retained access is not acceptable for a revocation. |
+| **OWNERs are neither listed nor assignable** | They reach every shop without an assignment (§3.1). A `UserShop` row for an owner is a no-op that later reads as meaningful. Assigning one is a 422. |
+| **Deactivated accounts are not offered** for a new assignment | But they still appear under "works here" if they already had the shop, so nobody silently vanishes from a branch's list. |
+| Account creation **stays in Settings → Users** | This screen links there rather than duplicating the form, so usernames and temporary passwords keep one path. |
+| The empty state is **destructive-red** | With nobody assigned the branch is absent from every non-owner shop picker — nothing can be recorded there at all. A harder block than a missing price. |
+
+### How it was verified
+
+- `npm run typecheck`, `npm run lint` — clean.
+- `npm test` — **292 tests / 17 files** (was 281). 11 new.
+- **Four mutation checks**, each red then reverted: allowing someone to be
+  stranded with zero shops, turning the per-pair delete into a whole-array
+  wipe, not moving the default shop, and not revoking sessions.
+- `scripts/verify-shops.sh` — **89 checks**, green twice, and the strand guard
+  confirmed to go red when broken.
+- **`docker compose build` still not run** — the Docker daemon is not running
+  on this machine (as in D-101, D-103 and D-105).
+
+### D-108 · Escaped JSON inside `chk "$( )"` silently sent no body at all
+
+The nastiest of the three verification bugs in this run of work, because it
+reported **green while testing nothing.**
+
+Section 12 was written as:
+
+```bash
+chk "assigning them to a second branch is 200" \
+  "$(c -b $O -X PATCH $B/api/shops/$ASHOP/staff -H 'Content-Type: application/json' \
+     -d "{\"userId\":\"$STAFF_ID\",\"assigned\":true}")" 200
+```
+
+The inner `\"` survives one level of quoting but not two: nested inside
+`chk "…"`, curl received literal backslash-quotes and the server answered
+**422 "Expected a JSON body"**. Two later checks then read **0 rows** — which is
+what exposed it. Without those row-count assertions the section would have
+reported all-green having performed no assignment whatsoever.
+
+Three things worth carrying forward:
+
+1. **Bodies with shell variables go in a file** — `printf … > body.json` then
+   `-d @body.json`. Section 12 now does this throughout. Section 4's
+   `-d "{\"code\":…}"` is fine because it sits at the top level of `$( )`,
+   not nested inside another quoted string — verified rather than assumed.
+2. **Assert the effect, not only the status.** A status check alone is
+   satisfied by a request that did nothing. Every mutation in section 12 is now
+   followed by a row count.
+3. **Prove the plumbing first.** The section opens with a probe asserting a
+   well-formed body comes back with real data, and aborts the reasoning if not.
+   The first version of that probe only grepped for the error string — so it
+   passed while curl was failing outright with an unknown-option error. It now
+   greps for the expected *success* content instead. Checking for the absence
+   of one known failure is not the same as checking for success.
+
+
+### D-109 · Settings → Users can finally change an account
+
+**Added 18 Aug 2026.** `/settings/users` could create accounts and nothing
+else. `updateUser` and `resetUserPassword` shipped in Phase 1, owner-gated and
+correct, with **no UI caller and no unit tests** — the fourth instance of that
+pattern in one day (D-103, D-105, D-107).
+
+The practical consequence: **a departing staff member could not be
+deactivated.** Their login kept working, and the only remedy was `db:studio`.
+
+### What was built
+
+| File | What it is |
+|---|---|
+| `src/app/(app)/settings/users/user-admin.tsx` | Each row now expands into an edit form and a password panel. |
+| `src/app/(app)/settings/users/page.tsx` | Passes **every** shop and the current user's id. |
+| `src/server/services/__tests__/users.test.ts` | **New.** 19 tests — `updateUser` and `resetUserPassword` had none. |
+| `scripts/verify-users.sh` | **New.** 40 HTTP checks. Separate from `verify-shops.sh` because it touches accounts, not branches. |
+
+Now editable: name, phone, role, shop assignments, Purchasing, active/inactive
+with a reason, and a password reset. `username` stays immutable (D-3).
+
+### Decisions
+
+| Decision | Why |
+|---|---|
+| The page passes **every shop**, not `selectableShops` | `selectableShops` filters to active, non-HQ branches. A user may already be assigned to HQ (§4.12) or to a since-deactivated branch. `updateUser` REPLACES the whole `shopIds` array, so a checkbox that cannot render is an assignment that gets silently stripped on save. Held-but-inactive shops are shown and marked; inactive shops are not offered for a new assignment, since `assertShopsExist` requires `isActive`. A test pins the wholesale-replace behaviour so the reason stays visible. |
+| Self-edit controls are **disabled in the form** | You cannot deactivate yourself or change your own role. The server refuses either way; the form greys the control and says why, rather than teaching by red toast. |
+| The last-owner guard is **left to the server** | Unlike the self guard it depends on a live count, so the UI cannot know it in advance without a second query that could still be stale. |
+| Panels are **collapsed by default** | This list is mostly read. A page of expanded forms is unusable on a phone. |
+| The reset panel repeats the **three consequences** | The password is shown once, in person; a change is forced at next login; every session dies immediately. All three surprise people. |
+
+### How it was verified
+
+- `npm run typecheck`, `npm run lint` — clean.
+- `npm test` — **311 tests / 18 files** (was 292 / 17).
+- **Five mutation checks**, each red then reverted: the self guard, the
+  last-owner guard, stripping `canEnterCost` on demotion, the zero-shop guard,
+  and the session revoke.
+- `scripts/verify-users.sh` — **40 checks**, green twice, plus the self-guard
+  check confirmed to go red (see D-111 — it did not, at first).
+- `scripts/verify-shops.sh` — still 89 green, no regression.
+- **`docker compose build` still not run** — the Docker daemon is not running.
+
+### D-110 · Two username validators disagreed, and the loser was a 500
+
+Found while writing `verify-users.sh`: creating `zzv-test1` returned
+**INTERNAL — "Something went wrong"**. Creating `zzvtest2` worked.
+
+Our Zod schema has always allowed dashes (`/^[a-z0-9._-]+$/`). Better Auth's
+username plugin was running its **default** validator, which does not. So a
+username like `budi-kasir` passed our validation, reached the library, and was
+rejected there — and `createUser` maps any `APIError` to `INTERNAL`, so the
+owner saw a server error with no field message and no way to guess the cause.
+
+Two fixes, because either alone leaves the trap:
+
+1. `usernameValidator` is now passed to the plugin explicitly, with the **same
+   regex as the service**. A comment on each says to change both together.
+2. The `APIError` branch of `createUser` no longer reports `INTERNAL`. It
+   returns `VALIDATION_FAILED` naming the username field, and logs the
+   library's real message to the server console. A library rejection of user
+   input is a validation problem, not a server fault.
+
+This was never reachable from the UI before today, because nothing could edit
+users — but it has been latent since Phase 1 and would have hit the owner the
+first time they created an account with a dash in the name.
+
+### D-111 · A guard test that passed with the guard deleted
+
+The self-lockout check in `verify-users.sh` was:
+
+```
+chk "deactivating yourself is 422" ... 422
+```
+
+It passed. It also passed **with `if (existing.id === actor.userId)` replaced
+by `if (false)`** — because the dev database has exactly one owner, so the
+*last-active-owner* guard answered first. The check was real, but it was
+proving a different guard than its label claimed, and the self guard could have
+been deleted at any point with every test still green.
+
+Fixed by making the two distinguishable: the section now creates a **second
+owner** first, so the last-owner guard cannot fire, and asserts the refusal
+message contains "your own account" rather than merely being a 422. With the
+guard removed the section now goes fully red — the owner deactivates themselves
+and is signed out mid-run, which is exactly the failure being prevented.
+
+**The general lesson, and the third variant of it today** (see D-102, D-108):
+when two guards can produce the same status code, a status check does not tell
+you which one fired. Either assert the message, or arrange the fixture so only
+one guard can apply. This one is the most dangerous of the three, because
+unlike a mangled request body it leaves no trace at all — the check simply
+keeps passing after the code it protects is gone.
+
+### D-112 · Shell brace expansion silently emptied a JSON body
+
+A third false-pass mechanism in `verify-users.sh`, distinct from D-108's
+escaping bug:
+
+```bash
+patch_user() { printf '%s' "$1" > $D/body.json; ... }
+chk "..." "$(patch_user '{"role":"MANAGER","canEnterCost":true,...}')" 200
+```
+
+The braces were stripped before `printf` ever ran, so the server received
+`"role":"MANAGER",...` — invalid JSON. The status check read 200 from a
+different, well-formed call and reported green while `canEnterCost` was never
+set. Two row-count assertions caught it.
+
+Every body in this script now arrives on **stdin via a quoted heredoc**
+(`<<'JSON'`), which performs no expansion of any kind. That is now the house
+style for both verify scripts: never build a JSON body in a shell argument.
+
+
+### D-113 · Clocking in sent STAFF to a 403
+
+**Reported by the owner, 18 Aug 2026.** A staff member finishing a clock-in was
+shown **"You do not have access to this page"**.
+
+`src/app/(app)/attendance/clock-in/clock-in-flow.tsx` had **two** buttons — the
+"Done" on the success screen and the "Back" on the already-clocked-in screen —
+both hardcoded to `/dashboard`. `/dashboard` is `requireManagerOrOwnerPage`, so
+for STAFF that is a guaranteed 403 reached by doing exactly the right thing.
+
+`landingPathFor` in `src/server/services/auth.ts` has always had the correct
+rule (`OWNER → /dashboard`, everyone else → `/sale`). The clock-in flow simply
+did not use it — a second, wrong copy of a rule that already existed in one
+place. The page now passes `doneHref={landingPathFor(actor.role)}` into the
+client component. No new rule was added.
+
+`app-shell.tsx` was already correct: STAFF has no Dashboard tab. These two
+buttons were the only leak.
+
+**The MANAGER half of the report.** A manager *can* open `/dashboard`, so their
+symptom has a different cause: `resolveScope` falls back to `defaultShopId`
+when there is no work session, and if that default points at a shop they are no
+longer assigned to, the dashboard answers "You do not have access to that shop".
+`setShopAssignment` (D-107) moves the default on unassignment, so newly-managed
+accounts are safe; an account whose assignment was changed **before** D-107
+could still hold a stale default. Checked on this database — all four accounts
+are consistent, so nothing to repair here. Worth knowing if it recurs.
+
+**Verified:** typecheck, lint, **315 tests / 19 files** (4 new), both verify
+scripts green, and the new section 8 confirmed to go red with the bug
+reintroduced.
+
+### D-114 · The regression check tested a screen that was not on the page
+
+Writing the guard for D-113 produced a fourth false pass in one day, and a new
+mechanism.
+
+The first version asked: *does the staff clock-in page contain
+`href="/dashboard"`?* It passed. It also passed with the bug **fully
+reintroduced** — because a fresh clock-in page renders the **camera step**,
+whose markup contains no navigation button at all. The check was inspecting a
+screen where neither the right answer nor the wrong one exists.
+
+The buttons live on the two POST-clock-in screens. The check now creates an
+attendance row first so the "already clocked in" branch renders, and — before
+judging anything — asserts a string unique to that branch ("Only one clock-in
+is recorded per day") is present. It also counts `/sale` links rather than
+merely finding one, since the nav tab supplies one for free and would mask a
+missing button.
+
+**Four variants of the same failure in one day** (D-102, D-108, D-111, D-114).
+The pattern worth naming: *a check that cannot fail is worse than no check.*
+Each time, the fix was to assert something that is only true when the feature
+works — a row count, an error message, a screen marker — rather than a status
+code or the absence of one string.
+
+
+### D-115 · `Intl` currency formatting is not portable, and it broke hydration
+
+Reported as a React hydration error on the sale screen in Safari:
+
+```
++ Rp20.000     (client)
+- Rp 20.000    (server)
+```
+
+`formatMoney` was `Intl.NumberFormat(style: "currency")`. **Engines disagree
+about what separates the currency symbol from the digits for `id-ID`:** Node
+and V8 emit U+00A0 (a non-breaking space), Safari's JavaScriptCore emits
+nothing at all. The sale preset tiles are server-rendered and then hydrated, so
+the server sent `Rp 20.000`, Safari rendered `Rp20.000`, React compared
+the two strings and tore the tree down.
+
+`formatMoney` now writes the separator itself — an explicit U+00A0 constant —
+and delegates only *grouping* to `Intl`, because every engine agrees `id-ID`
+groups with `.`. It is the currency **spacing** that is unportable, not the
+number formatting. Do not restore `style: "currency"`.
+
+Two things this cost, both worth remembering:
+
+- **Chrome could not reproduce it.** Chrome shares V8's ICU with the server and
+  agreed with it perfectly. A browser check that only covers Chrome cannot see
+  this class of bug at all; the report came from Safari.
+- **The error text sends you to the wrong place.** It names date formatting and
+  browser extensions, so the first hour went into the nine
+  `toLocaleTimeString`/`toLocaleString` call sites and an extension theory.
+  All were innocent — Node and Chrome matched on every timestamp tested. The
+  overlay's `+`/`-` diff is the only thing that identified the real culprit,
+  and it should be the *first* thing read, not the last.
+
+Negative money changed shape slightly and deliberately: the sign is placed
+outside the symbol (`-Rp 5.000`, as `style: "currency"` produced) by formatting
+the absolute value, and `-0` now renders `Rp 0` rather than ICU's nonsensical
+`-Rp 0`.
+
+Covered by `src/lib/__tests__/money.test.ts` (10 tests, the first money
+formatting tests in the suite). They assert against literal escapes rather than
+against `Intl` output — comparing one ICU build to another would pass in CI and
+still break in Safari. Verified by setting the separator to `""`, the exact
+Safari behaviour: 6 of the 10 fail with `Rp20.000`.
+
+**Still latent, not fixed here** — see *Known issues / debts*: the date call
+sites have the same portability exposure via timezone rather than ICU spacing.
+
+
+---
+
 ## Known issues / debts
 
 | Item | Detail |
 |---|---|
+| `verify-phase4.sh` cannot run — wrong path | Line 11 is `cd /Users/ricky/redlight`, the project's former name. Same defect D-99 fixed in `verify-phase1.sh`; found while writing `verify-shops.sh` (D-102) and left alone as out of scope. It should resolve the repo from `$(dirname "$0")/..` like the others. Check the remaining `verify-phase*.sh` for the same line. |
+| Shop admin has no edit form | D-101 shipped create, plus deactivate/reopen from the list. Changing a shop's name, address, phone, grace or toggles after creation is supported by `PATCH /api/shops/:id` and covered by tests, but has **no UI** — only the activate toggle is wired. An owner who mistypes a name must call the API. |
+| ~~Presets have no owner screen~~ | **Fixed — D-103.** Settings → Shops → *shop* → Sale prices. Reported by the owner within a day of D-101 shipping. |
+| ~~Shifts have no owner screen~~ | **Fixed — D-105.** Settings → Shops → *shop* → Shifts, manager-or-owner. |
+| ~~Staff assignment is a separate journey~~ | **Fixed — D-107.** Settings → Shops → *shop* → Staff. It was not merely wayfinding: `PATCH /api/users/:id` had no UI caller at all. |
+| ~~Settings → Users is create-only~~ | **Fixed — D-109.** Rename, role, shops, Purchasing, deactivate and password reset all editable. |
+| Existing usernames with a dash predate D-110 | The plugin now accepts dashes, matching our schema. Any account someone *tried* to create with a dash before today failed outright, so there is nothing to migrate — but if a future change touches `usernameValidator`, the service regex in `users.ts` must move with it. |
+| Date formatting has the same portability exposure as D-115 | Not fixed — found while diagnosing D-115 and deliberately left, since neither is today's bug. Two shapes. **(a)** Seven `toLocaleTimeString`/`toLocaleDateString("id-ID")` call sites pass no `timeZone`, so they format in the *viewer's* zone: a server on `Asia/Jakarta` and a branch tablet on `Asia/Makassar` render the same instant an hour apart, and any of these that are server-rendered will throw a hydration error exactly as the preset tiles did. Pass `timeZone: "Asia/Jakarta"` explicitly. **(b)** `settings/audit-log/page.tsx:93` and `settings/backups/backup-screen.tsx:72` pass `undefined` as the *locale*, which resolves to the viewer's — guaranteed to differ on any non-`en-US` browser. Both are owner-only screens, which is why they have not been reported. Verified harmless on the owner's own machine today (Node 26 and Chrome agreed on every timestamp tested, midnight rollover included), so this is latent, not live. |
 | Prisma deprecation | `package.json#prisma` moves to `prisma.config.ts` in Prisma 7. Not urgent. |
 | Dependency audit | `npm audit --omit=dev` reports 6 high advisories through Prisma's `effect` dependency and Next's PostCSS/sharp dependencies. The offered automatic fix upgrades outside the pinned stack (Prisma 6.19 / Next 16), so Phase 3 did not force it. Reassess as an explicit dependency/hardening update. |
 | Edge Runtime build warning | From `jose` inside Better Auth. Harmless — we do not use the Edge Runtime (§5.2 forbids it) and nothing enables it. |
@@ -3046,6 +3626,24 @@ OWNER can merge and the merged caches reconcile to the moved ledgers.
 ---
 
 ## Current database state
+
+> **RESEEDED CLEAN since the D-100 run — the block below is now historical.**
+> Checked 18 Aug 2026 while building Settings → Shops (D-101), the dev database
+> held **only the base seed**: shops `BR-1` and `HQ`, users `owner` /
+> `manager1` / `staff1`, and **zero sales, customers, expenses and
+> attendance**. The demo dataset and all accumulated fixture data are gone.
+>
+> So: `npm run db:seed -- --demo` before any §16 hand-calculation or before
+> running `verify-phase8.sh` / `verify-phase10.sh`, which assume demo rows.
+> Passwords are as recorded below — `OwnerRealPass2026!`, `MgrRealPass2026!`,
+> `StaffRealPass2026!` — and `manager1` / `staff1` had their forced change
+> cleared by `verify-shops.sh`, which recreates them if a reseed drops them.
+>
+> `verify-shops.sh` creates one `V<HHMMSS>` branch per run and leaves it
+> **deactivated**. Five accumulated during D-101's runs and were deleted
+> outright afterwards — they carried no sales, ledger rows or stock, so the
+> soft-delete rule was not in play. If you see stray `V######` shops, that is
+> what they are.
 
 > **RESET AGAIN on 9 Aug 2026 for the D-100 go-live run.** `prisma migrate
 > reset` + `npm run db:seed -- --demo`, then **all ten `verify-phase*.sh` three

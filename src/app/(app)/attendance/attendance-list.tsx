@@ -7,51 +7,23 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ReasonDialog } from "@/components/reason-dialog";
 import { ClockOutCard } from "./clock-out-card";
+import {
+  AttendanceRecordCard,
+  StatusPill,
+  clockRange,
+  type AttendanceRecord,
+} from "./attendance-record-card";
 import { cn } from "@/lib/utils";
-
-interface Row {
-  id: string;
-  businessDate: string;
-  clockInAt: string;
-  clockOutAt: string | null;
-  isLate: boolean;
-  lateMinutes: number;
-  status: string;
-  locationDenied: boolean;
-  photoUrl: string | null;
-  photoPurged: boolean;
-  note: string | null;
-  user: { id: string; displayName: string };
-  shop: { id: string; name: string; code: string };
-  shift: { id: string; name: string } | null;
-}
-
-function hhmm(iso: string): string {
-  return new Date(iso).toLocaleTimeString("id-ID", {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-/**
- * "09:02 → 17:16", or "09:02 → still in" for a shift with no clock-out.
- *
- * The open case is deliberately not left as a bare clock-in time. A record with
- * no clock-out is genuinely different from a completed one — it is either
- * someone still working or someone who forgot — and collapsing the two is what
- * made the team screen look unfinished.
- */
-function clockRange(clockInAt: string, clockOutAt: string | null): string {
-  return clockOutAt
-    ? `${hhmm(clockInAt)} → ${hhmm(clockOutAt)}`
-    : `${hhmm(clockInAt)} → still in`;
-}
 
 /**
  * Attendance history (§8.9).
  *
  * Late days are highlighted, and a record whose location was denied is marked
  * so the owner can see it at a glance — §4.13 asks for exactly that.
+ *
+ * The row shape, the clock range and the detail card live in
+ * `attendance-record-card.tsx`, shared with the Attendance & Lateness report's
+ * drill-in so the two renderings of a record cannot drift.
  */
 export function AttendanceList({
   rows,
@@ -59,24 +31,24 @@ export function AttendanceList({
   canExcuse,
   selfUserId,
 }: {
-  rows: Row[];
+  rows: AttendanceRecord[];
   canSeeTeam: boolean;
   canExcuse: boolean;
   selfUserId: string;
 }) {
   const router = useRouter();
   const [scope, setScope] = useState<"mine" | "team">("mine");
-  const [open, setOpen] = useState<Row | null>(null);
+  const [open, setOpen] = useState<AttendanceRecord | null>(null);
   // Separate from `open`: the detail panel stays visible behind the dialog, so
   // the owner can still see the photo they are judging while typing the reason.
-  const [excusing, setExcusing] = useState<Row | null>(null);
+  const [excusing, setExcusing] = useState<AttendanceRecord | null>(null);
   const [busy, setBusy] = useState(false);
 
   const visible = rows.filter((r) =>
     scope === "mine" ? r.user.id === selfUserId : true
   );
 
-  async function excuse(row: Row, note: string) {
+  async function excuse(row: AttendanceRecord, note: string) {
     setBusy(true);
     try {
       const response = await fetch(`/api/attendance/${row.id}`, {
@@ -106,7 +78,6 @@ export function AttendanceList({
 
       {/* Renders nothing unless the viewer is clocked in and not yet out. */}
       <ClockOutCard />
-
 
       {canSeeTeam && (
         <div className="flex gap-1 border-b">
@@ -164,16 +135,7 @@ export function AttendanceList({
                   />
                 )}
 
-                <span
-                  className={cn(
-                    "shrink-0 rounded-full px-2 py-0.5 text-xs font-medium",
-                    r.status === "EXCUSED" && "bg-muted text-muted-foreground",
-                    r.status === "LATE" && "bg-red-100 text-red-900",
-                    r.status === "PRESENT" && "bg-emerald-100 text-emerald-900"
-                  )}
-                >
-                  {r.status === "LATE" ? `${r.lateMinutes} min late` : r.status}
-                </span>
+                <StatusPill record={r} />
               </button>
             </li>
           ))}
@@ -181,50 +143,34 @@ export function AttendanceList({
       )}
 
       {open && (
-        <div className="space-y-3 rounded-xl border p-4">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="font-semibold">{open.user.displayName}</p>
-              <p className="text-sm text-muted-foreground">
-                {open.businessDate} · {open.shop.name}
-              </p>
-              <p className="text-sm text-muted-foreground">
-                {clockRange(open.clockInAt, open.clockOutAt)}
-                {open.shift ? ` · ${open.shift.name}` : ""}
-              </p>
-            </div>
-            <Button variant="outline" size="sm" onClick={() => setOpen(null)}>
-              Close
-            </Button>
-          </div>
+        <div className="rounded-xl border p-4">
+          <AttendanceRecordCard
+            record={open}
+            actions={
+              <div className="space-y-3">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full"
+                  onClick={() => setOpen(null)}
+                >
+                  Close
+                </Button>
 
-          {open.photoPurged ? (
-            <p className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">
-              The photo for this day passed its 61-day retention and was
-              deleted. The attendance record itself is kept.
-            </p>
-          ) : open.photoUrl ? (
-            /* eslint-disable-next-line @next/next/no-img-element */
-            <img
-              src={open.photoUrl}
-              alt={`Clock-in photo for ${open.businessDate}`}
-              className="w-full rounded-lg border"
-            />
-          ) : null}
-
-          {open.note && <p className="text-sm">{open.note}</p>}
-
-          {canExcuse && open.status !== "EXCUSED" && (
-            <Button
-              variant="outline"
-              className="w-full"
-              onClick={() => setExcusing(open)}
-              disabled={busy}
-            >
-              {busy && <Loader2 className="size-4 animate-spin" />}
-              Excuse this record
-            </Button>
-          )}
+                {canExcuse && open.status !== "EXCUSED" && (
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                    onClick={() => setExcusing(open)}
+                    disabled={busy}
+                  >
+                    {busy && <Loader2 className="size-4 animate-spin" />}
+                    Excuse this record
+                  </Button>
+                )}
+              </div>
+            }
+          />
         </div>
       )}
 

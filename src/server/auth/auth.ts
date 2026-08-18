@@ -155,6 +155,20 @@ export const auth = betterAuth({
     usernamePlugin({
       minUsernameLength: 3,
       maxUsernameLength: 32,
+      /**
+       * MUST match `username` in `src/server/services/users.ts`.
+       *
+       * The plugin's DEFAULT validator rejects dashes, while our Zod schema
+       * has always allowed them (`/^[a-z0-9._-]+$/`). A username like
+       * `budi-kasir` therefore passed our validation and then failed inside
+       * the library — surfacing as a bare 500 "Something went wrong" with no
+       * field message, because `createUser` maps `APIError` to INTERNAL
+       * (D-110).
+       *
+       * Two validators for one rule is the bug; this makes the library follow
+       * ours. Change both together or not at all.
+       */
+      usernameValidator: (value) => /^[a-z0-9._-]+$/.test(value.toLowerCase()),
     }),
 
     /**

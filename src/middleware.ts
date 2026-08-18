@@ -24,11 +24,14 @@ export function middleware(req: NextRequest) {
     getSessionCookie(req, { cookiePrefix: "marblehouse" })
   );
 
-  // Already signed in and heading for the login page → send them home. The
-  // destination page resolves the real landing route for their role.
-  if (hasCookie && pathname === "/login") {
-    return NextResponse.redirect(new URL("/", req.url));
-  }
+  /**
+   * Note there is deliberately NO "has cookie → bounce off /login" rule here.
+   * A cookie can outlive the session row it names (an expired session, a
+   * reset database), and this middleware cannot tell the two apart. Redirecting
+   * on cookie presence alone put /login and / in an infinite 307 loop for
+   * exactly that case. The login page validates the session properly and
+   * redirects a genuinely signed-in user itself — let it.
+   */
 
   if (!hasCookie && !isPublicPath(pathname)) {
     /**

@@ -17,11 +17,11 @@ import { describe, expect, it } from "vitest";
 import { Prisma } from "@prisma/client";
 import {
   BUSINESS_DATE,
+  makeActorWithUser,
   makeBatch,
   makePrize,
   makeShop,
   remaining,
-  uniq,
   withRollback,
 } from "./helpers";
 import {
@@ -30,44 +30,6 @@ import {
   receiveTransfer,
 } from "@/server/services/transfers";
 import { consumeFifo } from "@/server/services/inventory";
-import type { Actor } from "@/server/auth/context";
-
-/**
- * A minimal Actor. Transfers only read `userId`, `role` and `assignedShopIds`,
- * so a full session is unnecessary — and building one would couple this suite
- * to Better Auth for no gain.
- */
-function actorFor(shopIds: string[], role: Actor["role"] = "MANAGER"): Actor {
-  return {
-    sessionId: `sess-${uniq()}`,
-    userId: `user-${uniq()}`,
-    username: `u${uniq()}`,
-    displayName: "Transfer Tester",
-    role,
-    isActive: true,
-    mustChangePassword: false,
-    canEnterCost: false,
-    defaultShopId: shopIds[0] ?? null,
-    assignedShopIds: shopIds,
-    businessDate: BUSINESS_DATE,
-    workSession: null,
-  };
-}
-
-/** A real user row, since PrizeTransfer.dispatchedById is a foreign key. */
-async function makeUser(tx: Prisma.TransactionClient, role: Actor["role"] = "MANAGER") {
-  const id = uniq();
-  return tx.user.create({
-    data: {
-      email: `transfer-${id}@marblehouse.invalid`,
-      name: `Transfer ${id}`,
-      username: `transfer-${id}`,
-      displayName: `Transfer ${id}`,
-      role,
-    },
-    select: { id: true },
-  });
-}
 
 async function setup(
   tx: Prisma.TransactionClient,
@@ -81,8 +43,11 @@ async function setup(
     });
   }
   const prize = await makePrize(tx);
-  const user = await makeUser(tx);
-  const actor = { ...actorFor([from.id, to.id]), userId: user.id };
+  const actor = await makeActorWithUser(tx, {
+    role: "MANAGER",
+    shopIds: [from.id, to.id],
+    businessDate: BUSINESS_DATE,
+  });
   return { from, to, prize, actor };
 }
 
@@ -158,7 +123,10 @@ describe("transfer dispatch", () => {
       await makeBatch(tx, { shopId: from.id, prizeItemId: prize.id, qty: 5, unitCogs: 1000 });
 
       // Assigned to the source only — the destination is somebody else's branch.
-      const sourceOnly = { ...actor, assignedShopIds: [from.id] };
+      const sourceOnly = {
+        ...actor,
+        shopRoles: new Map([[from.id, { role: "MANAGER" as const, canEnterCost: false }]]),
+      };
 
       await expect(
         dispatchTransfer(

@@ -21,7 +21,7 @@
  */
 import { describe, expect, it, afterEach, afterAll } from "vitest";
 import { Prisma } from "@prisma/client";
-import { prisma, makeShop, uniq } from "./helpers";
+import { prisma, makeShop, uniq, makeActorWithUser } from "./helpers";
 import {
   createCategory,
   createExpense,
@@ -65,40 +65,17 @@ afterAll(async () => {
 });
 
 async function makeUser(
-  role: Actor["role"],
-  assignedShopIds: string[],
+  role: "OWNER" | "MANAGER" | "STAFF",
+  shopIds: string[],
 ): Promise<Actor> {
-  const id = uniq();
-  const user = await prisma.user.create({
-    data: {
-      email: `exp-${id}@marblehouse.invalid`,
-      name: `Exp ${id}`,
-      username: `exp-${id}`,
-      displayName: `Exp ${id}`,
-      role,
-    },
-    select: { id: true, displayName: true, username: true },
-  });
-  userIds.push(user.id);
-
-  for (const shopId of assignedShopIds) {
-    await prisma.userShop.create({ data: { userId: user.id, shopId } });
-  }
-
-  return {
-    sessionId: `sess-${id}`,
-    userId: user.id,
-    username: user.username ?? id,
-    displayName: user.displayName,
+  const actor = await makeActorWithUser(prisma as unknown as Prisma.TransactionClient, {
     role,
-    isActive: true,
-    mustChangePassword: false,
-    canEnterCost: false,
-    defaultShopId: assignedShopIds[0] ?? null,
-    assignedShopIds,
+    shopIds,
+    defaultShopId: shopIds[0] ?? null,
     businessDate: new Date("2026-08-07T00:00:00.000Z"),
-    workSession: null,
-  } as unknown as Actor;
+  });
+  userIds.push(actor.userId);
+  return actor;
 }
 
 async function makeCategory(name = `Cat ${uniq()}`) {

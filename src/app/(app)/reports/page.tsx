@@ -118,7 +118,7 @@ const REPORTS: {
 export default async function ReportsIndexPage() {
   const actor = await requireManagerOrOwnerPage();
   const visible = REPORTS.filter((r) => {
-    if (r.ownerOnly) return actor.role === "OWNER";
+    if (r.ownerOnly) return actor.isOwner;
     // canSeeCost is the same predicate the services use, so the list cannot
     // drift from what the screens actually allow.
     if (r.costOnly) return canSeeCost(actor);
@@ -130,7 +130,7 @@ export default async function ReportsIndexPage() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Reports</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          {actor.role === "OWNER"
+          {actor.isOwner
             ? "All shops, or one at a time."
             : "Your shop. Cost and profit figures are owner-only."}
         </p>

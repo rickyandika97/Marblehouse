@@ -246,7 +246,7 @@ const EXPORTS: Record<string, Builder> = {
       filename: `liability-${range(report.scope)}.csv`,
       csv: toCsv(
         rows,
-        actor.role === "OWNER"
+        actor.isOwner
           ? [
               ...quantityColumns,
               {

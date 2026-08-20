@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
-import { requireRolePage } from "@/server/auth/page-guard";
+import { requireManagerOrOwnerPage } from "@/server/auth/page-guard";
 import { listUncostedBatches } from "@/server/services/stock";
 import { asPageError } from "@/server/auth/page-guard";
 import { Button } from "@/components/ui/button";
@@ -19,7 +19,7 @@ export const dynamic = "force-dynamic";
  * because they run the same check.
  */
 export default async function UncostedBatchesPage() {
-  const actor = await requireRolePage("OWNER", "MANAGER");
+  const actor = await requireManagerOrOwnerPage();
 
   const batches = await listUncostedBatches(actor).catch(asPageError);
 

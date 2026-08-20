@@ -20,7 +20,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { writeAudit } from "@/server/audit";
 import type { Actor } from "@/server/auth/context";
-import { canSeeCost, canSeeCostForShop } from "@/server/auth/context";
+import { assignedShopIds, canSeeCost, canSeeCostForShop } from "@/server/auth/context";
 import { assertShopAccess } from "@/server/auth/guards";
 import { AppError, forbidden, notFound } from "@/server/errors";
 import { backfillBatchCost, consumeFifo, onHand } from "@/server/services/inventory";
@@ -224,9 +224,20 @@ export async function listUncostedBatches(actor: Actor, shopId?: string) {
       isVoid: false,
       ...(shopId
         ? { shopId }
-        : actor.role === "OWNER"
+        : actor.isOwner
           ? {}
-          : { shopId: { in: actor.assignedShopIds } }),
+          // Un-scoped only reaches here for a Purchasing manager (the
+          // canSeeCost check above already refused a plain manager/staff) —
+          // narrow to the shops where they actually hold cost rights, not
+          // merely their full shop membership, so a queue call with no
+          // shopId can never surface a shop's costs they aren't cleared for.
+          : {
+              shopId: {
+                in: [...actor.shopRoles.entries()]
+                  .filter(([, sr]) => sr.role === "MANAGER" && sr.canEnterCost)
+                  .map(([id]) => id),
+              },
+            }),
     },
     orderBy: [{ receivedAt: "asc" }],
     include: {
@@ -249,7 +260,7 @@ export async function countUncostedBatches(actor: Actor): Promise<number> {
     where: {
       needsCosting: true,
       isVoid: false,
-      ...(actor.role === "OWNER" ? {} : { shopId: { in: actor.assignedShopIds } }),
+      ...(actor.isOwner ? {} : { shopId: { in: assignedShopIds(actor) } }),
     },
   });
 }

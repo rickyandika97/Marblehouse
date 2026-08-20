@@ -21,7 +21,8 @@
  *    schema, and an attempt to send them must not take effect.
  */
 import { describe, expect, it, afterEach, afterAll } from "vitest";
-import { prisma, uniq } from "./helpers";
+import { Prisma } from "@prisma/client";
+import { prisma, uniq, makeActorWithUser } from "./helpers";
 import {
   addDefaultPresets,
   createPreset,
@@ -37,7 +38,7 @@ import {
   updateShopSchema,
 } from "../shops";
 import { listPresets } from "../sales";
-import { listShopStaff, setShopAssignment } from "../users";
+import { listShopStaff, setShopAssignment } from "../employees";
 import { AppError } from "@/server/errors";
 import type { Actor } from "@/server/auth/context";
 
@@ -84,41 +85,20 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-async function makeUser(role: Actor["role"]): Promise<Actor> {
-  const id = uniq();
-  const user = await prisma.user.create({
-    data: {
-      email: `shop-${id}@marblehouse.invalid`,
-      name: `Shop ${id}`,
-      username: `shop-${id}`,
-      displayName: `Shop ${id}`,
-      role,
-    },
-    select: { id: true, displayName: true, username: true },
-  });
-  userIds.push(user.id);
-
-  return {
-    sessionId: `sess-${id}`,
-    userId: user.id,
-    username: user.username ?? id,
-    displayName: user.displayName,
+async function makeUser(role: "OWNER" | "MANAGER" | "STAFF"): Promise<Actor> {
+  const actor = await makeActorWithUser(prisma as unknown as Prisma.TransactionClient, {
     role,
-    isActive: true,
-    mustChangePassword: false,
-    canEnterCost: false,
-    defaultShopId: null,
-    assignedShopIds: [],
     businessDate: new Date("2026-08-18T00:00:00.000Z"),
-    workSession: null,
-  } as unknown as Actor;
+  });
+  userIds.push(actor.userId);
+  return actor;
 }
 
 /**
  * A STAFF user row assigned to the given shops. Distinct from `makeUser`,
  * which builds an Actor to act AS; these tests act ON a person.
  */
-async function makeStaff(assignedShopIds: string[]) {
+async function makeStaff(shopIds: string[]) {
   const id = uniq();
   const user = await prisma.user.create({
     data: {
@@ -126,13 +106,14 @@ async function makeStaff(assignedShopIds: string[]) {
       name: `Stf ${id}`,
       username: `stf-${id}`,
       displayName: `Stf ${id}`,
-      role: "STAFF",
-      defaultShopId: assignedShopIds[0] ?? null,
+      defaultShopId: shopIds[0] ?? null,
     },
   });
   userIds.push(user.id);
-  for (const shopId of assignedShopIds) {
-    await prisma.userShop.create({ data: { userId: user.id, shopId } });
+  for (const shopId of shopIds) {
+    await prisma.userShop.create({
+      data: { userId: user.id, shopId, role: "STAFF" },
+    });
   }
   return user;
 }
@@ -451,7 +432,7 @@ describe("audit and defaults", () => {
 
 /** A sale against a preset, so the "has been used" branch can be exercised. */
 async function sellOnce(shopId: string, presetId: string, amount: string) {
-  const owner = await prisma.user.findFirstOrThrow({ where: { role: "OWNER" } });
+  const owner = await prisma.user.findFirstOrThrow({ where: { isOwner: true } });
   return prisma.sale.create({
     data: {
       shopId,
@@ -879,7 +860,7 @@ describe("staff assignment from the shop (D-107)", () => {
 
     const list = await listShopStaff(owner, shop.id);
     const everyone = [...list.assigned, ...list.available];
-    expect(everyone.every((u) => u.role !== "OWNER")).toBe(true);
+    expect(everyone.every((u) => !u.isOwner)).toBe(true);
   });
 
   it("flags the only-shop case so the UI can explain it", async () => {

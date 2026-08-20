@@ -23,7 +23,7 @@ import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { writeAudit } from "@/server/audit";
-import type { Actor } from "@/server/auth/context";
+import { type Actor, assignedShopIds, roleAtShop } from "@/server/auth/context";
 import { assertShopAccess } from "@/server/auth/guards";
 import { AppError, forbidden, notFound } from "@/server/errors";
 import { localParts } from "@/lib/business-date";
@@ -113,7 +113,7 @@ export async function attendanceStatus(actor: Actor) {
 
   return {
     // §4.13: required for STAFF and MANAGER, optional for OWNER.
-    required: actor.role !== "OWNER",
+    required: !actor.isOwner,
     clockedIn: record !== null,
     businessDate: actor.businessDate.toISOString().slice(0, 10),
     record: record
@@ -457,18 +457,31 @@ export async function listAttendance(
 
   const scope: Prisma.AttendanceWhereInput = {};
 
-  if (actor.role === "STAFF") {
+  // Role is per-shop (D-122): a bare "is this actor STAFF" is meaningless
+  // once they can be MANAGER at one shop and STAFF at another. Resolve the
+  // relevant role at the shop actually in scope; with no shop given, "can
+  // see team attendance anywhere" gates the same as the dashboard/report
+  // dispatch above.
+  const roleHere = input.shopId ? roleAtShop(actor, input.shopId) : null;
+  const isManagerSomewhere = [...actor.shopRoles.values()].some(
+    (sr) => sr.role === "MANAGER"
+  );
+  const staffOnly = input.shopId
+    ? roleHere === "STAFF"
+    : !actor.isOwner && !isManagerSomewhere;
+
+  if (staffOnly) {
     // §3.4 gives STAFF their own history only.
     scope.userId = actor.userId;
-  } else if (actor.role === "MANAGER") {
+  } else if (!actor.isOwner) {
     scope.shopId = input.shopId
       ? input.shopId
-      : { in: actor.assignedShopIds };
+      : { in: assignedShopIds(actor) };
   } else if (input.shopId) {
     scope.shopId = input.shopId;
   }
 
-  if (input.userId && actor.role !== "STAFF") scope.userId = input.userId;
+  if (input.userId && !staffOnly) scope.userId = input.userId;
   if (input.lateOnly) scope.isLate = true;
 
   if (input.from || input.to) {
@@ -551,11 +564,9 @@ export function assertCanReadAttendance(
   recordUserId: string,
   recordShopId: string
 ): void {
-  if (actor.role === "OWNER") return;
+  if (actor.isOwner) return;
   if (recordUserId === actor.userId) return; // own record
-  if (actor.role === "MANAGER" && actor.assignedShopIds.includes(recordShopId)) {
-    return;
-  }
+  if (roleAtShop(actor, recordShopId) === "MANAGER") return;
   throw forbidden("You do not have access to that attendance record.");
 }
 
@@ -605,7 +616,7 @@ export async function editAttendance(
   input: z.infer<typeof editAttendanceSchema>,
   meta: { ipAddress?: string | null } = {}
 ) {
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can edit an attendance record.");
   }
 

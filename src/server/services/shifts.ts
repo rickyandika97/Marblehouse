@@ -87,12 +87,12 @@ export async function listShifts(actor: Actor, shopId: string) {
   return shifts.map(toShiftDTO);
 }
 
-/** §3.4: owner, or a manager at one of their own shops. */
+/** §3.4: owner, or a MANAGER at this specific shop. */
 function assertCanManageShifts(actor: Actor, shopId: string): void {
-  if (actor.role === "STAFF") {
+  if (actor.isOwner) return;
+  if (actor.shopRoles.get(shopId)?.role !== "MANAGER") {
     throw forbidden("Only a manager or the owner can configure shifts.");
   }
-  assertShopAccess(actor, shopId);
 }
 
 export async function createShift(

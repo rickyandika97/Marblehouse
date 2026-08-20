@@ -42,7 +42,7 @@ export default async function ClockInPage() {
        * knows the answer per role; this reuses it rather than adding a second
        * rule that can drift.
        */
-      doneHref={landingPathFor(actor.role)}
+      doneHref={landingPathFor(actor.isOwner)}
     />
   );
 }

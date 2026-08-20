@@ -55,7 +55,6 @@ async function recordOn(businessDate: Date) {
       name: `Ret ${id}`,
       username: `ret-${id}`,
       displayName: `Ret ${id}`,
-      role: "STAFF",
     },
     select: { id: true },
   });

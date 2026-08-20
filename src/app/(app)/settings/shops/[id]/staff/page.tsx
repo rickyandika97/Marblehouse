@@ -2,7 +2,7 @@ import Link from "next/link";
 import { ChevronLeft } from "lucide-react";
 import { requireOwnerPage, asPageError } from "@/server/auth/page-guard";
 import { getShop } from "@/server/services/shops";
-import { listShopStaff } from "@/server/services/users";
+import { listShopStaff } from "@/server/services/employees";
 import { StaffAdmin } from "./staff-admin";
 
 export const metadata = { title: "Staff · Marblehouse" };
@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic";
  * work (§3.4 "Create user, set role, set shop access" — owner column only), so
  * unlike the shifts screen this one is NOT delegated to managers.
  *
- * This does not create accounts; Settings → Users still owns that. It answers
+ * This does not create accounts; Settings → Employees still owns that. It answers
  * the question you actually have when opening a branch — "who works here?" —
  * without editing every person in turn.
  */

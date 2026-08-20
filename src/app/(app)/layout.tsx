@@ -26,10 +26,15 @@ export default async function AppLayout({
   const shopName =
     resolution.session?.shop.name ?? actor.workSession?.shop.name ?? null;
 
+  const isManagerSomewhere = [...actor.shopRoles.values()].some(
+    (sr) => sr.role === "MANAGER"
+  );
+
   return (
     <AppShell
       displayName={actor.displayName}
-      role={actor.role}
+      isOwner={actor.isOwner}
+      isManagerSomewhere={isManagerSomewhere}
       shopName={shopName}
     >
       {children}

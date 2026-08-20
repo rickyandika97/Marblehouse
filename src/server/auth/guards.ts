@@ -10,7 +10,6 @@
  * Guards throw AppError. Route handlers catch via `handleRoute`; pages catch
  * via `guardPage`, which renders a real 403 screen.
  */
-import type { Role } from "@prisma/client";
 import { getActor, hasShopAccess, type Actor } from "./context";
 import { AppError, forbidden, unauthenticated } from "@/server/errors";
 
@@ -39,23 +38,52 @@ export async function requireSettledActor(): Promise<Actor> {
   return actor;
 }
 
-/** Restrict to an explicit set of roles. */
-export async function requireRole(...roles: Role[]): Promise<Actor> {
+/** OWNER only — employee admin, shops, audit, backups, profit (§3.4). */
+export async function requireOwner(): Promise<Actor> {
   const actor = await requireSettledActor();
-  if (!roles.includes(actor.role)) {
+  if (!actor.isOwner) {
     throw forbidden("Your role does not have access to this area.");
   }
   return actor;
 }
 
-/** OWNER only — user admin, shops, audit, backups, profit (§3.4). */
-export async function requireOwner(): Promise<Actor> {
-  return requireRole("OWNER");
+/**
+ * OWNER, or MANAGER at the given shop (D-122 — role is per-shop, so a
+ * "manager or owner" check is only meaningful once a shop is known).
+ *
+ * This is the check that stops a MANAGER reaching a branch outside their
+ * assignments, or acting with MANAGER privileges at a shop where they only
+ * hold STAFF, by passing an ID directly (§15 permission tests).
+ */
+export async function requireShopRole(
+  shopId: string,
+  ...roles: ("MANAGER" | "STAFF")[]
+): Promise<Actor> {
+  const actor = await requireSettledActor();
+  if (actor.isOwner) return actor;
+  const sr = actor.shopRoles.get(shopId);
+  if (!sr || !roles.includes(sr.role)) {
+    throw forbidden("Your role does not have access to this shop.");
+  }
+  return actor;
 }
 
-/** OWNER or MANAGER — stock, expenses, shop-scoped reporting. */
+/**
+ * OWNER, or MANAGER at ANY shop — deliberately weak, for the handful of
+ * screens (reports index, dashboard dispatch) that need "is this person
+ * privileged at all" before a later, real per-shop check narrows the data.
+ * Never use this alone to gate an action on a specific shop — pair it with
+ * `requireShopRole` or `assertShopAccess` once the shop is known.
+ */
 export async function requireManagerOrOwner(): Promise<Actor> {
-  return requireRole("OWNER", "MANAGER");
+  const actor = await requireSettledActor();
+  const isManagerSomewhere = [...actor.shopRoles.values()].some(
+    (sr) => sr.role === "MANAGER"
+  );
+  if (!actor.isOwner && !isManagerSomewhere) {
+    throw forbidden("Your role does not have access to this area.");
+  }
+  return actor;
 }
 
 /**

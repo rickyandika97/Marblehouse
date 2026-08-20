@@ -52,7 +52,7 @@ export async function listAuditLog(
   // §4.16: the audit log is the owner's oversight tool. A manager reading it
   // would see every other branch's activity, and a staff member would see the
   // record of checks made on them — both outside §3.4's grants.
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can read the audit log.");
   }
 
@@ -123,7 +123,7 @@ export async function auditLogFilters(actor: Actor): Promise<{
   entities: string[];
   actions: string[];
 }> {
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can read the audit log.");
   }
 

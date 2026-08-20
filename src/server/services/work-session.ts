@@ -137,7 +137,11 @@ export async function changeWorkSession(
 
   if (current.shopId === shop.id) return current;
 
-  const priorRecords = await countRecordsToday(actor, current.shopId);
+  // OWNER moves between branches to monitor them, not to work a shift under a
+  // false shop — the reason requirement exists to explain staff covering for
+  // each other, which does not apply here (BUILD-LOG D-121).
+  const priorRecords =
+    actor.isOwner ? 0 : await countRecordsToday(actor, current.shopId);
   const reason = input.reason?.trim();
 
   if (priorRecords > 0 && !reason) {

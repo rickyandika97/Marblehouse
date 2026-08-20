@@ -228,7 +228,7 @@ export async function getCustomerForActor(
 ): Promise<CustomerDTO | CustomerOwnerDTO> {
   const customer = await getCustomer(id);
 
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     return toCustomerDTO(customer);
   }
 
@@ -334,7 +334,7 @@ export async function mergeCustomers(
   tx: Prisma.TransactionClient,
   meta: { ipAddress?: string | null } = {}
 ): Promise<CustomerDTO> {
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can merge customer records.");
   }
 

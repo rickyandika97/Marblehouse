@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { requireRolePage } from "@/server/auth/page-guard";
+import { requireManagerOrOwnerPage } from "@/server/auth/page-guard";
 import { resolveWorkSession } from "@/server/services/work-session";
 import { listPrizes } from "@/server/services/prizes";
 import { countUncostedBatches } from "@/server/services/stock";
@@ -27,7 +27,7 @@ export const dynamic = "force-dynamic";
  * payload to leak into the HTML.
  */
 export default async function StockPage() {
-  const actor = await requireRolePage("OWNER", "MANAGER");
+  const actor = await requireManagerOrOwnerPage();
 
   const { session } = await resolveWorkSession(actor);
   if (!session) redirect("/select-shop");

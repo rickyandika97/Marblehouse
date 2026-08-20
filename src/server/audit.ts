@@ -36,11 +36,20 @@ export async function writeAudit(
   input: AuditInput,
   db: Db = prisma
 ): Promise<void> {
+  // D-122: role is per-shop now. Snapshot the role the actor held AT THE
+  // SHOP this action concerns — the same shop already resolved for the
+  // `shopId` column below. Falls back to OWNER-or-null when the action has
+  // no shop in scope (e.g. a whole-system OWNER-only action).
+  const auditShopId = input.shopId ?? actor.workSession?.shopId ?? null;
+  const role = actor.isOwner
+    ? "OWNER"
+    : (auditShopId ? actor.shopRoles.get(auditShopId)?.role : undefined) ?? null;
+
   await db.auditLog.create({
     data: {
       userId: actor.userId,
-      role: actor.role,
-      shopId: input.shopId ?? actor.workSession?.shopId ?? null,
+      role,
+      shopId: auditShopId,
       entity: input.entity,
       entityId: input.entityId ?? null,
       action: input.action,

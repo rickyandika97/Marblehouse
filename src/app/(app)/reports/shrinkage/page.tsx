@@ -53,7 +53,7 @@ export default async function ShrinkageReportPage({
   return (
     <ReportShell
       title="Shrinkage"
-      description={actor.role === "OWNER" && !sp.shopId ? "All shops" : undefined}
+      description={actor.isOwner && !sp.shopId ? "All shops" : undefined}
       from={from}
       to={to}
       exportName="shrinkage"

@@ -47,7 +47,7 @@ export default async function PrizeRedemptionReportPage({
   return (
     <ReportShell
       title="Prize Redemption"
-      description={actor.role === "OWNER" && !sp.shopId ? "All shops" : undefined}
+      description={actor.isOwner && !sp.shopId ? "All shops" : undefined}
       from={from}
       to={to}
       exportName="prize-redemption"

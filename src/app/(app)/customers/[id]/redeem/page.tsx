@@ -44,10 +44,15 @@ export default async function RedeemPage({
 
   const prizes = await listPrizes(actor, { shopId: session.shopId });
 
-  // Deliberately narrowed to the four fields the cart needs. A Purchasing
-  // manager's `listPrizes` response carries valuation; passing the whole DTO
-  // into a client component would ship cost figures to the browser for a role
-  // that may see them on the stock screen but has no reason to hold them here.
+  // Deliberately narrowed to the fields the cart needs. A Purchasing manager's
+  // `listPrizes` response carries valuation; passing the whole DTO into a
+  // client component would ship cost figures to the browser for a role that may
+  // see them on the stock screen but has no reason to hold them here.
+  //
+  // `imagePath` is passed as PRESENCE, not as a URL the browser fetches
+  // directly: the card builds `/api/prizes/:id/image` from the id, so the
+  // stored path never reaches the client and the data directory's layout stays
+  // a server-side detail.
   const redeemable: RedeemablePrize[] = prizes
     .filter((p) => p.isActive && p.shopConfig?.isActive)
     .map((p) => ({
@@ -56,6 +61,7 @@ export default async function RedeemPage({
       category: p.category,
       ticketCost: p.ticketCost,
       onHand: p.onHand,
+      imagePath: p.imagePath,
     }));
 
   return (

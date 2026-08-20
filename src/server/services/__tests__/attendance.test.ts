@@ -77,18 +77,21 @@ async function photo(): Promise<ArrayBuffer> {
   ) as ArrayBuffer;
 }
 
-async function fixture(opts: { role?: Actor["role"]; shiftStart?: string } = {}) {
+async function fixture(
+  opts: { role?: "OWNER" | "MANAGER" | "STAFF"; shiftStart?: string } = {}
+) {
   const shop = await makeShop(prisma, "Attendance");
   shopIds.push(shop.id);
 
   const id = uniq();
+  const role = opts.role ?? "STAFF";
   const user = await prisma.user.create({
     data: {
       email: `att-${id}@marblehouse.invalid`,
       name: `Att ${id}`,
       username: `att-${id}`,
       displayName: `Att ${id}`,
-      role: opts.role ?? "STAFF",
+      isOwner: role === "OWNER",
     },
     select: { id: true, displayName: true, username: true },
   });
@@ -112,12 +115,14 @@ async function fixture(opts: { role?: Actor["role"]; shiftStart?: string } = {})
     userId: user.id,
     username: user.username ?? id,
     displayName: user.displayName,
-    role: opts.role ?? "STAFF",
+    isOwner: role === "OWNER",
+    shopRoles:
+      role === "OWNER"
+        ? new Map()
+        : new Map([[shop.id, { role, canEnterCost: false }]]),
     isActive: true,
     mustChangePassword: false,
-    canEnterCost: false,
     defaultShopId: shop.id,
-    assignedShopIds: [shop.id],
     businessDate: BUSINESS_DATE,
     workSession: null,
   } as unknown as Actor;
@@ -401,9 +406,9 @@ describe("clock-out", () => {
 describe("read scoping (§3.4)", () => {
   it("lets a staff member read their own record but not another's", () => {
     const staff = {
-      role: "STAFF",
+      isOwner: false,
       userId: "u1",
-      assignedShopIds: ["s1"],
+      shopRoles: new Map([["s1", { role: "STAFF", canEnterCost: false }]]),
     } as unknown as Actor;
 
     expect(() => assertCanReadAttendance(staff, "u1", "s1")).not.toThrow();
@@ -412,9 +417,9 @@ describe("read scoping (§3.4)", () => {
 
   it("lets a manager read any record at their OWN shops only", () => {
     const manager = {
-      role: "MANAGER",
+      isOwner: false,
       userId: "m1",
-      assignedShopIds: ["s1"],
+      shopRoles: new Map([["s1", { role: "MANAGER", canEnterCost: false }]]),
     } as unknown as Actor;
 
     expect(() => assertCanReadAttendance(manager, "u2", "s1")).not.toThrow();
@@ -423,9 +428,9 @@ describe("read scoping (§3.4)", () => {
 
   it("lets the owner read anything", () => {
     const owner = {
-      role: "OWNER",
+      isOwner: true,
       userId: "o1",
-      assignedShopIds: [],
+      shopRoles: new Map(),
     } as unknown as Actor;
 
     expect(() => assertCanReadAttendance(owner, "u2", "s9")).not.toThrow();

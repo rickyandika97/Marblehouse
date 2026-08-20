@@ -93,7 +93,7 @@ export async function updateTicketAwardReasonThreshold(
   tx: Prisma.TransactionClient,
   meta: { ipAddress?: string | null } = {}
 ): Promise<{ threshold: number }> {
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can change the ticket-award threshold.");
   }
   const before = await tx.appSetting.findUnique({
@@ -147,7 +147,7 @@ export async function updateBusinessDayStartHour(
   tx: Prisma.TransactionClient,
   meta: { ipAddress?: string | null } = {}
 ): Promise<{ hour: number }> {
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can change the business-day start hour.");
   }
 

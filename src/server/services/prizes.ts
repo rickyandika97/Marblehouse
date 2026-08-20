@@ -24,6 +24,7 @@ import {
   toPrizeRestrictedDTO,
   type PrizeDTO,
 } from "@/server/dto/prize";
+import { deletePrizeImage } from "@/server/services/prize-image";
 
 const MAX_TICKET_COST = 1_000_000;
 
@@ -379,4 +380,141 @@ export async function setShopPrizeConfig(
     lowStockThreshold: config.lowStockThreshold,
     isActive: config.isActive,
   };
+}
+
+/**
+ * Attach (or replace) a prize's catalog image (§4.8, §8.6).
+ *
+ * MANAGER or OWNER, matching every other catalog mutation — the route enforces
+ * the role, and this needs no shop scoping because the catalog is global.
+ *
+ * **The superseded file is deleted.** A prize image is a corrigible attribute,
+ * not a record: replacing it three times must not leave three files on disk,
+ * or the data directory grows without bound and every backup carries the dead
+ * weight. Deletion happens AFTER the database row is updated, so a failed
+ * unlink can only ever orphan a file — it can never leave the row pointing at
+ * a file that is already gone, which is the failure the redemption grid would
+ * actually notice.
+ */
+export async function setPrizeImage(
+  actor: Actor,
+  prizeItemId: string,
+  relativePath: string,
+  meta: { ipAddress?: string | null } = {}
+): Promise<PrizeDTO> {
+  const before = await prisma.prizeItem.findUnique({
+    where: { id: prizeItemId },
+    select: { id: true, imagePath: true },
+  });
+  if (!before) throw notFound("That prize no longer exists.");
+
+  const item = await prisma.$transaction(async (tx) => {
+    const updated = await tx.prizeItem.update({
+      where: { id: prizeItemId },
+      data: { imagePath: relativePath },
+    });
+
+    await writeAudit(
+      actor,
+      {
+        entity: "PrizeItem",
+        entityId: prizeItemId,
+        action: "PRIZE_IMAGE_SET",
+        before: { imagePath: before.imagePath },
+        after: { imagePath: relativePath },
+        ipAddress: meta.ipAddress ?? null,
+      },
+      tx
+    );
+
+    return updated;
+  });
+
+  if (before.imagePath && before.imagePath !== relativePath) {
+    await deletePrizeImage(before.imagePath).catch(() => {
+      // An orphaned file is untidy; a failed request here would be worse,
+      // because the new image is already live and the caller would retry an
+      // upload that has in fact succeeded.
+    });
+  }
+
+  return toPrizeRestrictedDTO({ item, shopConfig: null, onHand: 0 });
+}
+
+/**
+ * Remove a prize's image, returning it to the placeholder (§8.6).
+ *
+ * Idempotent: removing an image from a prize that has none is a success, not a
+ * 404. The caller's intent — "this prize should have no image" — is already
+ * satisfied, and a double-tap on shop wifi must not produce an error.
+ */
+export async function clearPrizeImage(
+  actor: Actor,
+  prizeItemId: string,
+  meta: { ipAddress?: string | null } = {}
+): Promise<PrizeDTO> {
+  const before = await prisma.prizeItem.findUnique({
+    where: { id: prizeItemId },
+    select: { id: true, imagePath: true },
+  });
+  if (!before) throw notFound("That prize no longer exists.");
+
+  const item = await prisma.$transaction(async (tx) => {
+    const updated = await tx.prizeItem.update({
+      where: { id: prizeItemId },
+      data: { imagePath: null },
+    });
+
+    // Only audit a change that actually happened. Logging a no-op removal
+    // would pad the audit trail with rows that record nothing.
+    if (before.imagePath) {
+      await writeAudit(
+        actor,
+        {
+          entity: "PrizeItem",
+          entityId: prizeItemId,
+          action: "PRIZE_IMAGE_CLEAR",
+          before: { imagePath: before.imagePath },
+          after: { imagePath: null },
+          ipAddress: meta.ipAddress ?? null,
+        },
+        tx
+      );
+    }
+
+    return updated;
+  });
+
+  if (before.imagePath) {
+    await deletePrizeImage(before.imagePath).catch(() => {});
+  }
+
+  return toPrizeRestrictedDTO({ item, shopConfig: null, onHand: 0 });
+}
+
+/**
+ * The stored path for one prize's image, for the authenticated image route.
+ *
+ * Any signed-in role may read it — staff need prize images to redeem (§8.6).
+ * There is no shop scoping because the catalog is global: an image is not a
+ * per-branch secret, and a manager at one branch seeing another's prize photo
+ * discloses nothing.
+ */
+export async function getPrizeImagePath(
+  actor: Actor,
+  prizeItemId: string
+): Promise<string> {
+  // `actor` is unused for scoping but required: §5.4 says no service function
+  // queries the database without knowing who is asking, and the route's guard
+  // is what makes this authenticated-only rather than public.
+  void actor;
+
+  const item = await prisma.prizeItem.findUnique({
+    where: { id: prizeItemId },
+    select: { imagePath: true },
+  });
+  if (!item) throw notFound("That prize no longer exists.");
+  if (!item.imagePath) throw notFound("That prize has no image.");
+
+  return item.imagePath;
 }

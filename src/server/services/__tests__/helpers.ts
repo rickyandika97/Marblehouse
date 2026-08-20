@@ -8,6 +8,7 @@
  */
 import { PrismaClient, Prisma } from "@prisma/client";
 import { randomUUID } from "node:crypto";
+import type { Actor, ShopRole } from "@/server/auth/context";
 
 export const prisma = new PrismaClient({ log: [] });
 
@@ -115,3 +116,94 @@ export async function remaining(
 }
 
 export const BUSINESS_DATE = new Date("2026-01-15T00:00:00.000Z");
+
+/**
+ * Build an in-memory `Actor` for a test (D-122: role is per-shop, so the
+ * shape here is a map, not a scalar).
+ *
+ * `role: "OWNER"` gives a global owner (no shop assignments possible or
+ * needed). `role: "MANAGER" | "STAFF"` with `shopIds` gives that role at
+ * EVERY listed shop — for a fixture that needs different roles at different
+ * shops, build `shopRoles` directly instead of using this helper.
+ *
+ * Does not create a database row — callers that need one (most FK-writing
+ * services do) should create the `User` row themselves and override
+ * `userId`, or use `makeActorWithUser` below.
+ */
+export function makeActor(opts: {
+  role: "OWNER" | "MANAGER" | "STAFF";
+  shopIds?: string[];
+  canEnterCost?: boolean;
+  userId?: string;
+  defaultShopId?: string | null;
+  businessDate?: Date;
+}): Actor {
+  const id = uniq();
+  const shopRoles = new Map<string, ShopRole>();
+  if (opts.role !== "OWNER") {
+    for (const shopId of opts.shopIds ?? []) {
+      shopRoles.set(shopId, {
+        role: opts.role,
+        canEnterCost: opts.canEnterCost ?? false,
+      });
+    }
+  }
+  return {
+    sessionId: `sess-${id}`,
+    userId: opts.userId ?? `user-${id}`,
+    username: `test-${id}`,
+    displayName: `Test ${id}`,
+    isOwner: opts.role === "OWNER",
+    shopRoles,
+    isActive: true,
+    mustChangePassword: false,
+    defaultShopId: opts.defaultShopId ?? null,
+    businessDate: opts.businessDate ?? BUSINESS_DATE,
+    workSession: null,
+  } as unknown as Actor;
+}
+
+/**
+ * `makeActor`, plus a real `User` row the foreign keys can point at (and a
+ * matching `UserShop` row per shop, with the real per-shop role). Use this
+ * whenever the service under test writes a foreign key to the actor
+ * (`userId`, `createdById`, `recordedById`, ...) — a fabricated id would fail
+ * on the constraint rather than on the behaviour under test.
+ */
+export async function makeActorWithUser(
+  tx: Prisma.TransactionClient,
+  opts: {
+    role: "OWNER" | "MANAGER" | "STAFF";
+    shopIds?: string[];
+    canEnterCost?: boolean;
+    defaultShopId?: string | null;
+    businessDate?: Date;
+  }
+): Promise<Actor> {
+  const id = uniq();
+  const user = await tx.user.create({
+    data: {
+      email: `test-${id}@marblehouse.invalid`,
+      name: `Test ${id}`,
+      username: `test-${id}`,
+      displayName: `Test ${id}`,
+      isOwner: opts.role === "OWNER",
+      defaultShopId: opts.defaultShopId ?? undefined,
+    },
+  });
+
+  if (opts.role !== "OWNER") {
+    for (const shopId of opts.shopIds ?? []) {
+      await tx.userShop.create({
+        data: {
+          userId: user.id,
+          shopId,
+          role: opts.role,
+          canEnterCost: opts.canEnterCost ?? false,
+        },
+      });
+    }
+  }
+
+  return makeActor({ ...opts, userId: user.id });
+}

@@ -22,7 +22,8 @@
  *    ones. This is the one that silently rewrites history if it breaks.
  */
 import { describe, expect, it, afterEach, afterAll } from "vitest";
-import { prisma, uniq } from "./helpers";
+import { Prisma } from "@prisma/client";
+import { prisma, uniq, makeActorWithUser } from "./helpers";
 import {
   createShift,
   deleteShift,
@@ -68,40 +69,17 @@ async function makeShop() {
 }
 
 async function makeUser(
-  role: Actor["role"],
-  assignedShopIds: string[],
+  role: "OWNER" | "MANAGER" | "STAFF",
+  shopIds: string[],
 ): Promise<Actor> {
-  const id = uniq();
-  const user = await prisma.user.create({
-    data: {
-      email: `shf-${id}@marblehouse.invalid`,
-      name: `Shf ${id}`,
-      username: `shf-${id}`,
-      displayName: `Shf ${id}`,
-      role,
-    },
-    select: { id: true, displayName: true, username: true },
-  });
-  userIds.push(user.id);
-
-  for (const shopId of assignedShopIds) {
-    await prisma.userShop.create({ data: { userId: user.id, shopId } });
-  }
-
-  return {
-    sessionId: `sess-${id}`,
-    userId: user.id,
-    username: user.username ?? id,
-    displayName: user.displayName,
+  const actor = await makeActorWithUser(prisma as unknown as Prisma.TransactionClient, {
     role,
-    isActive: true,
-    mustChangePassword: false,
-    canEnterCost: false,
-    defaultShopId: assignedShopIds[0] ?? null,
-    assignedShopIds,
+    shopIds,
+    defaultShopId: shopIds[0] ?? null,
     businessDate: new Date("2026-08-18T00:00:00.000Z"),
-    workSession: null,
-  } as unknown as Actor;
+  });
+  userIds.push(actor.userId);
+  return actor;
 }
 
 // ─────────────────────────── permissions (§3.4) ───────────────────────────

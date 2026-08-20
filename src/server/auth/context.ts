@@ -11,25 +11,42 @@
  * permission hole.
  */
 import { cache } from "react";
-import type { Role, Shop, WorkSession } from "@prisma/client";
+import type { Shop, WorkSession } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { businessDateFor } from "@/lib/business-date";
 import { getBusinessDayStartHour } from "@/server/services/settings";
 import { getAuthSession } from "./session";
+
+/** A user's role and Purchasing permission at ONE shop (D-122). */
+export interface ShopRole {
+  role: "MANAGER" | "STAFF";
+  canEnterCost: boolean;
+}
 
 export interface Actor {
   sessionId: string;
   userId: string;
   username: string;
   displayName: string;
-  role: Role;
+
+  /**
+   * The one role that stays global (D-122, §3.1): an owner sees and acts on
+   * everything, with no shop assignment needed. MANAGER and STAFF are never
+   * global — see `shopRoles`.
+   */
+  isOwner: boolean;
+
+  /**
+   * This actor's role and Purchasing permission at each shop they're
+   * assigned to. A user can be MANAGER at one shop and STAFF at another —
+   * there is no single "the" role outside a shop's context. Empty for an
+   * OWNER, who needs no assignment.
+   */
+  shopRoles: Map<string, ShopRole>;
+
   isActive: boolean;
   mustChangePassword: boolean;
-  canEnterCost: boolean;
   defaultShopId: string | null;
-
-  /** Shop IDs from UserShop. For an OWNER this is NOT the authority — see §3.1. */
-  assignedShopIds: string[];
 
   /** Today's business date, computed server-side. The client never sends this. */
   businessDate: Date;
@@ -38,24 +55,32 @@ export interface Actor {
   workSession: (WorkSession & { shop: Shop }) | null;
 }
 
+/** Shop IDs this actor is assigned to. Empty for an OWNER — see §3.1. */
+export function assignedShopIds(actor: Actor): string[] {
+  return [...actor.shopRoles.keys()];
+}
+
 /**
- * Cost visibility gate (§7.5, CLAUDE.md).
+ * Cost visibility gate (§7.5, CLAUDE.md, D-122).
  *
- * For a MANAGER this must ALWAYS be intersected with shop assignment before
- * it is trusted — use `canSeeCostForShop` rather than this bare flag whenever
- * a shop is in scope.
+ * Whether this actor can see cost ANYWHERE — only for gating "show a cost
+ * column/queue at all" before a specific shop is in scope. This must NEVER
+ * gate an actual cost VALUE for a specific shop — use `canSeeCostForShop`
+ * for that, always, since canEnterCost is per-shop and this flag being true
+ * for one shop says nothing about another.
  */
 export function canSeeCost(actor: Actor): boolean {
-  return (
-    actor.role === "OWNER" ||
-    (actor.role === "MANAGER" && actor.canEnterCost)
-  );
+  if (actor.isOwner) return true;
+  for (const sr of actor.shopRoles.values()) {
+    if (sr.role === "MANAGER" && sr.canEnterCost) return true;
+  }
+  return false;
 }
 
 export function canSeeCostForShop(actor: Actor, shopId: string): boolean {
-  if (actor.role === "OWNER") return true;
-  if (actor.role !== "MANAGER" || !actor.canEnterCost) return false;
-  return actor.assignedShopIds.includes(shopId);
+  if (actor.isOwner) return true;
+  const sr = actor.shopRoles.get(shopId);
+  return sr?.role === "MANAGER" && sr.canEnterCost === true;
 }
 
 /**
@@ -66,8 +91,12 @@ export function canSeeCostForShop(actor: Actor, shopId: string): boolean {
  * another branch by typing its ID (R-4).
  */
 export function hasShopAccess(actor: Actor, shopId: string): boolean {
-  if (actor.role === "OWNER") return true;
-  return actor.assignedShopIds.includes(shopId);
+  return actor.isOwner || actor.shopRoles.has(shopId);
+}
+
+/** This actor's role at a specific shop, or null if OWNER or unassigned. */
+export function roleAtShop(actor: Actor, shopId: string): "MANAGER" | "STAFF" | null {
+  return actor.shopRoles.get(shopId)?.role ?? null;
 }
 
 /**
@@ -109,12 +138,13 @@ export const getActor = cache(async (): Promise<Actor | null> => {
   // the window on sessions that already exist.
   if (user.banned) return null;
 
-  // Shop assignments and the default shop's day-start hour are ours, not the
-  // auth library's, so they come from the domain tables.
-  const [assignments, defaultShop] = await Promise.all([
+  // Shop assignments (with per-shop role, D-122) and the default shop's
+  // day-start hour are ours, not the auth library's, so they come from the
+  // domain tables.
+  const [memberships, defaultShop] = await Promise.all([
     prisma.userShop.findMany({
       where: { userId: user.id },
-      select: { shopId: true },
+      select: { shopId: true, role: true, canEnterCost: true },
     }),
     user.defaultShopId
       ? prisma.shop.findUnique({ where: { id: user.defaultShopId } })
@@ -128,6 +158,15 @@ export const getActor = cache(async (): Promise<Actor | null> => {
     include: { shop: true },
   });
 
+  const shopRoles = new Map<string, ShopRole>(
+    memberships.map((m) => [
+      m.shopId,
+      // role is constrained to MANAGER | STAFF by a DB CHECK (D-122) — OWNER
+      // never gets a UserShop row.
+      { role: m.role as "MANAGER" | "STAFF", canEnterCost: m.canEnterCost },
+    ])
+  );
+
   return {
     sessionId: session.id,
     userId: user.id,
@@ -136,12 +175,11 @@ export const getActor = cache(async (): Promise<Actor | null> => {
     // presenting an empty string.
     username: user.username ?? user.email.split("@")[0] ?? user.id,
     displayName: user.displayName,
-    role: user.role,
+    isOwner: user.isOwner ?? false,
+    shopRoles,
     isActive: !user.banned,
     mustChangePassword: user.mustChangePassword ?? false,
-    canEnterCost: user.canEnterCost ?? false,
     defaultShopId: user.defaultShopId,
-    assignedShopIds: assignments.map((a) => a.shopId),
     businessDate,
     workSession,
   };
@@ -161,7 +199,7 @@ export async function selectableShops(actor: Actor): Promise<Shop[]> {
     where: {
       isActive: true,
       isHqPseudoShop: false,
-      ...(actor.role === "OWNER"
+      ...(actor.isOwner
         ? {}
         : { userShops: { some: { userId: actor.userId } } }),
     },
@@ -187,7 +225,7 @@ export async function expenseShops(actor: Actor): Promise<Shop[]> {
   return prisma.shop.findMany({
     where: {
       isActive: true,
-      ...(actor.role === "OWNER"
+      ...(actor.isOwner
         ? {}
         : { userShops: { some: { userId: actor.userId } } }),
     },

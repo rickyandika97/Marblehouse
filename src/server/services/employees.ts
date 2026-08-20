@@ -1,11 +1,16 @@
 /**
- * User administration (PRD §7.9, §3.4 Admin rows).
+ * Employee administration (PRD §7.9, §3.4 Admin rows; D-122).
  *
- * Creating users, setting roles, shop access, default shop, the Purchasing
- * permission, and password resets. OWNER-only in Phase 1 — the one delegated
+ * Creating employees, setting per-shop roles and the Purchasing permission,
+ * default shop, and password resets. OWNER-only — the one delegated
  * capability a manager has (§3.4: reset password / set default shop for their
  * own staff) arrives with the manager settings screen; every route here is
  * owner-gated until then, which is the safe direction to be wrong in.
+ *
+ * D-122: role is per-shop now. A person can be MANAGER at one shop and STAFF
+ * at another on the same account — there is no single "the role" outside a
+ * shop's context. OWNER stays the one global flag (§3.1): an owner is never
+ * assigned to individual shops.
  *
  * Every mutation is audit-logged (§4.16).
  */
@@ -33,7 +38,7 @@ import type { Actor } from "@/server/auth/context";
  *
  * DO NOT "fix" this by wiring up real email or by switching to `.local`
  * (which is mDNS and does resolve on a LAN). A forgotten password is reset by
- * the owner from Settings → Users; that is the designed path.
+ * the owner from Settings → Employees; that is the designed path.
  *
  * The username is immutable after creation, so this value never needs syncing.
  */
@@ -54,45 +59,59 @@ const username = z
     "Use letters, numbers, dots, dashes or underscores only."
   );
 
-const role = z.enum(["OWNER", "MANAGER", "STAFF"]);
+const shopRoleAssignment = z.object({
+  shopId: z.string().min(1),
+  role: z.enum(["MANAGER", "STAFF"]),
+  /** Meaningful only when role is MANAGER (§7.5) — ignored on STAFF. */
+  canEnterCost: z.boolean().default(false),
+});
 
-export const createUserSchema = z
+function assertUniqueShopIds(
+  shopRoles: { shopId: string }[],
+  ctx: z.RefinementCtx
+): void {
+  const seen = new Set<string>();
+  for (const sr of shopRoles) {
+    if (seen.has(sr.shopId)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["shopRoles"],
+        message: "Each shop can only be assigned once.",
+      });
+      return;
+    }
+    seen.add(sr.shopId);
+  }
+}
+
+export const createEmployeeSchema = z
   .object({
     username,
     displayName: z.string().trim().min(1, "Enter a name.").max(80),
     password: z.string().min(1, "Enter a temporary password.").max(200),
-    role,
     phone: z.string().trim().max(32).optional(),
-    shopIds: z.array(z.string().min(1)).default([]),
+    shopRoles: z.array(shopRoleAssignment).default([]),
     defaultShopId: z.string().min(1).nullable().optional(),
-    canEnterCost: z.boolean().default(false),
   })
   .superRefine((v, ctx) => {
     // A manager or staff member with no shop can do nothing at all — they
     // would log in and hit an empty picker. Catch it here, not in support.
-    if (v.role !== "OWNER" && v.shopIds.length === 0) {
+    if (v.shopRoles.length === 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ["shopIds"],
+        path: ["shopRoles"],
         message: "Assign at least one shop.",
       });
     }
 
-    if (v.defaultShopId && !v.shopIds.includes(v.defaultShopId) && v.role !== "OWNER") {
+    assertUniqueShopIds(v.shopRoles, ctx);
+
+    const shopIds = v.shopRoles.map((s) => s.shopId);
+    if (v.defaultShopId && !shopIds.includes(v.defaultShopId)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["defaultShopId"],
         message: "The default shop must be one of the assigned shops.",
-      });
-    }
-
-    // canEnterCost is meaningful only on a MANAGER (§7.5); it is ignored on
-    // STAFF and redundant on OWNER. Reject rather than silently drop it.
-    if (v.canEnterCost && v.role !== "MANAGER") {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["canEnterCost"],
-        message: "The Purchasing permission applies to managers only.",
       });
     }
   });
@@ -104,40 +123,64 @@ export const createUserSchema = z
  * mutable, human-facing name. To change a username, deactivate the account and
  * create a new one.
  */
-export const updateUserSchema = z.object({
-  displayName: z.string().trim().min(1).max(80).optional(),
-  phone: z.string().trim().max(32).nullable().optional(),
-  role: role.optional(),
-  isActive: z.boolean().optional(),
-  /** Why the account was deactivated — recorded and audit-logged (§4.16). */
-  deactivationReason: z.string().trim().max(500).optional(),
-  canEnterCost: z.boolean().optional(),
-  shopIds: z.array(z.string().min(1)).optional(),
-  defaultShopId: z.string().min(1).nullable().optional(),
-});
+export const updateEmployeeSchema = z
+  .object({
+    displayName: z.string().trim().min(1).max(80).optional(),
+    phone: z.string().trim().max(32).nullable().optional(),
+    isActive: z.boolean().optional(),
+    /** Why the account was deactivated — recorded and audit-logged (§4.16). */
+    deactivationReason: z.string().trim().max(500).optional(),
+    /**
+     * WHOLESALE REPLACE (D-109, extended by D-122): sent whole, replaces the
+     * employee's entire shop-role map. The edit form must render every shop
+     * they currently hold, WITH its current role pre-selected, so a save
+     * cannot silently downgrade a role nobody was looking at. Omit the field
+     * entirely to leave shop roles untouched (e.g. a password reset).
+     */
+    shopRoles: z.array(shopRoleAssignment).optional(),
+    defaultShopId: z.string().min(1).nullable().optional(),
+  })
+  .superRefine((v, ctx) => {
+    if (v.shopRoles) assertUniqueShopIds(v.shopRoles, ctx);
+  });
 
 export const resetPasswordSchema = z.object({
   newPassword: z.string().min(1, "Enter a temporary password.").max(200),
 });
 
-export type CreateUserInput = z.infer<typeof createUserSchema>;
-export type UpdateUserInput = z.infer<typeof updateUserSchema>;
+export type CreateEmployeeInput = z.infer<typeof createEmployeeSchema>;
+export type UpdateEmployeeInput = z.infer<typeof updateEmployeeSchema>;
 
 // ─────────────────────────────── DTO ───────────────────────────────
 
+export interface EmployeeShopRoleDTO {
+  shopId: string;
+  shopName: string;
+  shopCode: string;
+  role: "MANAGER" | "STAFF";
+  canEnterCost: boolean;
+}
+
+type EmployeeRow = User & {
+  userShops?: {
+    shopId: string;
+    role: string;
+    canEnterCost: boolean;
+    shop: { name: string; code: string };
+  }[];
+};
+
 /**
- * User DTO. Carries no password hash and no cost figures — only the
- * `canEnterCost` FLAG, which is a permission, not a cost value.
+ * Employee DTO. Carries no password hash and no cost figures — only the
+ * `canEnterCost` FLAG per shop, which is a permission, not a cost value.
  */
-export function toUserDTO(
-  u: User & { userShops?: { shopId: string }[] }
-) {
+export function toEmployeeDTO(u: EmployeeRow) {
   return {
     id: u.id,
     username: u.username,
     displayName: u.displayName,
-    role: u.role,
     phone: u.phone,
+    isOwner: u.isOwner,
     /**
      * Derived, never stored (decision, 4 Aug 2026). `banned` is the single
      * source of truth for access; the UI speaks in terms of "Deactivated"
@@ -145,28 +188,46 @@ export function toUserDTO(
      */
     isActive: !u.banned,
     deactivationReason: u.banReason,
-    canEnterCost: u.canEnterCost,
     mustChangePassword: u.mustChangePassword,
     defaultShopId: u.defaultShopId,
     lastLoginAt: u.lastLoginAt?.toISOString() ?? null,
-    shopIds: u.userShops?.map((s) => s.shopId) ?? [],
+    shopRoles: (u.userShops ?? []).map(
+      (s): EmployeeShopRoleDTO => ({
+        shopId: s.shopId,
+        shopName: s.shop.name,
+        shopCode: s.shop.code,
+        role: s.role as "MANAGER" | "STAFF",
+        canEnterCost: s.canEnterCost,
+      })
+    ),
     // The synthetic email is deliberately NOT exposed — it is an internal key,
     // not contact information, and showing it invites someone to "correct" it.
   };
 }
 
+const userShopsInclude = {
+  userShops: {
+    select: {
+      shopId: true,
+      role: true,
+      canEnterCost: true,
+      shop: { select: { name: true, code: true } },
+    },
+  },
+} satisfies Prisma.UserInclude;
+
 // ─────────────────────────────── Queries ───────────────────────────────
 
-export async function listUsers(actor: Actor) {
-  if (actor.role !== "OWNER") throw forbidden("Only the owner can manage users.");
+export async function listEmployees(actor: Actor) {
+  if (!actor.isOwner) throw forbidden("Only the owner can manage employees.");
 
   const users = await prisma.user.findMany({
-    include: { userShops: { select: { shopId: true } } },
+    include: userShopsInclude,
     // Active users first: `banned` ascending puts false (and null) above true.
-    orderBy: [{ banned: "asc" }, { role: "asc" }, { displayName: "asc" }],
+    orderBy: [{ banned: "asc" }, { isOwner: "desc" }, { displayName: "asc" }],
   });
 
-  return users.map(toUserDTO);
+  return users.map(toEmployeeDTO);
 }
 
 // ─────────────────────────────── Mutations ───────────────────────────────
@@ -181,17 +242,17 @@ async function assertShopsExist(shopIds: string[]): Promise<void> {
 
   if (found !== shopIds.length) {
     throw new AppError("VALIDATION_FAILED", "One of the shops is not available.", {
-      fields: { shopIds: "One of the shops is not available." },
+      fields: { shopRoles: "One of the shops is not available." },
     });
   }
 }
 
-export async function createUser(
+export async function createEmployee(
   actor: Actor,
-  input: CreateUserInput,
+  input: CreateEmployeeInput,
   meta: { ipAddress?: string | null } = {}
 ) {
-  if (actor.role !== "OWNER") throw forbidden("Only the owner can create users.");
+  if (!actor.isOwner) throw forbidden("Only the owner can create employees.");
 
   const policy = checkPasswordPolicy(input.password);
   if (!policy.ok) {
@@ -200,7 +261,8 @@ export async function createUser(
     });
   }
 
-  await assertShopsExist(input.shopIds);
+  const shopIds = input.shopRoles.map((s) => s.shopId);
+  await assertShopsExist(shopIds);
 
   // Reject a duplicate username before touching the auth layer, so the error
   // we show is the accurate one rather than whatever the library raises last.
@@ -235,13 +297,12 @@ export async function createUser(
       username: input.username,
       displayUsername: input.username,
       displayName: input.displayName,
-      role: input.role,
+      isOwner: false,
       phone: input.phone || null,
-      canEnterCost: input.role === "MANAGER" ? input.canEnterCost : false,
       // Always true on creation: the owner knows the temporary password, so
       // the account is not private until the user replaces it (§5.4).
       mustChangePassword: true,
-      defaultShopId: input.defaultShopId ?? input.shopIds[0] ?? null,
+      defaultShopId: input.defaultShopId ?? shopIds[0] ?? null,
     });
 
     createdId = created.id;
@@ -269,7 +330,7 @@ export async function createUser(
        * an opaque 500 (D-110). Say which field, and log the real reason for
        * whoever reads the server output.
        */
-      console.error("[users] Better Auth rejected createUser:", e.message);
+      console.error("[employees] Better Auth rejected createUser:", e.message);
       throw new AppError(
         "VALIDATION_FAILED",
         "That username was rejected. Use letters, numbers, dots, dashes or underscores only.",
@@ -282,13 +343,18 @@ export async function createUser(
   // Shop assignments are ours, not the auth library's.
   const user = await prisma.$transaction(async (tx) => {
     await tx.userShop.createMany({
-      data: input.shopIds.map((shopId) => ({ userId: createdId, shopId })),
+      data: input.shopRoles.map((sr) => ({
+        userId: createdId,
+        shopId: sr.shopId,
+        role: sr.role,
+        canEnterCost: sr.role === "MANAGER" ? sr.canEnterCost : false,
+      })),
       skipDuplicates: true,
     });
 
     const withShops = await tx.user.findUniqueOrThrow({
       where: { id: createdId },
-      include: { userShops: { select: { shopId: true } } },
+      include: userShopsInclude,
     });
 
     await writeAudit(
@@ -300,9 +366,8 @@ export async function createUser(
         after: {
           username: withShops.username,
           displayName: withShops.displayName,
-          role: withShops.role,
-          canEnterCost: withShops.canEnterCost,
-          shopIds: input.shopIds,
+          isOwner: withShops.isOwner,
+          shopRoles: input.shopRoles,
           defaultShopId: withShops.defaultShopId,
         },
         ipAddress: meta.ipAddress ?? null,
@@ -313,65 +378,70 @@ export async function createUser(
     return withShops;
   });
 
-  return toUserDTO(user);
+  return toEmployeeDTO(user);
 }
 
-export async function updateUser(
+export async function updateEmployee(
   actor: Actor,
   userId: string,
-  input: UpdateUserInput,
+  input: UpdateEmployeeInput,
   meta: { ipAddress?: string | null } = {}
 ) {
-  if (actor.role !== "OWNER") throw forbidden("Only the owner can edit users.");
+  if (!actor.isOwner) throw forbidden("Only the owner can edit employees.");
 
   const existing = await prisma.user.findUnique({
     where: { id: userId },
-    include: { userShops: { select: { shopId: true } } },
+    include: userShopsInclude,
   });
-  if (!existing) throw notFound("That user no longer exists.");
+  if (!existing) throw notFound("That employee no longer exists.");
 
   // An owner must not be able to lock themselves out of their own system.
   if (existing.id === actor.userId) {
     if (input.isActive === false) {
       throw new AppError("VALIDATION_FAILED", "You cannot deactivate your own account.");
     }
-    if (input.role && input.role !== existing.role) {
+    if (input.shopRoles !== undefined) {
       throw new AppError("VALIDATION_FAILED", "You cannot change your own role.");
     }
   }
 
-  // Never leave the system with no way in.
-  if (
-    existing.role === "OWNER" &&
-    ((input.role && input.role !== "OWNER") || input.isActive === false)
-  ) {
+  // There is exactly one owner, fixed at bootstrap (D-1xx) — this endpoint
+  // can never create, promote or demote one. Never leave the system with no
+  // way in.
+  if (existing.isOwner && input.isActive === false) {
     const otherOwners = await prisma.user.count({
-      where: { role: "OWNER", banned: { not: true }, id: { not: existing.id } },
+      where: { isOwner: true, banned: { not: true }, id: { not: existing.id } },
     });
     if (otherOwners === 0) {
       throw new AppError(
         "VALIDATION_FAILED",
-        "This is the last active owner. Create another owner before changing this account."
+        "This is the last active owner and cannot be deactivated."
       );
     }
   }
 
-  const nextRole = input.role ?? existing.role;
+  const nextShopRoles = input.shopRoles ?? null; // null = leave untouched
+  if (nextShopRoles) {
+    await assertShopsExist(nextShopRoles.map((s) => s.shopId));
+  }
 
-  if (input.shopIds) await assertShopsExist(input.shopIds);
+  // What the employee will hold after this save, for validation purposes —
+  // either the submitted array, or (if shopRoles was omitted) what they
+  // already have.
+  const effectiveShopIds =
+    nextShopRoles?.map((s) => s.shopId) ??
+    existing.userShops.map((s) => s.shopId);
 
-  const nextShopIds = input.shopIds ?? existing.userShops.map((s) => s.shopId);
-
-  if (nextRole !== "OWNER" && nextShopIds.length === 0) {
+  if (!existing.isOwner && effectiveShopIds.length === 0) {
     throw new AppError("VALIDATION_FAILED", "Assign at least one shop.", {
-      fields: { shopIds: "Assign at least one shop." },
+      fields: { shopRoles: "Assign at least one shop." },
     });
   }
 
   const nextDefault =
     input.defaultShopId === undefined ? existing.defaultShopId : input.defaultShopId;
 
-  if (nextDefault && nextRole !== "OWNER" && !nextShopIds.includes(nextDefault)) {
+  if (nextDefault && !existing.isOwner && !effectiveShopIds.includes(nextDefault)) {
     throw new AppError(
       "VALIDATION_FAILED",
       "The default shop must be one of the assigned shops.",
@@ -379,16 +449,18 @@ export async function updateUser(
     );
   }
 
-  // Purchasing is a manager-only permission (§7.5) — drop it on any other role
-  // rather than leaving a stale true on a demoted account.
-  const nextCanEnterCost =
-    nextRole === "MANAGER" ? (input.canEnterCost ?? existing.canEnterCost) : false;
+  const roleChanged = nextShopRoles !== null;
 
   const updated = await prisma.$transaction(async (tx) => {
-    if (input.shopIds) {
+    if (nextShopRoles) {
       await tx.userShop.deleteMany({ where: { userId } });
       await tx.userShop.createMany({
-        data: input.shopIds.map((shopId) => ({ userId, shopId })),
+        data: nextShopRoles.map((sr) => ({
+          userId,
+          shopId: sr.shopId,
+          role: sr.role,
+          canEnterCost: sr.role === "MANAGER" ? sr.canEnterCost : false,
+        })),
         skipDuplicates: true,
       });
     }
@@ -401,7 +473,6 @@ export async function updateUser(
         // library and our UI never show different names for one person.
         name: input.displayName ?? undefined,
         phone: input.phone === undefined ? undefined : input.phone,
-        role: input.role ?? undefined,
         // Deactivation is stored as `banned` — the single source of truth.
         // Username is immutable and is deliberately not settable here.
         banned: input.isActive === undefined ? undefined : !input.isActive,
@@ -411,10 +482,9 @@ export async function updateUser(
             : input.isActive
               ? null
               : (input.deactivationReason?.trim() || "Deactivated by owner"),
-        canEnterCost: nextCanEnterCost,
         defaultShopId: nextDefault,
       },
-      include: { userShops: { select: { shopId: true } } },
+      include: userShopsInclude,
     });
 
     await writeAudit(
@@ -431,18 +501,24 @@ export async function updateUser(
         entityId: userId,
         before: {
           displayName: existing.displayName,
-          role: existing.role,
+          isOwner: existing.isOwner,
           isActive: !existing.banned,
-          canEnterCost: existing.canEnterCost,
-          shopIds: existing.userShops.map((s) => s.shopId),
+          shopRoles: existing.userShops.map((s) => ({
+            shopId: s.shopId,
+            role: s.role,
+            canEnterCost: s.canEnterCost,
+          })),
           defaultShopId: existing.defaultShopId,
         },
         after: {
           displayName: user.displayName,
-          role: user.role,
+          isOwner: user.isOwner,
           isActive: !user.banned,
-          canEnterCost: user.canEnterCost,
-          shopIds: user.userShops.map((s) => s.shopId),
+          shopRoles: user.userShops.map((s) => ({
+            shopId: s.shopId,
+            role: s.role,
+            canEnterCost: s.canEnterCost,
+          })),
           defaultShopId: user.defaultShopId,
         },
         reason: input.deactivationReason?.trim() || null,
@@ -457,11 +533,11 @@ export async function updateUser(
   // Revoking access must take effect now, not in up to 12 hours (R-9).
   // Historical rows — sales, ledger entries, attendance — are untouched and
   // still attribute to this user. Deactivation is never a delete.
-  if (input.isActive === false || (input.role && input.role !== existing.role)) {
+  if (input.isActive === false || roleChanged) {
     await prisma.session.deleteMany({ where: { userId } });
   }
 
-  return toUserDTO(updated);
+  return toEmployeeDTO(updated);
 }
 
 /**
@@ -471,18 +547,18 @@ export async function updateUser(
  * session for that user is destroyed — otherwise a reset would not evict
  * whoever prompted the reset in the first place.
  */
-export async function resetUserPassword(
+export async function resetEmployeePassword(
   actor: Actor,
   userId: string,
   newPassword: string,
   meta: { ipAddress?: string | null } = {}
 ): Promise<void> {
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can reset passwords.");
   }
 
   const target = await prisma.user.findUnique({ where: { id: userId } });
-  if (!target) throw notFound("That user no longer exists.");
+  if (!target) throw notFound("That employee no longer exists.");
 
   const policy = checkPasswordPolicy(newPassword);
   if (!policy.ok) {
@@ -491,7 +567,7 @@ export async function resetUserPassword(
     });
   }
 
-  // Internal adapter, not the admin endpoint — same reason as createUser:
+  // Internal adapter, not the admin endpoint — same reason as createEmployee:
   // the plugin gate would 403, and requireOwner has already authorised this.
   const ctx = await auth.$context;
   await ctx.internalAdapter.updatePassword(
@@ -517,13 +593,14 @@ export async function resetUserPassword(
   await prisma.session.deleteMany({ where: { userId } });
 }
 
-// ═══════════════════ Staff assignment, per shop (§5.6, D-107) ═══════════════════
+// ═══════════════════ Staff assignment, per shop (§5.6, D-107, D-122) ═══════
 //
-// The same `UserShop` rows `updateUser` manages, reached from the SHOP instead
-// of from the user. Opening a branch means assigning several people to one
-// shop; doing that through `updateUser` means editing each person in turn and
-// sending their whole shop array back each time — a read-modify-write that
-// silently drops a concurrent change and is easy to get wrong from a checkbox.
+// The same `UserShop` rows `updateEmployee` manages, reached from the SHOP
+// instead of from the employee. Opening a branch means assigning several
+// people to one shop; doing that through `updateEmployee` means editing each
+// person in turn and sending their whole shop-role array back each time — a
+// read-modify-write that silently drops a concurrent change and is easy to
+// get wrong from a checkbox.
 //
 // These two functions touch exactly one (user, shop) pair, so nothing outside
 // that pair can be lost. Every other assignment the user has is untouched.
@@ -531,14 +608,14 @@ export async function resetUserPassword(
 /**
  * Everyone assigned to one shop, plus everyone who could be.
  *
- * OWNER-only, matching `listUsers` — this reads the whole staff list in order
- * to offer the unassigned, which is user administration however it is reached.
- * OWNERs are excluded from both lists: they already reach every shop without
- * an assignment (§3.1), so showing them here would invite an assignment that
- * means nothing.
+ * OWNER-only, matching `listEmployees` — this reads the whole staff list in
+ * order to offer the unassigned, which is employee administration however it
+ * is reached. OWNERs are excluded from both lists: they already reach every
+ * shop without an assignment (§3.1), so showing them here would invite an
+ * assignment that means nothing (and the DB CHECK constraint forbids it).
  */
 export async function listShopStaff(actor: Actor, shopId: string) {
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can assign staff to a shop.");
   }
 
@@ -549,9 +626,9 @@ export async function listShopStaff(actor: Actor, shopId: string) {
   if (!shop) throw notFound("That shop no longer exists.");
 
   const users = await prisma.user.findMany({
-    where: { role: { not: "OWNER" } },
-    include: { userShops: { select: { shopId: true } } },
-    orderBy: [{ banned: "asc" }, { role: "asc" }, { displayName: "asc" }],
+    where: { isOwner: false },
+    include: userShopsInclude,
+    orderBy: [{ banned: "asc" }, { displayName: "asc" }],
   });
 
   const assigned = [];
@@ -559,11 +636,11 @@ export async function listShopStaff(actor: Actor, shopId: string) {
 
   for (const u of users) {
     const dto = {
-      ...toUserDTO(u),
+      ...toEmployeeDTO(u),
       /**
        * Would removing them from THIS shop leave them with none? A MANAGER or
        * STAFF with no shop can do nothing at all — they log in to an empty
-       * picker. `updateUser` already refuses it; surfacing it lets the UI
+       * picker. `updateEmployee` already refuses it; surfacing it lets the UI
        * explain why instead of showing a failed toast.
        */
       isOnlyShop: u.userShops.length === 1 && u.userShops[0]?.shopId === shopId,
@@ -580,21 +657,26 @@ export async function listShopStaff(actor: Actor, shopId: string) {
 }
 
 /**
- * Assign or unassign ONE user at ONE shop.
+ * Assign, unassign, or change the role of ONE user at ONE shop.
  *
- * Deliberately not a whole-array replace like `updateUser`. From a shop screen
- * the owner is toggling one person; sending back every shop that person has
- * would make a stale checkbox capable of silently revoking a branch nobody was
- * looking at.
+ * Deliberately not a whole-array replace like `updateEmployee`. From a shop
+ * screen the owner is toggling one person; sending back every shop that
+ * person has would make a stale checkbox capable of silently revoking a
+ * branch nobody was looking at.
+ *
+ * `role`/`canEnterCost` are only consulted when `assigned` is true — they set
+ * the role for a NEW assignment, or update it for an existing one. Omitting
+ * them on a new assignment defaults to STAFF, matching the pre-D-122 default.
  */
 export async function setShopAssignment(
   actor: Actor,
   shopId: string,
   userId: string,
   assigned: boolean,
+  roleInput: { role?: "MANAGER" | "STAFF"; canEnterCost?: boolean } = {},
   meta: { ipAddress?: string | null } = {}
 ) {
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can assign staff to a shop.");
   }
 
@@ -602,48 +684,63 @@ export async function setShopAssignment(
     prisma.shop.findUnique({ where: { id: shopId }, select: { id: true, name: true } }),
     prisma.user.findUnique({
       where: { id: userId },
-      include: { userShops: { select: { shopId: true } } },
+      include: userShopsInclude,
     }),
   ]);
 
   if (!shop) throw notFound("That shop no longer exists.");
-  if (!user) throw notFound("That user no longer exists.");
+  if (!user) throw notFound("That employee no longer exists.");
 
   // An OWNER reaches every shop without an assignment (§3.1). Creating one
-  // would be a no-op row that later reads as meaningful.
-  if (user.role === "OWNER") {
+  // would be a no-op row that later reads as meaningful, and the DB CHECK
+  // constraint would refuse it anyway.
+  if (user.isOwner) {
     throw new AppError(
       "VALIDATION_FAILED",
       "The owner already has access to every shop and does not need assigning."
     );
   }
 
-  const has = user.userShops.some((s) => s.shopId === shopId);
-  if (has === assigned) {
+  const existingHere = user.userShops.find((s) => s.shopId === shopId);
+  const nextRole = roleInput.role ?? existingHere?.role ?? "STAFF";
+  const nextCanEnterCost =
+    nextRole === "MANAGER" ? (roleInput.canEnterCost ?? existingHere?.canEnterCost ?? false) : false;
+
+  const noChange =
+    !!existingHere === assigned &&
+    (!existingHere ||
+      (existingHere.role === nextRole && existingHere.canEnterCost === nextCanEnterCost));
+
+  if (noChange) {
     // Idempotent: a double-tap on shop wifi must not be an error (NF-5's
     // spirit — this endpoint carries no body worth keying).
-    return { ...toUserDTO(user), assigned };
+    return { ...toEmployeeDTO(user), assigned };
   }
 
   // Never leave someone with no shop at all — they would log in to an empty
-  // picker and be unable to do anything. `updateUser` enforces the same rule.
+  // picker and be unable to do anything. `updateEmployee` enforces the same
+  // rule.
   if (!assigned && user.userShops.length === 1) {
     throw new AppError(
       "VALIDATION_FAILED",
-      `${user.displayName} works only at this branch. Assign them somewhere else first, or deactivate the account in Settings → Users.`,
+      `${user.displayName} works only at this branch. Assign them somewhere else first, or deactivate the account in Settings → Employees.`,
       { fields: { assigned: "This is their only shop." } }
     );
   }
 
   const updated = await prisma.$transaction(async (tx) => {
     if (assigned) {
-      await tx.userShop.create({ data: { userId, shopId } });
+      await tx.userShop.upsert({
+        where: { userId_shopId: { userId, shopId } },
+        create: { userId, shopId, role: nextRole, canEnterCost: nextCanEnterCost },
+        update: { role: nextRole, canEnterCost: nextCanEnterCost },
+      });
     } else {
       await tx.userShop.deleteMany({ where: { userId, shopId } });
     }
 
     /**
-     * The default shop must stay one of the assigned shops — `updateUser`
+     * The default shop must stay one of the assigned shops — `updateEmployee`
      * enforces that invariant and unassigning here could otherwise strand a
      * `defaultShopId` pointing at a branch the user no longer works at, which
      * drives their business-date timezone (`actorBusinessDate`).
@@ -660,7 +757,7 @@ export async function setShopAssignment(
 
     const fresh = await tx.user.findUniqueOrThrow({
       where: { id: userId },
-      include: { userShops: { select: { shopId: true } } },
+      include: userShopsInclude,
     });
 
     await writeAudit(
@@ -670,8 +767,20 @@ export async function setShopAssignment(
         entityId: userId,
         action: assigned ? "SHOP_ASSIGN" : "SHOP_UNASSIGN",
         shopId,
-        before: { shopIds: user.userShops.map((s) => s.shopId) },
-        after: { shopIds: fresh.userShops.map((s) => s.shopId) },
+        before: {
+          shopRoles: user.userShops.map((s) => ({
+            shopId: s.shopId,
+            role: s.role,
+            canEnterCost: s.canEnterCost,
+          })),
+        },
+        after: {
+          shopRoles: fresh.userShops.map((s) => ({
+            shopId: s.shopId,
+            role: s.role,
+            canEnterCost: s.canEnterCost,
+          })),
+        },
         ipAddress: meta.ipAddress ?? null,
       },
       tx
@@ -681,14 +790,13 @@ export async function setShopAssignment(
   });
 
   /**
-   * Revoking a branch must take effect now, not in up to 12 hours — the same
-   * reasoning as R-9's deactivation rule. Their work session for today may
-   * point at a shop they no longer have, and `hasShopAccess` is read from the
-   * session-loaded actor.
+   * Revoking a branch (or changing its role) must take effect now, not in up
+   * to 12 hours — the same reasoning as R-9's deactivation rule. Their work
+   * session for today may point at a shop they no longer have, or their
+   * permissions there may have just changed, and `hasShopAccess`/role checks
+   * are read from the session-loaded actor.
    */
-  if (!assigned) {
-    await prisma.session.deleteMany({ where: { userId } });
-  }
+  await prisma.session.deleteMany({ where: { userId } });
 
-  return { ...toUserDTO(updated), assigned };
+  return { ...toEmployeeDTO(updated), assigned };
 }

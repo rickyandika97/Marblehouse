@@ -51,7 +51,7 @@ export default async function SalesByShopPage({
   return (
     <ReportShell
       title="Sales by Shop"
-      description={actor.role === "OWNER" && !sp.shopId ? "All shops" : undefined}
+      description={actor.isOwner && !sp.shopId ? "All shops" : undefined}
       from={from}
       to={to}
       exportName="sales"

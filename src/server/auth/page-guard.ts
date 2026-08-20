@@ -10,7 +10,6 @@
  * the user merely logged in wrong.
  */
 import { forbidden, notFound, redirect } from "next/navigation";
-import type { Role } from "@prisma/client";
 import { AppError } from "@/server/errors";
 import { getActor, type Actor } from "./context";
 
@@ -34,29 +33,54 @@ export async function requireActorPage(
 }
 
 /**
- * Require one of the given roles for a page.
+ * Require OWNER for a page.
  *
  * This is the server-side check behind the address-bar test. It runs before
  * any markup is produced, so the protected page never renders at all.
  */
-export async function requireRolePage(...roles: Role[]): Promise<Actor> {
+export async function requireOwnerPage(): Promise<Actor> {
   const actor = await requireActorPage();
-
-  if (!roles.includes(actor.role)) {
+  if (!actor.isOwner) {
     // Returns a real HTTP 403 and renders forbidden.tsx. Not a redirect: a
     // redirect would imply the URL is fine and they merely signed in wrong.
     forbidden();
   }
-
   return actor;
 }
 
-export async function requireOwnerPage(): Promise<Actor> {
-  return requireRolePage("OWNER");
+/**
+ * OWNER, or MANAGER at the given shop (D-122 — role is per-shop). Use this,
+ * not `requireManagerOrOwnerPage`, whenever the page already knows which
+ * shop it's about.
+ */
+export async function requireShopRolePage(
+  shopId: string,
+  ...roles: ("MANAGER" | "STAFF")[]
+): Promise<Actor> {
+  const actor = await requireActorPage();
+  if (actor.isOwner) return actor;
+  const sr = actor.shopRoles.get(shopId);
+  if (!sr || !roles.includes(sr.role)) {
+    forbidden();
+  }
+  return actor;
 }
 
+/**
+ * OWNER, or MANAGER at ANY shop — deliberately weak, mirroring
+ * `guards.ts`'s `requireManagerOrOwner`. Only for screens with no single
+ * shop in scope yet (e.g. the reports index); pair with a real per-shop
+ * check once a shop is chosen.
+ */
 export async function requireManagerOrOwnerPage(): Promise<Actor> {
-  return requireRolePage("OWNER", "MANAGER");
+  const actor = await requireActorPage();
+  const isManagerSomewhere = [...actor.shopRoles.values()].some(
+    (sr) => sr.role === "MANAGER"
+  );
+  if (!actor.isOwner && !isManagerSomewhere) {
+    forbidden();
+  }
+  return actor;
 }
 
 /**

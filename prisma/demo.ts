@@ -197,14 +197,14 @@ export async function seedDemo(prisma: PrismaClient): Promise<void> {
             username: person.username,
             displayUsername: person.username,
             displayName: `${person.name} ${DEMO_TAG}`,
-            role: person.role,
+            isOwner: false,
             defaultShopId: shop.id,
             mustChangePassword: false,
           },
         },
       });
       await prisma.userShop.create({
-        data: { userId: created.user.id, shopId: shop.id },
+        data: { userId: created.user.id, shopId: shop.id, role: person.role },
       });
       ids.push(created.user.id);
       allStaffIds.push(created.user.id);

@@ -24,7 +24,12 @@ import { writeAudit } from "@/server/audit";
 import { businessDateFor } from "@/lib/business-date";
 import { getBusinessDayStartHour } from "@/server/services/settings";
 import { formatPhoneLocal } from "@/lib/phone";
-import { hasShopAccess, type Actor } from "@/server/auth/context";
+import {
+  assignedShopIds,
+  hasShopAccess,
+  roleAtShop,
+  type Actor,
+} from "@/server/auth/context";
 import { toSaleDTO, type SaleDTO } from "@/server/dto/sale";
 import { refreshLastSeenAt } from "./customers";
 
@@ -349,15 +354,11 @@ function assertVoidable(actor: Actor, sale: Sale): void {
     );
   }
 
-  if (actor.role === "STAFF") {
+  if (actor.isOwner) return;
+
+  // MANAGER-at-this-shop from here down.
+  if (roleAtShop(actor, sale.shopId) !== "MANAGER") {
     throw forbidden("Only a manager or the owner can void a sale.");
-  }
-
-  if (actor.role === "OWNER") return;
-
-  // MANAGER from here down.
-  if (!hasShopAccess(actor, sale.shopId)) {
-    throw forbidden("You do not have access to that shop.");
   }
 
   // "same business day only" — compared against the actor's business date,
@@ -393,21 +394,31 @@ export async function listSales(
 ): Promise<{ sales: SaleDTO[]; nextCursor: string | null }> {
   const where: Prisma.SaleWhereInput = {};
 
+  // Role is per-shop (D-122): with no shopId given, fall back to every shop
+  // this actor holds ANY role at (STAFF is filtered to their own entries
+  // below regardless, so widening the shop set here does not widen what
+  // rows they see — it only decides which shops' totals are even queried).
   if (input.shopId) {
     if (!hasShopAccess(actor, input.shopId)) {
       throw forbidden("You do not have access to that shop.");
     }
     where.shopId = input.shopId;
-  } else if (actor.role === "MANAGER") {
-    where.shopId = { in: actor.assignedShopIds };
-  } else if (actor.role === "STAFF") {
-    where.shopId = actor.workSession?.shopId ?? "__none__";
+  } else if (!actor.isOwner) {
+    where.shopId = { in: assignedShopIds(actor) };
   }
 
   // STAFF see their own entries plus the shop's total count (§3.4) — the count
-  // comes from `todaySummary`, this list is theirs alone.
-  if (actor.role === "STAFF") {
+  // comes from `todaySummary`, this list is theirs alone. With no shopId, use
+  // the role at the shop actually in scope (the work-session shop) — a
+  // MANAGER-at-that-shop sees everyone's entries there even if they are
+  // STAFF elsewhere.
+  const scopeShopId = input.shopId ?? actor.workSession?.shopId ?? null;
+  const isStaffHere =
+    !actor.isOwner &&
+    (scopeShopId ? roleAtShop(actor, scopeShopId) === "STAFF" : true);
+  if (isStaffHere) {
     where.recordedById = actor.userId;
+    if (!input.shopId) where.shopId = actor.workSession?.shopId ?? "__none__";
   } else if (input.userId) {
     where.recordedById = input.userId;
   }
@@ -498,7 +509,9 @@ export async function todaySummary(actor: WorkingActor): Promise<TodaySummary> {
       where: {
         shopId: shop.id,
         businessDate,
-        ...(actor.role === "STAFF" ? { recordedById: actor.userId } : {}),
+        ...(roleAtShop(actor, shop.id) === "STAFF"
+          ? { recordedById: actor.userId }
+          : {}),
       },
       include: SALE_INCLUDE,
       orderBy: { occurredAt: "desc" },
@@ -522,6 +535,6 @@ export async function todaySummary(actor: WorkingActor): Promise<TodaySummary> {
     total: (totals._sum.amount ?? new Prisma.Decimal(0)).toString(),
     byPaymentMethod: { CASH: bucket("CASH"), EDC: bucket("EDC") },
     recent: recentRows.map(dto),
-    canVoid: actor.role !== "STAFF",
+    canVoid: actor.isOwner || roleAtShop(actor, shop.id) === "MANAGER",
   };
 }

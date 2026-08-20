@@ -133,28 +133,40 @@ async function main() {
   });
 
   if (!existingOwner) {
-    // Created through Better Auth so the credential account and its argon2id
-    // hash exist. A directly-inserted user row would have no password.
-    //
-    // The email is SYNTHETIC and must stay that way: this business collects no
-    // email addresses (§5.4). `.invalid` is reserved by RFC 2606 and can never
-    // resolve, so a mistakenly-enabled email path fails hard instead of
-    // mailing a real stranger. Do not wire up real email here.
-    await auth.api.createUser({
-      body: {
-        email: `${ownerUsername}@marblehouse.invalid`,
-        password: ownerPassword,
-        name: "Owner",
-        data: {
-          username: ownerUsername,
-          displayUsername: ownerUsername,
-          displayName: "Owner",
-          role: "OWNER",
-          defaultShopId: shop.id,
-          mustChangePassword: true,
-        },
-      },
+    /**
+     * Created through Better Auth's internal adapter, NOT `auth.api.createUser`
+     * (the admin-plugin endpoint) — same reasoning as `employees.ts`
+     * (BUILD-LOG D-4). The admin plugin always writes a `role` column, which
+     * does not exist on our `User` model (we use `isOwner` instead, and
+     * `adminRoles` is deliberately not wired up). `auth.api.createUser` 500s
+     * here with "Unknown argument `role`" — use the internal adapter so the
+     * credential account and its argon2id hash are created without it.
+     *
+     * The email is SYNTHETIC and must stay that way: this business collects no
+     * email addresses (§5.4). `.invalid` is reserved by RFC 2606 and can never
+     * resolve, so a mistakenly-enabled email path fails hard instead of
+     * mailing a real stranger. Do not wire up real email here.
+     */
+    const ctx = await auth.$context;
+    const created = await ctx.internalAdapter.createUser({
+      email: `${ownerUsername}@marblehouse.invalid`,
+      name: "Owner",
+      emailVerified: false,
+      username: ownerUsername,
+      displayUsername: ownerUsername,
+      displayName: "Owner",
+      isOwner: true,
+      defaultShopId: shop.id,
+      mustChangePassword: true,
     });
+
+    await ctx.internalAdapter.linkAccount({
+      userId: created.id,
+      providerId: "credential",
+      accountId: created.id,
+      password: await ctx.password.hash(ownerPassword),
+    });
+
     console.log(`  ✔ owner account "${ownerUsername}" created`);
   } else {
     console.log(`  · owner account "${ownerUsername}" already exists, left alone`);

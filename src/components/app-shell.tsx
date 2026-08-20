@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import type { Role } from "@prisma/client";
 import {
   LayoutDashboard,
   BarChart3,
@@ -30,8 +29,15 @@ import { AttendanceBanner } from "@/components/attendance-banner";
  *
  * STAFF gets no Stock tab: §3.4 gives them redemption but not receiving or
  * opname, and they reach the prize grid from a customer instead (§8.6).
+ *
+ * D-122: role is per-shop now, so this nav is a convenience approximation —
+ * OWNER if the account is a global owner, MANAGER if they manage at least
+ * one shop (even if STAFF elsewhere), else STAFF. Every destination
+ * re-checks the real per-shop role server-side regardless.
  */
-const TABS: Record<Role, { href: string; label: string; icon: typeof User }[]> = {
+type ShellRole = "OWNER" | "MANAGER" | "STAFF";
+
+const TABS: Record<ShellRole, { href: string; label: string; icon: typeof User }[]> = {
   // Six tabs is one more than is comfortable on a phone, but the nav is the
   // ONLY route to Reports — dropping it to make room for Stock would strand a
   // working screen. Phase 10's polish pass should fold Reports and Settings
@@ -60,7 +66,7 @@ const TABS: Record<Role, { href: string; label: string; icon: typeof User }[]> =
   ],
 };
 
-const ROLE_LABEL: Record<Role, string> = {
+const ROLE_LABEL: Record<ShellRole, string> = {
   OWNER: "Owner",
   MANAGER: "Manager",
   STAFF: "Staff",
@@ -68,17 +74,20 @@ const ROLE_LABEL: Record<Role, string> = {
 
 export function AppShell({
   displayName,
-  role,
+  isOwner,
+  isManagerSomewhere,
   shopName,
   children,
 }: {
   displayName: string;
-  role: Role;
+  isOwner: boolean;
+  isManagerSomewhere: boolean;
   shopName: string | null;
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
   const router = useRouter();
+  const role: ShellRole = isOwner ? "OWNER" : isManagerSomewhere ? "MANAGER" : "STAFF";
   const tabs = TABS[role];
 
   async function signOut() {
@@ -95,13 +104,13 @@ export function AppShell({
           {/*
             min-h-11 is §8.11's 44px floor, not decoration. This shipped at
             ~32px (px-2 py-1 on a text-sm line) and was allowed only by the
-            escape clause — a larger equivalent exists at Settings → Current
-            shop. Raising it here removes the need for that exemption, which
+            escape clause — a larger equivalent exists at Settings → Shops.
+            Raising it here removes the need for that exemption, which
             matters because switching branch mid-day is exactly the action a
             manager takes one-handed while holding something else.
           */}
           <Link
-            href="/settings/shop"
+            href="/settings/shops"
             className="flex min-h-11 min-w-0 items-center gap-2 rounded-lg px-2 hover:bg-muted"
             title="Change today's shop"
           >

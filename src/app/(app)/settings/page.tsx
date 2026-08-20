@@ -5,9 +5,9 @@ import {
   KeyRound,
   Receipt,
   ScrollText,
+  Gift,
   Settings2,
   Store,
-  Tags,
   Users,
 } from "lucide-react";
 import { requireActorPage } from "@/server/auth/page-guard";
@@ -19,14 +19,24 @@ export const dynamic = "force-dynamic";
 export default async function SettingsPage() {
   const actor = await requireActorPage();
 
+  // D-122: role is per-shop — "not staff-only" now means "owner, or manager
+  // at at least one shop", matching how the bottom nav decides the same
+  // thing (app-shell.tsx).
+  const isStaffOnly =
+    !actor.isOwner &&
+    ![...actor.shopRoles.values()].some((sr) => sr.role === "MANAGER");
+
   const items = [
     {
-      href: "/settings/shop",
+      href: "/settings/shops",
       icon: Store,
-      title: "Current shop",
-      description: actor.workSession
-        ? `Working at ${actor.workSession.shop.name} today`
-        : "Choose today's shop",
+      title: "Shops",
+      description:
+        actor.isOwner
+          ? "Pick today's shop, add a branch, or change its options and late grace"
+          : actor.workSession
+            ? `Working at ${actor.workSession.shop.name} today`
+            : "Choose today's shop",
       show: true,
     },
     {
@@ -40,55 +50,50 @@ export default async function SettingsPage() {
       href: "/expenses",
       icon: Receipt,
       title: "Expenses",
-      description: "Record and review branch and head-office costs",
+      description:
+        "Record and review branch and head-office costs, and manage categories",
       // Not a bottom-nav tab: OWNER and MANAGER are already at six, which
       // D-36 records as one more than fits a phone. Reached from here until
       // Phase 10 folds the nav behind a "More" tab.
-      show: actor.role !== "STAFF",
+      show: !isStaffOnly,
     },
     {
-      href: "/settings/expense-categories",
-      icon: Tags,
-      title: "Expense categories",
-      description: "Add, rename or archive the categories expenses use",
-      show: actor.role === "OWNER",
+      href: "/settings/prizes",
+      icon: Gift,
+      title: "Prizes",
+      description: "The prize catalog and ticket prices, shared by every branch",
+      // OWNER and MANAGER, matching what POST /api/prizes has always allowed.
+      // The catalog is global, so the screen warns before a reprice (D-116).
+      show: !isStaffOnly,
     },
     {
-      href: "/settings/shops",
-      icon: Store,
-      title: "Shops",
-      description: "Add a branch, or change its options and late grace",
-      // Shown only to the owner — but the page enforces it again server-side.
-      show: actor.role === "OWNER",
-    },
-    {
-      href: "/settings/users",
+      href: "/settings/employees",
       icon: Users,
-      title: "Users",
-      description: "Create accounts, set roles and shop access",
+      title: "Employees",
+      description: "Create accounts, set each shop's role and access",
       // Shown only to the owner — but the page enforces it again server-side.
-      show: actor.role === "OWNER",
+      show: actor.isOwner,
     },
     {
       href: "/settings/backups",
       icon: DatabaseBackup,
       title: "Backups",
       description: "Download a backup and record your off-machine copy",
-      show: actor.role === "OWNER",
+      show: actor.isOwner,
     },
     {
       href: "/settings/audit-log",
       icon: ScrollText,
       title: "Audit log",
       description: "Every privileged change, with who and when",
-      show: actor.role === "OWNER",
+      show: actor.isOwner,
     },
     {
       href: "/settings/system",
       icon: Settings2,
       title: "System",
       description: "Ticket-award controls and business-wide settings",
-      show: actor.role === "OWNER",
+      show: actor.isOwner,
     },
   ].filter((i) => i.show);
 

@@ -26,5 +26,5 @@ export default async function IndexPage() {
   const resolution = await resolveWorkSession(actor);
   if (resolution.needsPicker) redirect("/select-shop");
 
-  redirect(landingPathFor(actor.role));
+  redirect(landingPathFor(actor.isOwner));
 }

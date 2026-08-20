@@ -43,11 +43,11 @@ export interface LoginResult {
 }
 
 /**
- * Where a role lands after login (§8.0).
+ * Where an actor lands after login (§8.0).
  * OWNER → /dashboard. MANAGER and STAFF → /sale.
  */
-export function landingPathFor(role: string): string {
-  return role === "OWNER" ? "/dashboard" : "/sale";
+export function landingPathFor(isOwner: boolean): string {
+  return isOwner ? "/dashboard" : "/sale";
 }
 
 export async function login(input: LoginInput): Promise<LoginResult> {
@@ -86,7 +86,7 @@ export async function login(input: LoginInput): Promise<LoginResult> {
     where: { username },
     select: {
       id: true,
-      role: true,
+      isOwner: true,
       mustChangePassword: true,
       _count: { select: { userShops: true } },
     },
@@ -101,13 +101,12 @@ export async function login(input: LoginInput): Promise<LoginResult> {
 
   // A user with exactly one assigned shop never sees the picker (§4.7);
   // resolveWorkSession auto-selects it on the next request.
-  const needsWorkSession =
-    user.role === "OWNER" ? true : user._count.userShops !== 1;
+  const needsWorkSession = user.isOwner ? true : user._count.userShops !== 1;
 
   return {
     mustChangePassword: user.mustChangePassword,
     needsWorkSession,
-    landingPath: landingPathFor(user.role),
+    landingPath: landingPathFor(user.isOwner),
   };
 }
 
@@ -211,8 +210,11 @@ export async function me(actor: Actor) {
       id: actor.userId,
       username: actor.username,
       displayName: actor.displayName,
-      role: actor.role,
-      canEnterCost: actor.canEnterCost,
+      isOwner: actor.isOwner,
+      // D-122: role and Purchasing are per-shop now — the shell needs the
+      // whole map, not one flat value, since an actor can be MANAGER at one
+      // shop and STAFF at another.
+      shopRoles: Object.fromEntries(actor.shopRoles),
       mustChangePassword: actor.mustChangePassword,
       defaultShopId: actor.defaultShopId,
     },
@@ -226,6 +228,6 @@ export async function me(actor: Actor) {
         }
       : null,
     businessDate: actor.businessDate.toISOString().slice(0, 10),
-    landingPath: landingPathFor(actor.role),
+    landingPath: landingPathFor(actor.isOwner),
   };
 }

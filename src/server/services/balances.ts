@@ -173,7 +173,7 @@ export interface ReconciliationResult {
 export async function runBalanceReconciliation(
   principal: ReconciliationPrincipal = SYSTEM_PRINCIPAL
 ): Promise<ReconciliationResult> {
-  if ("role" in principal && principal.role !== "OWNER") {
+  if ("isOwner" in principal && !principal.isOwner) {
     throw forbidden("Only the owner can reconcile customer balances.");
   }
 
@@ -293,8 +293,12 @@ async function recordDrift(
 
   await tx.auditLog.create({
     data: {
-      userId: "role" in principal ? principal.userId : null,
-      role: "role" in principal ? principal.role : null,
+      userId: "isOwner" in principal ? principal.userId : null,
+      // D-122: role is per-shop now, and this reconciliation touches every
+      // customer's balance with no single shop in scope, so there is no
+      // one shop-role to snapshot here — OWNER (the only actor who can
+      // reach this) still resolves cleanly.
+      role: "isOwner" in principal && principal.isOwner ? "OWNER" : null,
       entity: "Customer",
       entityId: drift.customerId,
       action: "BALANCE_RECONCILED",

@@ -30,8 +30,10 @@ export interface ShopRow {
 }
 
 /**
- * Settings → Shops. OWNER only — but the button being here is not the
- * permission; the page guard and the API both re-check (§3.4).
+ * Settings → Shops, branch-administration section. Rendered only when the
+ * page has already confirmed OWNER — but that render check is not the
+ * permission; every mutation here still hits an API route that re-checks
+ * (§3.4).
  *
  * A new branch is created EMPTY: no presets, no shifts, nobody assigned
  * (BUILD-LOG D-101). That makes the follow-up steps the owner's, so the list
@@ -45,12 +47,9 @@ export function ShopAdmin({ initialShops }: { initialShops: ShopRow[] }) {
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Shops</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Your branches. Adding one here does not move any existing records.
-          </p>
-        </div>
+        <p className="text-sm text-muted-foreground">
+          Adding one here does not move any existing records.
+        </p>
         {!open && (
           <Button onClick={() => setOpen(true)}>
             <Store className="size-4" />

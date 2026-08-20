@@ -166,15 +166,27 @@ model User {
   /// Temporary suspension comes free with the plugin. No Phase 1 UI for it.
   banExpires DateTime?
 
+  /// From the admin plugin's own schema — its `user.create.before` database
+  /// hook unconditionally stamps `role: "user"` onto every created user,
+  /// through EVERY creation path (`auth.api.createUser` and
+  /// `internalAdapter.createUser` alike), regardless of `adminRoles`
+  /// configuration. Without this column the hook 500s on every account
+  /// creation, including the seed's owner bootstrap.
+  ///
+  /// This is NOT our access control — `adminRoles` is deliberately unused
+  /// (D-4) and nothing in this codebase ever reads this column. `isOwner`
+  /// above and `UserShop.role` remain the only roles that matter. Never wire
+  /// permission checks to this field.
+  role String?
+
   // ── Domain fields (user.additionalFields in auth.ts) ─────────────────
-  role        Role
   displayName String
   phone       String?
 
-  /// Purchasing permission (§7.5). Owner-granted, meaningful only on a MANAGER.
-  /// Unlocks prize cost entry and stock valuation FOR THEIR ASSIGNED SHOPS ONLY.
-  /// Grants nothing else — no profit reports, no cross-shop cost visibility.
-  canEnterCost Boolean @default(false)
+  /// OWNER is the one role that stays global (D-122): an owner sees and acts
+  /// on everything, with no shop assignment. MANAGER/STAFF live on UserShop
+  /// (role, canEnterCost) — role and Purchasing are no longer columns here.
+  isOwner Boolean @default(false)
 
   mustChangePassword Boolean   @default(true)
   defaultShopId      String?
@@ -198,19 +210,31 @@ model User {
   marbleTxns   MarbleLedger[]
   ticketTxns   TicketLedger[]
 
-  @@index([role, banned])
+  @@index([isOwner, banned])
   @@map("user")
 }
 
+/// The role now lives here, not on User (D-122): a user can be MANAGER at
+/// one shop and STAFF at another. OWNER never gets a row here — it is a
+/// global flag on User (`isOwner`) and needs no per-shop assignment (§3.1).
+/// A CHECK constraint (added by hand in the migration SQL, since Prisma
+/// cannot express a partial-enum constraint declaratively) enforces
+/// `role <> 'OWNER'` at the database level.
 model UserShop {
   id     String @id @default(cuid())
   userId String
   shopId String
+  /// MANAGER or STAFF only — see the CHECK constraint above.
+  role         Role
+  /// Purchasing permission (§7.5), meaningful only when role = MANAGER.
+  /// Unlocks prize cost entry and stock valuation for THIS shop only.
+  canEnterCost Boolean @default(false)
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
 
   @@unique([userId, shopId])
   @@index([shopId])
+  @@index([userId])
 }
 
 /// Owned by Better Auth. The hand-rolled session table was deleted per §5.4 —

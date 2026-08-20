@@ -87,20 +87,19 @@ async function fixture(batches: Array<{ qty: number; unitCogs: number }>) {
     userId: user.id,
     username: user.username ?? "test",
     displayName: user.displayName,
-    role: "OWNER",
+    isOwner: true,
+    shopRoles: new Map(),
     isActive: true,
     mustChangePassword: false,
-    canEnterCost: true,
     defaultShopId: null,
-    assignedShopIds: [shop.id],
     businessDate: BUSINESS_DATE,
     workSession: null,
   } as unknown as Actor;
 
   const managerActor = {
     ...ownerActor,
-    role: "MANAGER",
-    canEnterCost: false,
+    isOwner: false,
+    shopRoles: new Map([[shop.id, { role: "MANAGER", canEnterCost: false }]]),
   } as unknown as Actor;
 
   return { shopId: shop.id, prizeItemId: prize.id, ownerActor, managerActor };
@@ -290,8 +289,8 @@ describe("opname commit — guards", () => {
     const { shopId, ownerActor } = await fixture([{ qty: 5, unitCogs: 1000 }]);
     const outsider = {
       ...ownerActor,
-      role: "MANAGER",
-      assignedShopIds: [],
+      isOwner: false,
+      shopRoles: new Map(),
     } as Actor;
 
     await expect(startOpname(outsider, { shopId })).rejects.toThrow();

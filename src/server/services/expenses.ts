@@ -34,7 +34,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { businessDateFor, formatBusinessDate } from "@/lib/business-date";
 import { writeAudit } from "@/server/audit";
-import type { Actor } from "@/server/auth/context";
+import { type Actor, assignedShopIds, roleAtShop } from "@/server/auth/context";
 import { assertShopAccess } from "@/server/auth/guards";
 import { AppError, forbidden, notFound } from "@/server/errors";
 import { getBusinessDayStartHour } from "@/server/services/settings";
@@ -195,7 +195,10 @@ export async function listCategories(
   actor: Actor,
   { includeArchived = false }: { includeArchived?: boolean } = {},
 ): Promise<ExpenseCategoryDTO[]> {
-  if (actor.role === "STAFF") {
+  const isManagerSomewhere = [...actor.shopRoles.values()].some(
+    (sr) => sr.role === "MANAGER"
+  );
+  if (!actor.isOwner && !isManagerSomewhere) {
     throw forbidden("Only managers and the owner can see expense categories.");
   }
 
@@ -211,7 +214,7 @@ export async function createCategory(
   actor: Actor,
   input: z.infer<typeof categorySchema>,
 ): Promise<ExpenseCategoryDTO> {
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can manage expense categories.");
   }
 
@@ -245,7 +248,7 @@ export async function updateCategory(
   id: string,
   input: z.infer<typeof updateCategorySchema>,
 ): Promise<ExpenseCategoryDTO> {
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can manage expense categories.");
   }
 
@@ -314,7 +317,7 @@ export async function deleteCategory(
   actor: Actor,
   id: string,
 ): Promise<{ deleted: true }> {
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can manage expense categories.");
   }
 
@@ -357,7 +360,10 @@ async function assertCanRecordAgainst(
   actor: Actor,
   shopId: string,
 ): Promise<void> {
-  if (actor.role === "STAFF") {
+  // Role is per-shop (D-122): HQ has no shop assignment, so an OWNER-only
+  // exemption below covers it; everywhere else, "may record here" means
+  // MANAGER at this specific shop, not any bare non-STAFF check.
+  if (!actor.isOwner && actor.shopRoles.get(shopId)?.role !== "MANAGER") {
     throw forbidden("Only managers and the owner can record expenses.");
   }
 
@@ -448,7 +454,11 @@ export async function listExpenses(
   actor: Actor,
   input: z.infer<typeof listExpensesSchema>,
 ): Promise<{ expenses: ExpenseDTO[]; total: string; nextCursor: string | null }> {
-  if (actor.role === "STAFF") {
+  const canViewHere = input.shopId
+    ? actor.isOwner || actor.shopRoles.get(input.shopId)?.role === "MANAGER"
+    : actor.isOwner ||
+      [...actor.shopRoles.values()].some((sr) => sr.role === "MANAGER");
+  if (!canViewHere) {
     throw forbidden("Only managers and the owner can view expenses.");
   }
 
@@ -456,9 +466,9 @@ export async function listExpenses(
 
   const shopFilter: Prisma.ExpenseWhereInput = input.shopId
     ? { shopId: input.shopId }
-    : actor.role === "OWNER"
+    : actor.isOwner
       ? {}
-      : { shopId: { in: actor.assignedShopIds } };
+      : { shopId: { in: assignedShopIds(actor) } };
 
   const where: Prisma.ExpenseWhereInput = {
     ...shopFilter,
@@ -506,10 +516,6 @@ export async function getExpense(
   actor: Actor,
   id: string,
 ): Promise<ExpenseDTO> {
-  if (actor.role === "STAFF") {
-    throw forbidden("Only managers and the owner can view expenses.");
-  }
-
   const row = await prisma.expense.findFirst({
     where: { id, isDeleted: false },
     include: {
@@ -520,7 +526,9 @@ export async function getExpense(
   });
   if (!row) throw notFound("That expense no longer exists.");
 
-  assertShopAccess(actor, row.shopId);
+  if (!actor.isOwner && roleAtShop(actor, row.shopId) !== "MANAGER") {
+    throw forbidden("Only managers and the owner can view expenses.");
+  }
   return toExpenseDTO(row);
 }
 
@@ -536,17 +544,15 @@ export async function getReceiptPath(
   actor: Actor,
   expenseId: string,
 ): Promise<string> {
-  if (actor.role === "STAFF") {
-    throw forbidden("Only managers and the owner can view receipts.");
-  }
-
   const row = await prisma.expense.findFirst({
     where: { id: expenseId, isDeleted: false },
     select: { shopId: true, receiptPath: true },
   });
   if (!row) throw notFound("That expense no longer exists.");
 
-  assertShopAccess(actor, row.shopId);
+  if (!actor.isOwner && roleAtShop(actor, row.shopId) !== "MANAGER") {
+    throw forbidden("Only managers and the owner can view receipts.");
+  }
 
   if (!row.receiptPath) throw notFound("That expense has no receipt.");
   return row.receiptPath;
@@ -558,17 +564,15 @@ export async function attachReceipt(
   expenseId: string,
   relativePath: string,
 ): Promise<ExpenseDTO> {
-  if (actor.role === "STAFF") {
-    throw forbidden("Only managers and the owner can record expenses.");
-  }
-
   const existing = await prisma.expense.findFirst({
     where: { id: expenseId, isDeleted: false },
     select: { id: true, shopId: true },
   });
   if (!existing) throw notFound("That expense no longer exists.");
 
-  assertShopAccess(actor, existing.shopId);
+  if (!actor.isOwner && roleAtShop(actor, existing.shopId) !== "MANAGER") {
+    throw forbidden("Only managers and the owner can record expenses.");
+  }
 
   const updated = await prisma.expense.update({
     where: { id: expenseId },
@@ -589,7 +593,7 @@ export async function updateExpense(
   id: string,
   input: z.infer<typeof updateExpenseSchema>,
 ): Promise<ExpenseDTO> {
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can edit an expense.");
   }
 
@@ -659,7 +663,7 @@ export async function deleteExpense(
   id: string,
   reason: string,
 ): Promise<{ deleted: true }> {
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can delete an expense.");
   }
 

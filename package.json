@@ -13,7 +13,7 @@
     "db:deploy": "prisma migrate deploy",
     "db:studio": "prisma studio",
     "db:seed": "tsx --env-file=.env prisma/seed.ts",
-    "db:reset": "prisma migrate reset",
+    "db:reset": "tsx --env-file=.env scripts/assert-dev-db.ts && prisma migrate reset",
     "test": "vitest run",
     "test:watch": "vitest",
     "balances:reconcile": "tsx --env-file=.env scripts/reconcile-balances.ts",

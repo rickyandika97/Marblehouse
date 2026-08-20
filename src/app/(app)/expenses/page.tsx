@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { requireRolePage, asPageError } from "@/server/auth/page-guard";
+import { requireManagerOrOwnerPage, asPageError } from "@/server/auth/page-guard";
 import { resolveWorkSession } from "@/server/services/work-session";
 import { expenseShops } from "@/server/auth/context";
 import { listCategories, listExpenses } from "@/server/services/expenses";
@@ -7,13 +7,15 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatMoney } from "@/lib/money";
 import { ExpenseScreen } from "./expense-screen";
 import { ExpenseFilters } from "./expense-filters";
+import { AddExpense } from "./add-expense";
+import { ManageCategoriesDialog } from "./manage-categories-dialog";
 
 export const metadata = { title: "Expenses · Marblehouse" };
 export const dynamic = "force-dynamic";
 
 /**
  * Expenses (§8.8) — MANAGER and OWNER. STAFF has no expense capability at all
- * (§3.4), which `requireRolePage` enforces before any markup is produced.
+ * (§3.4), which `requireManagerOrOwnerPage` enforces before any markup is produced.
  *
  * The shop selector lists every shop the actor may reach, **including HQ**
  * (§4.12) — HQ is the whole reason an owner can record a cost that belongs to
@@ -23,6 +25,12 @@ export const dynamic = "force-dynamic";
  * Filters live in the URL so the list, the running total and the paging cursor
  * all come from ONE `listExpenses` call with one set of parameters. Holding
  * them in client state would have meant the total could drift from the list.
+ *
+ * With no filters in the URL at all, the screen defaults to the current
+ * business month, the work-session shop, and every category — the view a
+ * manager checking their own branch's month-to-date wants on first load.
+ * Recording an expense and managing categories are both modals now
+ * (`AddExpense`, `ManageCategoriesDialog`); this page's job is the history.
  */
 export default async function ExpensesPage({
   searchParams,
@@ -35,7 +43,7 @@ export default async function ExpensesPage({
     cursor?: string;
   }>;
 }) {
-  const actor = await requireRolePage("OWNER", "MANAGER");
+  const actor = await requireManagerOrOwnerPage();
 
   const { session } = await resolveWorkSession(actor);
   if (!session) redirect("/select-shop");
@@ -49,8 +57,18 @@ export default async function ExpensesPage({
   const from = isIsoDate(sp.from) ? sp.from : undefined;
   const to = isIsoDate(sp.to) ? sp.to : undefined;
   // A half-finished edit, not an error worth refusing.
-  const [rangeFrom, rangeTo] =
+  const [explicitFrom, explicitTo] =
     from && to && from > to ? [to, from] : [from, to];
+
+  // No filters at all in the URL → default to the current business month,
+  // rather than an unbounded "everything ever recorded" list. Any explicit
+  // date filter (including a preset click, which always sets both) overrides
+  // this outright.
+  const businessDate = actor.businessDate.toISOString().slice(0, 10);
+  const hasDateFilter = Boolean(explicitFrom || explicitTo);
+  const [rangeFrom, rangeTo] = hasDateFilter
+    ? [explicitFrom, explicitTo]
+    : [monthStart(businessDate), businessDate];
 
   // Shop resolution, in plain terms:
   //   an explicit ?shopId=      → that shop
@@ -64,8 +82,18 @@ export default async function ExpensesPage({
   const exploring = Boolean(sp.from || sp.to || sp.categoryId);
   const shopId = explicitShop ?? (exploring ? undefined : session.shopId);
 
-  const [categories, listing, shops] = await Promise.all([
+  // Nothing at all in the URL — the page is showing its own defaults rather
+  // than anything the user picked, so "Clear" has nothing to do yet.
+  const isDefaultView = !hasDateFilter && !sp.categoryId && !sp.shopId;
+
+  // Two different lists on purpose: the add form and the filter chips must
+  // only offer LIVE categories, but the owner's manage-categories modal is the
+  // one place archived categories still need to appear (to be restored).
+  const [categories, allCategories, listing, shops] = await Promise.all([
     listCategories(actor),
+    actor.isOwner
+      ? listCategories(actor, { includeArchived: true })
+      : Promise.resolve(undefined),
     listExpenses(actor, {
       ...(shopId ? { shopId } : {}),
       ...(sp.categoryId ? { categoryId: sp.categoryId } : {}),
@@ -78,23 +106,37 @@ export default async function ExpensesPage({
 
   return (
     <div className="space-y-5">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Expenses</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          {shopId
-            ? (shops.find((s) => s.id === shopId)?.name ?? session.shop.name)
-            : "All your shops"}
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Expenses</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {shopId
+              ? (shops.find((s) => s.id === shopId)?.name ?? session.shop.name)
+              : "All your shops"}
+          </p>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {actor.isOwner && (
+            <ManageCategoriesDialog initialCategories={allCategories ?? []} />
+          )}
+          <AddExpense
+            currentShopId={session.shopId}
+            shops={shops.map((s) => ({ id: s.id, name: s.name }))}
+            categories={categories}
+          />
+        </div>
       </div>
 
       <ExpenseFilters
         from={rangeFrom}
         to={rangeTo}
         categoryId={sp.categoryId}
-        shopId={sp.shopId}
+        shopId={shopId}
         categories={categories.map((c) => ({ id: c.id, name: c.name }))}
         shops={shops.map((s) => ({ id: s.id, name: s.name }))}
-        businessDate={actor.businessDate.toISOString().slice(0, 10)}
+        businessDate={businessDate}
+        isDefaultView={isDefaultView}
       />
 
       <Card>
@@ -113,16 +155,21 @@ export default async function ExpensesPage({
       </Card>
 
       <ExpenseScreen
-        currentShopId={session.shopId}
-        shops={shops.map((s) => ({ id: s.id, name: s.name }))}
         categories={categories}
         initialExpenses={listing.expenses}
-        canManageCategories={actor.role === "OWNER"}
         nextCursor={listing.nextCursor}
-        canEdit={actor.role === "OWNER"}
+        canEdit={actor.isOwner}
       />
     </div>
   );
+}
+
+/** First day of the month containing `businessDate`, as `YYYY-MM-DD`. */
+function monthStart(businessDate: string): string {
+  const d = new Date(`${businessDate}T00:00:00.000Z`);
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1))
+    .toISOString()
+    .slice(0, 10);
 }
 
 /** `YYYY-MM-DD`, and a real calendar date — `2026-02-31` is neither. */

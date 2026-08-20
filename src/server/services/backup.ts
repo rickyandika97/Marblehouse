@@ -27,7 +27,9 @@
  *
  *   1. `database.dump`  — pg_dump -Fc of the WHOLE database (users, password
  *                         hashes, sales, ledgers, stock — everything).
- *   2. `data.tar.gz`    — attendance photos and receipt images from DATA_DIR.
+ *   2. `data.tar.gz`    — attendance photos, receipts and prize images from
+ *                          DATA_DIR. It archives the whole root, so a new image
+ *                          type is covered without touching this file (D-118).
  *   3. `manifest.json`  — app version, migration name, timestamp, per-table
  *                         row counts, and a SHA-256 of each of the two files.
  *
@@ -260,7 +262,9 @@ export async function runBackup(): Promise<{
     const dumpPath = path.join(stageDir, "database.dump");
     await run("pg_dump", ["--format=custom", "--file", dumpPath, databaseUrl]);
 
-    // 2. The data directory — attendance photos and receipts. It may legitimately
+    // 2. The data directory — attendance photos, receipts and prize images. The
+    //    whole root is archived rather than a list of known subdirectories, so
+    //    adding an image type needs no change here (D-118). It may legitimately
     //    not exist yet on a fresh install; an empty tar is correct there, and is
     //    better than skipping the entry and making restore.sh handle two shapes.
     const { DATA_ROOT } = await import("@/server/services/attendance-photo");
@@ -547,7 +551,7 @@ export async function recordOffsiteCopy(
   fileName: string | null,
   meta: { ipAddress?: string | null } = {}
 ): Promise<{ copiedAt: Date; fileName: string | null }> {
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can record an off-machine backup copy.");
   }
 
@@ -612,7 +616,7 @@ export async function resolveArchiveForDownload(
   actor: Actor,
   fileName?: string | null
 ): Promise<BackupArchive> {
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can download a backup.");
   }
 
@@ -631,7 +635,7 @@ export async function resolveArchiveForDownload(
 
 /** Recent runs for the owner's backup screen. */
 export async function listBackupRuns(actor: Actor, take = 20) {
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can view backup history.");
   }
   return prisma.backupRun.findMany({
@@ -646,7 +650,7 @@ export async function listBackupRuns(actor: Actor, take = 20) {
  * directory without bound either.
  */
 export async function runBackupNow(actor: Actor) {
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can take a backup.");
   }
   const result = await runBackup();

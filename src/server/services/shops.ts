@@ -179,7 +179,7 @@ export type ShopDTO = ReturnType<typeof toShopDTO>;
  * usable today.
  */
 export async function listShops(actor: Actor): Promise<ShopDTO[]> {
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can manage shops.");
   }
 
@@ -198,7 +198,7 @@ export async function listShops(actor: Actor): Promise<ShopDTO[]> {
 }
 
 export async function getShop(actor: Actor, id: string): Promise<ShopDTO> {
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can manage shops.");
   }
 
@@ -225,7 +225,7 @@ export async function createShop(
   input: CreateShopInput,
   meta: { ipAddress?: string | null } = {},
 ): Promise<ShopDTO> {
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can create shops.");
   }
 
@@ -303,7 +303,7 @@ export async function updateShop(
   input: UpdateShopInput,
   meta: { ipAddress?: string | null } = {},
 ): Promise<ShopDTO> {
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can edit shops.");
   }
 
@@ -479,7 +479,7 @@ function toPresetAdminDTO(
 
 /** OWNER-only, and the shop must exist. Shared by every function below. */
 async function requireOwnerAndShop(actor: Actor, shopId: string) {
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can manage sale prices.");
   }
   const shop = await prisma.shop.findUnique({ where: { id: shopId } });

@@ -34,7 +34,7 @@ export async function listTicketAwardReport(
   from: string;
   to: string;
 }> {
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can view ticket-award controls.");
   }
 

@@ -28,7 +28,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { writeAudit } from "@/server/audit";
 import type { Actor } from "@/server/auth/context";
-import { canSeeCostForShop } from "@/server/auth/context";
+import { assignedShopIds, canSeeCostForShop } from "@/server/auth/context";
 import { assertShopAccess } from "@/server/auth/guards";
 import { AppError, forbidden, notFound } from "@/server/errors";
 import { consumeFifo, restoreConsumption } from "@/server/services/inventory";
@@ -287,7 +287,7 @@ export async function voidRedemption(
   tx: Prisma.TransactionClient,
   meta: { ipAddress?: string | null } = {}
 ) {
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can void a redemption.");
   }
 
@@ -393,9 +393,9 @@ export async function listRedemptions(actor: Actor, input: ListRedemptionsInput)
   const shopFilter =
     input.shopId !== undefined
       ? { shopId: input.shopId }
-      : actor.role === "OWNER"
+      : actor.isOwner
         ? {}
-        : { shopId: { in: actor.assignedShopIds } };
+        : { shopId: { in: assignedShopIds(actor) } };
 
   const rows = await prisma.redemption.findMany({
     where: {

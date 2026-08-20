@@ -125,11 +125,14 @@ export async function getDashboard(
   actor: Actor,
   input: ReportRangeInput
 ): Promise<Dashboard> {
-  if (actor.role === "STAFF") {
+  const isManagerSomewhere = [...actor.shopRoles.values()].some(
+    (sr) => sr.role === "MANAGER"
+  );
+  if (!actor.isOwner && !isManagerSomewhere) {
     // §3.4: staff see no money reporting beyond their own shift's sale list.
     throw forbidden("The dashboard is not available to staff accounts.");
   }
-  return actor.role === "OWNER"
+  return actor.isOwner
     ? ownerDashboard(actor, input)
     : managerDashboard(actor, input);
 }

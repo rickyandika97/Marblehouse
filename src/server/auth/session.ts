@@ -7,7 +7,6 @@
  * additionalFields typing is asserted in exactly one place.
  */
 import { headers } from "next/headers";
-import type { Role } from "@prisma/client";
 import { auth } from "./auth";
 
 /**
@@ -25,9 +24,8 @@ export interface AuthUserFields {
   username: string | null;
   displayUsername: string | null;
   banned: boolean | null;
-  role: Role;
   displayName: string;
-  canEnterCost: boolean | null;
+  isOwner: boolean | null;
   defaultShopId: string | null;
   mustChangePassword: boolean | null;
 }

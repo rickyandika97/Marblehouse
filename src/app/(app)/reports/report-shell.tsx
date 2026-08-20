@@ -234,7 +234,7 @@ export async function filterPropsFor(
   const shops = await selectableShops(actor);
   return {
     shops: shops.map((s) => ({ id: s.id, name: s.name })),
-    canSeeAllShops: actor.role === "OWNER",
+    canSeeAllShops: actor.isOwner,
     businessDate: actor.businessDate.toISOString().slice(0, 10),
   };
 }

@@ -60,20 +60,31 @@ The system is successful when, ninety days after launch:
 
 ## 3. Users and roles
 
-Three roles. Role is a property of the user account; a user has exactly one role.
+Three roles. **OWNER is a property of the user account** — an owner sees and
+acts on everything, across all shops, with no shop assignment needed, and is
+never also assigned to an individual shop. **MANAGER and STAFF are properties
+of a shop assignment**, not the account (decided 19 Aug 2026, BUILD-LOG D-122,
+reversing the original "a user has exactly one role"): a single account can
+hold a different one of these two roles at each shop it is assigned to — for
+example, MANAGER at Branch 1 and STAFF at Branch 2 — and its capabilities
+differ per shop, not per account.
 
 ### 3.1 OWNER
 One or two accounts. Sees and does everything, across all shops, with no shop assignment needed. Only role that can see COGS, create/edit user accounts, assign roles, assign shop access, and manage backups.
 
 ### 3.2 MANAGER
-Assigned to one or more shops. Can act on any shop they are assigned to, but views reports **one shop at a time** — there is no "all shops" view for managers. Cannot see any cost figure anywhere in the product. Manages prize stock (receive, adjust, opname, transfer), sets ticket cost per prize, records expenses, assigns default shops for staff within their own shops, and does everything a staff member can do.
+Held at one or more shops (§3, above — a user may hold this role at some shops and STAFF at others). At each shop where a user is MANAGER, they can act on that shop and view its reports; views reports **one shop at a time** — there is no "all shops" view for managers. Cannot see any cost figure anywhere in the product except at a shop where they hold the Purchasing permission (§7.5). Manages prize stock (receive, adjust, opname, transfer), sets ticket cost per prize, records expenses, assigns default shops for staff within their own shops, and does everything a staff member can do — all scoped to the shops where they hold this role.
 
 ### 3.3 STAFF
-Assigned to one or more shops. Operational only: record a sale, deposit/withdraw marbles, deposit tickets, redeem prizes, look up a customer, clock in. Sees no money reporting beyond their own shift's sale list.
+Held at one or more shops (§3, above). Operational only, at each shop where a user is STAFF: record a sale, deposit/withdraw marbles, deposit tickets, redeem prizes, look up a customer, clock in. Sees no money reporting beyond their own shift's sale list.
 
 ### 3.4 Permission matrix
 
 `Y` = allowed · `—` = hidden and blocked · `own` = only their assigned shops · `1` = one shop at a time · `P` = only if the user has the **Purchasing** permission (§7.5)
+
+The MANAGER and STAFF columns describe capability **at a shop where the user
+holds that role** (§3, D-122) — a single account may read as the MANAGER row
+at one shop and the STAFF row at another, simultaneously.
 
 | Capability | OWNER | MANAGER | STAFF |
 |---|:--:|:--:|:--:|
@@ -749,16 +760,24 @@ model User {
   /// Temporary suspension, free from the plugin. No UI in v1.
   banExpires DateTime?
 
+  /// From the admin plugin's own schema (D-123, 20 Aug 2026) — its
+  /// `user.create.before` database hook unconditionally stamps
+  /// `role: "user"` onto every created user through every creation path.
+  /// Without this column the hook fails on every account creation. NOT our
+  /// access control — nothing in this codebase reads it. `isOwner` above and
+  /// `UserShop.role` below remain the only roles that matter.
+  role String?
+
   // ── Domain fields (declared in user.additionalFields) ─────────────
-  role        Role
   /// The mutable, human-facing name. `username` is not editable.
   displayName String
   phone       String?
 
-  /// Purchasing permission (§7.5). OWNER-granted. When true on a MANAGER, that user may
-  /// enter and view prize cost FOR THEIR ASSIGNED SHOPS ONLY. Grants nothing else —
-  /// no profit reports, no stock valuation, no cross-shop cost visibility.
-  canEnterCost Boolean @default(false)
+  /// OWNER is the one role that stays a property of the account (D-122,
+  /// 19 Aug 2026): an owner sees and acts on everything, with no shop
+  /// assignment needed, and is never also assigned to an individual shop.
+  /// MANAGER and STAFF are no longer columns here — see UserShop below.
+  isOwner Boolean @default(false)
 
   mustChangePassword Boolean   @default(true)
   defaultShopId      String?
@@ -784,19 +803,29 @@ model User {
   marbleTxns   MarbleLedger[]
   ticketTxns   TicketLedger[]
 
-  @@index([role, banned])
+  @@index([isOwner, banned])
   @@map("user")
 }
 
+/// The role lives HERE, not on User (D-122, 19 Aug 2026): a user can be
+/// MANAGER at one shop and STAFF at another. OWNER never gets a row here —
+/// it is a global flag on User (`isOwner`) and needs no per-shop assignment
+/// (§3.1). A CHECK constraint enforces `role <> 'OWNER'` at the DB level.
 model UserShop {
-  id      String @id @default(cuid())
-  userId  String
-  shopId  String
-  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  shop    Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  id           String  @id @default(cuid())
+  userId       String
+  shopId       String
+  /// MANAGER or STAFF only — see the CHECK constraint above.
+  role         Role
+  /// Purchasing permission (§7.5), meaningful only when role = MANAGER.
+  /// Unlocks prize cost entry and stock valuation for THIS SHOP ONLY.
+  canEnterCost Boolean @default(false)
+  user         User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shop         Shop    @relation(fields: [shopId], references: [id], onDelete: Cascade)
 
   @@unique([userId, shopId])
   @@index([shopId])
+  @@index([userId])
 }
 
 /// Owned by Better Auth. The hand-rolled session table was deleted in Phase 1
@@ -1443,7 +1472,10 @@ Error codes to define: `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `VALIDATION_
 |---|---|---|---|
 | GET | `/api/prizes?shopId=` | any | Catalog + global ticket cost + on-hand qty at that shop + low-stock flag. **No cost fields unless `canSeeCost`.** |
 | POST | `/api/prizes` | O/M | Create catalog item, including global `ticketCost`. |
-| PATCH | `/api/prizes/:id` | O/M | Name, category, image, active, `ticketCost`. Changing `ticketCost` affects **all branches** — audit-logged, owner alerted (§4.8). |
+| PATCH | `/api/prizes/:id` | O/M | Name, category, active, `ticketCost`. Changing `ticketCost` affects **all branches** — audit-logged, owner alerted (§4.8). *(The image is NOT set here — see the three image rows below. BUILD-LOG D-118.)* |
+| GET | `/api/prizes/:id/image` | any | The catalog image, served only to a signed-in session — never a static path. Staff need it to redeem (§8.6). |
+| POST | `/api/prizes/:id/image` | O/M | Upload or replace the image, `multipart/form-data` field `image`. The superseded file is deleted. Separate from `PATCH` so a failed upload cannot take a text edit down with it, matching the receipt route (§7.6). |
+| DELETE | `/api/prizes/:id/image` | O/M | Remove the image. Idempotent — removing when there is none is a 200, not a 404. |
 | PUT | `/api/shops/:shopId/prizes/:prizeId/config` | O/M | `{ lowStockThreshold, isActive }` only. Ticket cost is not settable here. |
 | POST | `/api/stock/batches` | O/M | Receive stock. `{ shopId, prizeItemId, qtyReceived, supplier?, batchCode?, receivedAt, unitCogs? }`. `unitCogs` is **rejected with 403** unless `canSeeCost`; omitted means `needsCosting = true`. See §7.5. |
 | GET | `/api/stock/batches?shopId=&prizeId=` | O / M+P (own shops) | Batch list with costs. |
@@ -1470,13 +1502,13 @@ The requirement is: *managers must never see cost.* But someone has to enter cos
 
 #### The permission
 
-- `User.canEnterCost` is a boolean, granted and revoked **only by the owner**, from Settings → Users. Every grant and revoke is audit-logged.
-- It is meaningful only on a MANAGER account. It is ignored on STAFF.
-- A manager holding it may:
-  - see and enter `unitCogs` when receiving a batch, **at their assigned shops only**;
-  - view the batch list with costs, at their assigned shops only;
-  - see stock valuation for their assigned shops.
-- It does **not** grant: profit or margin reports, prize-expense reports, cost visibility at shops they are not assigned to, opname variance *value*, or any all-shops view. The permission unlocks *cost entry*, not *profitability*.
+- `UserShop.canEnterCost` is a boolean **per shop assignment** (D-122 — role and Purchasing both moved off `User` onto `UserShop`, since a manager's access is per-shop, not per-account), granted and revoked **only by the owner**, from Settings → Employees. Every grant and revoke is audit-logged.
+- It is meaningful only for a MANAGER **at that shop**. It is ignored on a STAFF assignment, and a manager holding it at one shop has no cost rights at a different shop where they are only STAFF (or hold no Purchasing grant).
+- A manager holding it at a shop may:
+  - see and enter `unitCogs` when receiving a batch, **at that shop only**;
+  - view the batch list with costs, at that shop only;
+  - see stock valuation for that shop.
+- It does **not** grant: profit or margin reports, prize-expense reports, cost visibility at shops where they are not assigned or do not hold the grant, opname variance *value*, or any all-shops view. The permission unlocks *cost entry*, not *profitability*.
 - Call it **"Purchasing"** in the UI, not "can see costs" — it describes the job, and it reads better to the person who has it.
 
 #### The uncosted-batch queue (still needed)
@@ -1494,8 +1526,13 @@ A manager **without** the permission can still receive stock — they just canno
 The gate is a single derived value, computed server-side per request:
 
 ```ts
-const canSeeCost = user.role === 'OWNER' || (user.role === 'MANAGER' && user.canEnterCost);
-// and, for MANAGER, always intersected with: shopId ∈ user.assignedShopIds
+// D-122: role and canEnterCost are per-shop — canSeeCostForShop(actor, shopId)
+// is the only version of this gate that may ever answer for a specific shop.
+function canSeeCostForShop(actor: Actor, shopId: string): boolean {
+  if (actor.isOwner) return true;
+  const sr = actor.shopRoles.get(shopId);
+  return sr?.role === 'MANAGER' && sr.canEnterCost === true;
+}
 ```
 
 Build two explicit response shapes per resource — `toCostDTO()` and `toRestrictedDTO()` — in `src/server/dto/`. The restricted builder **physically does not read the cost columns**. Do not implement this by deleting keys from a full object; a future refactor will silently reintroduce the leak. Add a test asserting that a plain MANAGER's serialized response for every prize, stock, redemption, report and CSV export endpoint contains none of the strings `cogs`, `unitCost`, `varianceValue`, `margin`, `profit`, `valuation`. Add a second test asserting a Purchasing manager sees cost for an assigned shop and gets a `403` for an unassigned one.
@@ -1545,10 +1582,10 @@ Build two explicit response shapes per resource — `toCostDTO()` and `toRestric
 
 | Method | Path | Role | Purpose |
 |---|---|---|---|
-| GET/POST/PATCH | `/api/users` | OWNER | Create user, set role, active flag, default shop. |
-| PUT | `/api/users/:id/shops` | OWNER | Set shop assignments. |
-| PATCH | `/api/users/:id/default-shop` | O / M(own staff) | |
-| POST | `/api/users/:id/reset-password` | O / M(own staff) | Sets temp password + `mustChangePassword`. |
+| GET/POST | `/api/employees` | OWNER | List / create. Create sets a per-shop `shopRoles` array (D-122), active flag, default shop. Never `isOwner` — there is exactly one owner, fixed at bootstrap (D-123, 20 Aug 2026); this endpoint can only create MANAGER/STAFF. |
+| PATCH | `/api/employees/:id` | OWNER | Edit `shopRoles` (whole-array replace, D-109/D-122), active flag, default shop. Never `isOwner` (D-123) — the owner account can be deactivated (subject to the last-active-owner guard) but never demoted, and nobody can be promoted to it, from this endpoint. |
+| POST | `/api/employees/:id/reset-password` | OWNER | Sets temp password + `mustChangePassword`. |
+| PATCH | `/api/shops/:id/staff` | OWNER | Assign/unassign/change-role for ONE (user, shop) pair (D-107, extended by D-122). |
 | GET/POST/PATCH | `/api/shops` | OWNER | |
 | GET/POST/PATCH/DELETE | `/api/shops/:id/presets` | OWNER | |
 | GET | `/api/audit` | OWNER | Filterable audit log. |
@@ -1693,7 +1730,7 @@ Tabs: **On hand · Receive · Transfers · Opname · Low stock**
 - **Change password.**
 - **Owner: Shops** — create/edit shop, presets, late-grace minutes, feature toggles.
 - **Owner: System** — global business-day start hour (§4.2), ticket-award reason threshold (§4.6).
-- **Owner: Users** — create user, set role, shop access, default shop, **Purchasing permission toggle**, deactivate, reset password.
+- **Owner: Employees** (renamed from Users, D-122) — create an employee, set OWNER or a **per-shop role** (a checklist of shops with a role picker per shop, and a per-shop **Purchasing permission toggle**), default shop, deactivate, reset password.
 - **Owner: Shops → New shop** — creates a branch and offers to clone presets and shifts from an existing shop (§5.6).
 - **Owner/Manager: Shifts.**
 - **Owner: Expense categories.**
@@ -2114,7 +2151,7 @@ All eight open questions were resolved by the owner on **3 August 2026**. Nothin
 | 2 | How ticket counts reach the app | **Physical tickets, collected by staff and keyed in.** | Tickets must be destroyed at entry; three anti-fraud controls added. §4.6, §9 |
 | 3 | Marble balance expiry | **No expiry.** | `EXPIRE` deliberately absent from the enum. §4.5, §4.6 |
 | 4 | Ticket price per branch | **One global price for every branch.** | `ticketCost` moved from `ShopPrizeConfig` to `PrizeItem`. §4.8, §6, §7.4 |
-| 5 | Who enters prize cost | **Owner, plus one trusted manager holding a Purchasing permission.** | `User.canEnterCost`; scoped to that manager's own shops; grants cost entry, not profitability. §3.4, §7.5 |
+| 5 | Who enters prize cost | **Owner, plus one trusted manager holding a Purchasing permission.** | `UserShop.canEnterCost` (per-shop, D-122); scoped to that manager's own shops; grants cost entry, not profitability. §3.4, §7.5 |
 | 6 | Number of shops and staff | **Unlimited and growing.** No fixed count anywhere. | New §5.6 growth rules; seed creates one shop; self-service branch creation with preset/shift cloning. |
 | 7 | Receipt printing | **Not in v1.** | On-screen confirmation the customer can screenshot; no thermal printer in the hardware spec. §8.2, §8.6 |
 | 8 | Off-machine backup | **Local backups only; owner copies to cloud manually.** | Export button, copy log, escalating dashboard alert, weekly reminder. Automation stays a ten-line change if you change your mind. §13.4 |

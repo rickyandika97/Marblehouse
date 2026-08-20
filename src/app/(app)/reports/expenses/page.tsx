@@ -52,7 +52,7 @@ export default async function ExpenseReportPage({
   return (
     <ReportShell
       title="Expense Report"
-      description={actor.role === "OWNER" && !sp.shopId ? "All shops" : undefined}
+      description={actor.isOwner && !sp.shopId ? "All shops" : undefined}
       from={from}
       to={to}
       exportName="expenses"

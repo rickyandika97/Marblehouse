@@ -29,7 +29,7 @@ import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { writeAudit } from "@/server/audit";
-import type { Actor } from "@/server/auth/context";
+import { type Actor, assignedShopIds } from "@/server/auth/context";
 import { assertShopAccess } from "@/server/auth/guards";
 import { AppError, forbidden, notFound } from "@/server/errors";
 import { consumeFifo, restoreConsumption } from "@/server/services/inventory";
@@ -521,11 +521,11 @@ export async function listTransfers(
 
   const shopFilter = input.shopId
     ? [{ fromShopId: input.shopId }, { toShopId: input.shopId }]
-    : actor.role === "OWNER"
+    : actor.isOwner
       ? undefined
       : [
-          { fromShopId: { in: actor.assignedShopIds } },
-          { toShopId: { in: actor.assignedShopIds } },
+          { fromShopId: { in: assignedShopIds(actor) } },
+          { toShopId: { in: assignedShopIds(actor) } },
         ];
 
   const transfers = await prisma.prizeTransfer.findMany({

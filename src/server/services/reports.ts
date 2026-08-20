@@ -109,7 +109,7 @@ export async function resolveScope(
     return { shopIds: [input.shopId], isAllShops: false, from, to };
   }
 
-  if (actor.role === "OWNER") {
+  if (actor.isOwner) {
     const shops = await prisma.shop.findMany({ select: { id: true } });
     return { shopIds: shops.map((s) => s.id), isAllShops: true, from, to };
   }
@@ -161,7 +161,7 @@ export function canSeeCostForScope(actor: Actor, scope: ResolvedScope): boolean 
 }
 
 function assertOwner(actor: Actor): void {
-  if (actor.role !== "OWNER") {
+  if (!actor.isOwner) {
     throw forbidden("Only the owner can view this report.");
   }
 }
@@ -384,7 +384,7 @@ export async function liabilityReport(
   // liability VALUE figure, not the counts).
   let blendedCogsPerTicket: string | null = null;
   let estimatedTicketLiability: string | null = null;
-  if (actor.role === "OWNER") {
+  if (actor.isOwner) {
     const blended = await blendedCogsPerTicketValue(scope);
     blendedCogsPerTicket = blended.toDecimalPlaces(4).toString();
     estimatedTicketLiability = blended
@@ -1147,7 +1147,10 @@ export async function attendanceReport(
   scope: ResolvedScope;
   totals: { records: number; lateCount: number; lateRate: string };
 }> {
-  if (actor.role === "STAFF") {
+  const isManagerSomewhere = [...actor.shopRoles.values()].some(
+    (sr) => sr.role === "MANAGER"
+  );
+  if (!actor.isOwner && !isManagerSomewhere) {
     throw forbidden("Only a manager or the owner can view team attendance.");
   }
   const scope = await resolveScope(actor, input);

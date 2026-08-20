@@ -20,11 +20,15 @@ export default async function AttendancePage() {
   const actor = await requireActorPage();
   const rows = await listAttendance(actor, {});
 
+  const isManagerSomewhere = [...actor.shopRoles.values()].some(
+    (sr) => sr.role === "MANAGER"
+  );
+
   return (
     <AttendanceList
       rows={rows}
-      canSeeTeam={actor.role !== "STAFF"}
-      canExcuse={actor.role === "OWNER"}
+      canSeeTeam={actor.isOwner || isManagerSomewhere}
+      canExcuse={actor.isOwner}
       selfUserId={actor.userId}
     />
   );

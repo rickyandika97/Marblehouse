@@ -47,7 +47,7 @@ export default async function CustomerDetailPage({
     throw e;
   });
 
-  const owner = actor.role === "OWNER" ? (customer as CustomerOwnerDTO) : null;
+  const owner = actor.isOwner ? (customer as CustomerOwnerDTO) : null;
 
   // The customer's own sale history, already role-scoped by the service.
   const [{ sales }, ledger, awardReasonThreshold] = await Promise.all([
@@ -112,7 +112,10 @@ export default async function CustomerDetailPage({
 
       <BalanceActions
         customerId={customer.id}
-        canAdjust={actor.role !== "STAFF"}
+        canAdjust={
+          actor.isOwner ||
+          [...actor.shopRoles.values()].some((sr) => sr.role === "MANAGER")
+        }
         awardReasonThreshold={awardReasonThreshold}
       />
 

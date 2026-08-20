@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, PackagePlus } from "lucide-react";
+import { ImageIcon, Loader2, PackagePlus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,7 +11,7 @@ import { formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import type { PrizeDTO, PrizeCostDTO } from "@/server/dto/prize";
 
-type Tab = "on-hand" | "receive" | "transfers" | "opname" | "low-stock";
+type Tab = "on-hand" | "catalog" | "receive" | "transfers" | "opname" | "low-stock";
 
 export interface TransferRow {
   id: string;
@@ -30,10 +30,19 @@ export interface Destination {
 }
 
 /**
- * Stock tabs (§8.7): On hand · Receive · Transfers · Opname · Low stock.
+ * Stock tabs (§8.7): On hand · Catalog · Receive · Transfers · Opname ·
+ * Low stock.
  *
  * Transfers and Opname landed in Phase 5; they were deliberately absent in
  * Phase 4 rather than stubbed (D-35).
+ *
+ * **Catalog** is D-117 and is not in §8.7's list. It sets `ShopPrizeConfig` —
+ * whether this branch carries an item, and its low-stock threshold. Before it,
+ * `setShopPrizeConfig` was the ONLY writer of that table outside the demo seed
+ * and had no caller, which had two silent consequences: received stock stayed
+ * invisible on On hand (that tab filters by `shopConfig?.isActive`, and
+ * `receiveBatch` never creates a config row), and the low-stock alert could
+ * never fire for it because `runLowStockScan` reads the same table.
  *
  * `showCost` is decided on the SERVER and passed in. It is not a permission —
  * the payload for a plain manager physically has no valuation on it (§7.5) —
@@ -58,9 +67,15 @@ export function StockTabs({
 
   const stocked = prizes.filter((p) => p.shopConfig?.isActive);
   const lowStock = stocked.filter((p) => p.isLowStock);
+  // An archived catalog item cannot be stocked anywhere (`receiveBatch`
+  // refuses it), so offering a "carry it" switch for one would be a control
+  // that leads to a dead end. Retiring an item does NOT hide stock already
+  // here — that still shows on On hand.
+  const carriable = prizes.filter((p) => p.isActive);
 
   const tabs: Array<{ id: Tab; label: string; count?: number }> = [
     { id: "on-hand", label: "On hand", count: stocked.length },
+    { id: "catalog", label: "Catalog", count: carriable.length },
     ...(canReceive ? [{ id: "receive" as const, label: "Receive" }] : []),
     {
       id: "transfers",
@@ -95,7 +110,10 @@ export function StockTabs({
         ))}
       </div>
 
-      {tab === "on-hand" && <OnHandTable rows={stocked} showCost={showCost} />}
+      {tab === "on-hand" && (
+        <OnHandTable rows={stocked} showCost={showCost} shopId={shopId} />
+      )}
+      {tab === "catalog" && <CatalogPanel shopId={shopId} rows={carriable} />}
       {tab === "receive" && (
         <ReceiveForm shopId={shopId} prizes={prizes} showCost={showCost} />
       )}
@@ -127,9 +145,12 @@ export function StockTabs({
 function OnHandTable({
   rows,
   showCost,
+  shopId,
 }: {
   rows: PrizeDTO[];
   showCost: boolean;
+  /** Omitted on the Low stock tab, which is a read-only view of the same rows. */
+  shopId?: string;
 }) {
   if (rows.length === 0) {
     return (
@@ -151,6 +172,7 @@ function OnHandTable({
             {showCost && (
               <th className="py-2 text-right font-medium">Stock value</th>
             )}
+            {shopId && <th className="py-2 text-right font-medium">Adjust</th>}
           </tr>
         </thead>
         <tbody className="divide-y">
@@ -178,6 +200,11 @@ function OnHandTable({
               {showCost && (
                 <td className="py-3 text-right tabular-nums">
                   {formatMoney((p as PrizeCostDTO).stockValuation ?? 0)}
+                </td>
+              )}
+              {shopId && (
+                <td className="py-3 text-right">
+                  <AdjustStockButton shopId={shopId} prize={p} />
                 </td>
               )}
             </tr>
@@ -282,7 +309,7 @@ function ReceiveForm({
             .map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
-                {p.shopConfig?.isActive ? "" : " (not stocked here yet)"}
+                {p.shopConfig?.isActive ? "" : " (not carried here — see Catalog)"}
               </option>
             ))}
         </select>
@@ -851,5 +878,439 @@ function OpnamePanel({ shopId }: { shopId: string }) {
         </Button>
       </div>
     </div>
+  );
+}
+
+/**
+ * Catalog tab (§7.4, D-117) — what THIS branch carries.
+ *
+ * Sets `ShopPrizeConfig` via `PUT /api/shops/:id/prizes/:prizeId/config`. That
+ * endpoint shipped in Phase 5 with a service, tests (D-116) and no caller at
+ * all, which quietly disabled two things: a received delivery never appeared on
+ * On hand, because that tab filters by `shopConfig?.isActive` and
+ * `receiveBatch` does not create a config row; and the low-stock alert could
+ * never fire, because `runLowStockScan` reads the same table.
+ *
+ * The two fields here are the ONLY per-branch settings on a prize. Ticket cost
+ * is global and lives on the catalog item (§4.8, a closed decision) — it is
+ * deliberately absent, and the server's schema is `.strict()` so a request that
+ * smuggles one is rejected rather than silently stripped.
+ *
+ * Threshold 0 means "never warn" (§4.8), which is not the same as an empty
+ * field, so the input says so rather than leaving the reader to guess.
+ */
+function CatalogPanel({
+  shopId,
+  rows,
+}: {
+  shopId: string;
+  rows: PrizeDTO[];
+}) {
+  if (rows.length === 0) {
+    return (
+      <p className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
+        The prize catalog is empty. An owner or manager adds items in
+        Settings → Prizes, then this branch chooses which of them to carry.
+      </p>
+    );
+  }
+
+  const carried = rows.filter((r) => r.shopConfig?.isActive);
+  const notCarried = rows.filter((r) => !r.shopConfig?.isActive);
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-muted-foreground">
+        Choose which catalog items this branch carries, and when to warn that
+        one is running low. Ticket prices are the same at every branch and are
+        set in Settings → Prizes.
+      </p>
+
+      {carried.length > 0 && (
+        <div className="rounded-xl border">
+          <p className="border-b px-4 py-3 text-sm font-medium">
+            Carried here ({carried.length})
+          </p>
+          <ul className="divide-y">
+            {carried.map((r) => (
+              <CatalogRow key={r.id} shopId={shopId} prize={r} />
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {notCarried.length > 0 && (
+        <div className="rounded-xl border">
+          <p className="border-b px-4 py-3 text-sm font-medium">
+            Not carried here ({notCarried.length})
+          </p>
+          <ul className="divide-y">
+            {notCarried.map((r) => (
+              <CatalogRow key={r.id} shopId={shopId} prize={r} />
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CatalogRow({ shopId, prize }: { shopId: string; prize: PrizeDTO }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [threshold, setThreshold] = useState(
+    String(prize.shopConfig?.lowStockThreshold ?? 0)
+  );
+
+  const carried = prize.shopConfig?.isActive ?? false;
+
+  // One writer for both fields: the endpoint is a PUT of the whole config, so
+  // sending only the field that changed would reset the other to a default.
+  async function save(next: { isActive: boolean; lowStockThreshold: number }) {
+    setBusy(true);
+    try {
+      const response = await fetch(
+        `/api/shops/${shopId}/prizes/${prize.id}/config`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(next),
+        }
+      );
+      const result = await response.json().catch(() => null);
+      if (!response.ok) {
+        toast.error(result?.error?.message ?? "Could not save that setting.");
+        return false;
+      }
+      router.refresh();
+      return true;
+    } catch {
+      toast.error("No connection. Check the wifi and try again.");
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleCarried() {
+    const next = !carried;
+    // Stopping carrying an item does NOT remove its stock — the batches stay,
+    // and On hand keeps showing them until they are transferred or adjusted
+    // away. Say so, because "not carried" sounding like "written off" is the
+    // dangerous reading for anyone counting stock.
+    const ok = await save({
+      isActive: next,
+      lowStockThreshold: Number(threshold) || 0,
+    });
+    if (!ok) return;
+    toast.success(
+      next
+        ? `${prize.name} is now carried here`
+        : prize.onHand > 0
+          ? `${prize.name} is no longer offered — its ${prize.onHand} in stock stay on the shelf`
+          : `${prize.name} is no longer carried here`
+    );
+  }
+
+  async function saveThreshold() {
+    const parsed = Number(threshold);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+      toast.error("Use a whole number, 0 or more.");
+      return;
+    }
+    const ok = await save({ isActive: carried, lowStockThreshold: parsed });
+    if (!ok) return;
+    setEditing(false);
+    toast.success(
+      parsed === 0
+        ? `No low-stock warning for ${prize.name}`
+        : `Warn when ${prize.name} falls to ${parsed}`
+    );
+  }
+
+  return (
+    <li className="flex flex-wrap items-center gap-3 px-4 py-4">
+      {/* Same fixed box with or without a photo, so rows stay aligned. */}
+      {prize.imagePath ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={`/api/prizes/${prize.id}/image`}
+          alt=""
+          aria-hidden
+          width={40}
+          height={40}
+          className="size-10 shrink-0 rounded-lg border object-cover"
+        />
+      ) : (
+        <span
+          aria-hidden
+          className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-dashed text-muted-foreground"
+        >
+          <ImageIcon className="size-4" />
+        </span>
+      )}
+      <span className="min-w-0 flex-1">
+        <span className="block font-medium">{prize.name}</span>
+        <span className="block truncate text-sm text-muted-foreground">
+          {prize.sku}
+          {prize.category && ` · ${prize.category}`}
+          {" · "}
+          <span className="tabular-nums">{prize.onHand}</span> in stock
+          {prize.isLowStock && (
+            <span className="ml-1 font-medium text-amber-700">· low</span>
+          )}
+        </span>
+
+        {carried && (
+          <span className="mt-1 block text-xs text-muted-foreground">
+            {editing ? null : prize.shopConfig?.lowStockThreshold ? (
+              <>Warn at {prize.shopConfig.lowStockThreshold} or fewer</>
+            ) : (
+              <>No low-stock warning</>
+            )}
+          </span>
+        )}
+      </span>
+
+      {carried && editing ? (
+        <span className="flex items-center gap-2">
+          <Input
+            value={threshold}
+            inputMode="numeric"
+            aria-label={`Low-stock threshold for ${prize.name}`}
+            className="w-24"
+            onChange={(e) => setThreshold(e.target.value.replace(/[^0-9]/g, ""))}
+            disabled={busy}
+          />
+          <Button size="sm" onClick={saveThreshold} disabled={busy}>
+            {busy && <Loader2 className="size-4 animate-spin" />}
+            Save
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={busy}
+            onClick={() => {
+              setThreshold(String(prize.shopConfig?.lowStockThreshold ?? 0));
+              setEditing(false);
+            }}
+          >
+            Cancel
+          </Button>
+        </span>
+      ) : (
+        <span className="flex shrink-0 gap-2">
+          {carried && (
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() => setEditing(true)}
+            >
+              Low-stock
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={toggleCarried}
+          >
+            {busy && <Loader2 className="size-4 animate-spin" />}
+            {carried ? "Stop carrying" : "Carry here"}
+          </Button>
+        </span>
+      )}
+    </li>
+  );
+}
+
+/**
+ * Manual stock adjustment (§7.4, §4.16; BUILD-LOG D-119).
+ *
+ * `POST /api/stock/adjust` shipped in Phase 4 and had no caller until now, so
+ * the only way stock could move outside a sale, a transfer or a delivery was a
+ * full opname. An opname is a whole-shop physical count — the wrong instrument
+ * for "a customer dropped one teddy bear", which is the case §4.16 is written
+ * for.
+ *
+ * **Two steps, deliberately.** The first picks a direction and a quantity; the
+ * second is the shared `ReasonDialog`, which is where the change is actually
+ * confirmed. Rolling both into one form would put the reason field next to a
+ * +/- control and make it look optional — and §4.16's whole value is that an
+ * owner reading the movement back months later can tell breakage from theft
+ * from a counting error.
+ *
+ * The reason's `minLength` is 3 because `adjustStockSchema` says
+ * `min(3)` — mirrored from the server, not invented here (see
+ * `reason-dialog.tsx` on why that distinction matters).
+ *
+ * **The direction is a choice, not a sign.** Typing "-3" is easy to get wrong
+ * on a tablet and impossible to notice afterwards; two labelled buttons carry
+ * the meaning that the number alone does not. The negative is sent as
+ * `-quantity`, which is what the service expects.
+ */
+function AdjustStockButton({
+  shopId,
+  prize,
+}: {
+  shopId: string;
+  prize: PrizeDTO;
+}) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [direction, setDirection] = useState<"remove" | "add">("remove");
+  const [qty, setQty] = useState("");
+  const [reasonOpen, setReasonOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const parsedQty = Number(qty);
+  const qtyValid = Number.isInteger(parsedQty) && parsedQty > 0;
+  // Stock may never go negative. The server checks this inside the transaction
+  // at commit time and is the real control — this only avoids offering a
+  // button whose only outcome is a 422.
+  const exceedsStock = direction === "remove" && parsedQty > prize.onHand;
+  const canContinue = qtyValid && !exceedsStock;
+
+  const delta = direction === "remove" ? -parsedQty : parsedQty;
+
+  function reset() {
+    setQty("");
+    setDirection("remove");
+    setOpen(false);
+    setReasonOpen(false);
+  }
+
+  async function submit(reason: string) {
+    setSubmitting(true);
+    try {
+      const response = await fetch("/api/stock/adjust", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          // Staff double-tap on slow shop wifi. Without this a retry books the
+          // adjustment twice and the count is wrong in the other direction.
+          "Idempotency-Key": crypto.randomUUID(),
+        },
+        body: JSON.stringify({ shopId, prizeItemId: prize.id, delta, reason }),
+      });
+      const result = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        toast.error(result?.error?.message ?? "Could not adjust that stock.");
+        return;
+      }
+
+      toast.success(
+        direction === "remove"
+          ? `Removed ${parsedQty} · ${prize.name} now ${result.onHand}`
+          : `Added ${parsedQty} · ${prize.name} now ${result.onHand}`,
+        {
+          description:
+            direction === "add"
+              ? "Found stock has no cost yet — price it in the uncosted queue."
+              : undefined,
+        }
+      );
+      reset();
+      router.refresh();
+    } catch {
+      toast.error("No connection. Check the wifi and try again.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
+        Adjust
+      </Button>
+    );
+  }
+
+  return (
+    <>
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <div className="flex overflow-hidden rounded-lg border">
+          <button
+            type="button"
+            onClick={() => setDirection("remove")}
+            aria-pressed={direction === "remove"}
+            className={cn(
+              "min-h-11 px-3 text-sm font-medium",
+              direction === "remove"
+                ? "bg-destructive text-white"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            Remove
+          </button>
+          <button
+            type="button"
+            onClick={() => setDirection("add")}
+            aria-pressed={direction === "add"}
+            className={cn(
+              "min-h-11 border-l px-3 text-sm font-medium",
+              direction === "add"
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            Add
+          </button>
+        </div>
+
+        <Input
+          value={qty}
+          inputMode="numeric"
+          placeholder="Qty"
+          aria-label={`Quantity to adjust for ${prize.name}`}
+          className="w-20"
+          onChange={(e) => setQty(e.target.value.replace(/[^0-9]/g, ""))}
+        />
+
+        <Button
+          size="sm"
+          disabled={!canContinue}
+          onClick={() => setReasonOpen(true)}
+        >
+          Continue
+        </Button>
+        <Button size="sm" variant="ghost" onClick={reset}>
+          Cancel
+        </Button>
+      </div>
+
+      {exceedsStock && (
+        <p className="mt-1 text-right text-xs font-medium text-destructive">
+          Only {prize.onHand} in stock.
+        </p>
+      )}
+
+      <ReasonDialog
+        open={reasonOpen}
+        onOpenChange={setReasonOpen}
+        title={direction === "remove" ? "Remove stock?" : "Add stock?"}
+        description={`${prize.name} · ${prize.onHand} on hand now`}
+        consequence={
+          direction === "remove"
+            ? `${parsedQty} will be taken from the oldest batches first, so the loss is valued at what those units actually cost. On hand becomes ${prize.onHand - parsedQty}.`
+            : `${parsedQty} will be added as found stock with no cost yet — price it in the uncosted queue, or prize expense stays understated. On hand becomes ${prize.onHand + parsedQty}.`
+        }
+        label="Why is this being adjusted?"
+        placeholder={
+          direction === "remove" ? "Damaged by a customer" : "Found in the store room"
+        }
+        helpText="Recorded against the movement and the audit log. Be specific — breakage, theft and a miscount read very differently to an owner months later."
+        confirmLabel={direction === "remove" ? "Remove stock" : "Add stock"}
+        confirmVariant={direction === "remove" ? "destructive" : "default"}
+        // Mirrors `adjustStockSchema`'s `min(3)`.
+        minLength={3}
+        submitting={submitting}
+        onConfirm={submit}
+      />
+    </>
   );
 }

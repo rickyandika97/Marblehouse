@@ -14,6 +14,14 @@ why, not an edit to the old one.
 
 ---
 
+> **D-122 (19 Aug 2026) is a retroactive, cross-phase schema and permission
+> change** — role moved from a single column on `User` to a per-shop column
+> on `UserShop` (a user can be MANAGER at one shop and STAFF at another; only
+> OWNER stays global). It is not tied to any phase below. **Read it before
+> touching role, `canEnterCost`, `Actor`, or any guard/permission logic in
+> any phase** — several things that look like the original phase's code will
+> in fact be D-122's rewrite of it.
+
 ## Phase status
 
 | Phase | Scope | Status |
@@ -3559,13 +3567,969 @@ Safari behaviour: 6 of the 10 fail with `Rp20.000`.
 sites have the same portability exposure via timezone rather than ICU spacing.
 
 
+### D-116 · The prize catalog had no UI at all
+
+**Owner request, 19 Aug 2026.** Asked which features were built but unreachable;
+the catalog was the answer that mattered.
+
+`POST /api/prizes`, `PATCH /api/prizes/:id` and
+`PUT /api/shops/:id/prizes/:prizeId/config` shipped in Phase 5 with services,
+permission checks and route handlers — and **no client ever called any of
+them.** A `grep` for `/api/prizes` across every `.tsx` returned nothing.
+
+This was not cosmetic. The Stock screen's Receive tab picks a prize from a
+`<select>` of items that already exist, so on a fresh install the catalog is
+empty, Receive has nothing to offer, and **no prize can ever be created except
+by the seed script or by hand in SQL.** `redeem-cart.tsx` told the user "a
+manager can add them from Stock → Receive", which pointed at a screen that
+could not do it. Confirmed against the dev database: `PrizeItem` had 0 rows.
+
+**Built:** `settings/prizes/page.tsx` + `prize-admin.tsx`, and a Settings hub
+entry.
+
+**OWNER *and* MANAGER reach it** — owner decision, taken against the
+alternative of owner-only. The screen widens no permission: it matches the
+`requireManagerOrOwner` gate the two routes have always carried, and stops that
+gate being unreachable. Every other `/settings/*` screen is owner-only, so this
+is the deliberate exception and the reason is worth keeping: a manager stocking
+a branch needs to add the item they just received without waiting on the owner.
+
+**What that costs, and what pays for it.** The catalog is GLOBAL (§4.8, a
+closed decision), so a manager editing `ticketCost` reprices at *every* branch,
+including ones they do not manage. §4.8 asks for three mitigations; two were
+already in `updatePrize` — the audit row and the owner `SystemAlert`. The third
+is UI, and it is now the amber block on the reprice field, which names the old
+value, the new value, and "at every branch". It renders only when the number
+actually changes, matching the service's own `ticketCostChanged` test, so a
+rename never cries wolf.
+
+**Two states the row must not conflate:** `shopConfig === null` ("this branch
+does not carry it") versus carried with `onHand === 0` ("carried, ran out").
+Rendering both as "0 in stock" would send a manager hunting for a delivery that
+was never configured. Separate sentences, and the shop-local half is styled
+subordinate to the catalog half throughout — the two ideas on this screen are
+global and local, and confusing them is the expensive mistake.
+
+**Retire, never delete.** `updatePrize` offers only `isActive`, there is no
+DELETE endpoint, and CLAUDE.md forbids hard-deleting anything touching stock —
+a prize is referenced by past redemptions and live batches. No button implies
+otherwise.
+
+**Scope comes from the work session, not a picker.** `listPrizes` needs a
+`shopId` for on-hand and low-stock, and `assertShopAccess` has to pass for a
+manager. `includeUnstocked: true` is what makes the screen a *catalog* rather
+than the branch's shelf — without it a newly created item is invisible
+everywhere and could never be edited or stocked. A test pins that.
+
+**The screen renders `PrizeDTO`, the restricted shape, on purpose.** A
+Purchasing manager's `listPrizes` returns `PrizeCostDTO` with a valuation on
+it; typing the prop as `PrizeDTO` means this screen cannot reach the cost
+fields even though they exist on the object at runtime (§7.5).
+
+**The services had no tests** — Phase 5 shipped them uncovered, and this screen
+makes them reachable by a manager for the first time. `prizes.test.ts` adds 29,
+and **all seven invariants were confirmed to go red under mutation** as
+CLAUDE.md gate 3 requires:
+
+| Broken on purpose | Caught |
+|---|---|
+| `shopPrizeConfigSchema` made non-strict (per-shop price accepted) | ✅ |
+| Alert fires on every update, not only a real reprice | ✅ |
+| HQ stock guard removed | ✅ |
+| `assertShopAccess` dropped from `setShopPrizeConfig` | ✅ |
+| Cost gate bypassed (valuation to a plain manager) | ✅ |
+| Duplicate-SKU check skipped | ✅ |
+| `includeUnstocked` ignored | ✅ 2 tests |
+
+The strict-schema one is the one to keep: `.strict()` exists so a client
+sending a per-branch `ticketCost` is **rejected** rather than having the field
+silently stripped, because a silent strip leaves a manager believing they set a
+branch price that was never stored.
+
+**Also fixed:** `redeem-cart.tsx`'s empty state now names both steps —
+Settings → Prizes to create the item, then Stock → Receive to bring quantity
+in. The old wording named only the second and was unactionable on a fresh
+install.
+
+**Not done:** `PUT /api/shops/:id/prizes/:prizeId/config` is now tested but
+still has no UI caller — see *Known issues / debts*. Per-shop stocking and the
+low-stock threshold remain settable only by API.
+
+### What was built
+
+| File | Role |
+|---|---|
+| `src/app/(app)/settings/prizes/page.tsx` | **New.** The catalog screen. `requireManagerOrOwnerPage`, work-session scope, `includeUnstocked: true`. |
+| `src/app/(app)/settings/prizes/prize-admin.tsx` | **New.** Add / edit / retire / restore, client-side search, and §4.8's global-reprice warning. |
+| `src/server/services/__tests__/prizes.test.ts` | **New.** 29 tests over `createPrize`, `updatePrize`, `setShopPrizeConfig` and `listPrizes` — the first coverage these services have had. |
+| `src/app/(app)/settings/page.tsx` | Hub entry "Prizes", `show: actor.role !== "STAFF"`. |
+| `src/app/(app)/customers/[id]/redeem/redeem-cart.tsx` | Empty state now names both steps instead of only Receive. |
+| `scripts/verify-prizes.sh` | **New.** 20 checks: all three role paths through the rendered page, the SKU conflict, the reprice alert, the strict-schema rejection, the HQ guard and the cost gate. |
+
+**A note on the verify script's own bug**, because it is the kind that reads as
+a product defect: two checks first reported red expecting **400**, and the app
+returned **422**. The app was right — `errors.ts` maps `VALIDATION_FAILED` to
+422 deliberately. The script was fixed, not the service. Worth writing down: a
+red check in a new script is as likely to be the script's wrong expectation as
+a real defect, and the way to tell is to read the mapping rather than to
+"fix" the code until the script goes green.
+
+### D-117 · Per-shop stocking, and the delivery that vanished
+
+**Owner request, 19 Aug 2026**, immediately after D-116. Closes the debt that
+entry opened.
+
+`PUT /api/shops/:id/prizes/:prizeId/config` shipped in Phase 5 with a service
+and a permission check, and D-116 added tests — but **no caller anywhere**.
+`setShopPrizeConfig` was the only writer of `ShopPrizeConfig` outside
+`prisma/demo.ts`, so on any database that had not run the demo seed, that table
+was written by nothing at all.
+
+**This was not a missing convenience. It silently broke two features:**
+
+1. **Received stock was invisible.** `receiveBatch` does *not* create a
+   `ShopPrizeConfig` row (verified — it writes `PrizeBatch`, `StockMovement`
+   and an audit row, nothing else). The On hand tab filters
+   `prizes.filter((p) => p.shopConfig?.isActive)`. So a manager could book a
+   delivery, get a success toast, and watch the item never appear — with no
+   screen in the product able to fix it. The Receive form even labelled such
+   items *"(not stocked here yet)"*, naming the problem it could not solve.
+2. **The low-stock alert could never fire for them.** `runLowStockScan` reaches
+   `lowStockRowsForScope`, which reads the same table. No config row means no
+   threshold means no alert, permanently. The Low stock tab's own empty state
+   promised "the threshold set for this shop" — a setting with no UI.
+
+**Built:** a **Catalog** tab on the Stock screen, second in the strip, before
+Receive — you decide what the branch carries before you receive it.
+
+**Why the Stock screen and not Settings → Prizes.** D-116 put the *catalog*
+under Settings because it is global. This is the opposite: `ShopPrizeConfig` is
+per-branch, `setShopPrizeConfig` already scopes by `assertShopAccess`, and the
+person who needs it is the manager standing in the branch looking at a delivery.
+Splitting them along the global/local seam keeps each screen answering one
+question. The Catalog tab's intro line and the Settings screen's both say where
+the other half lives, because the split is only obvious once you know it.
+
+**Ticket cost is deliberately absent from this tab.** It is global (§4.8) and
+lives on the catalog item. The server's schema is `.strict()` so a request that
+smuggles one is rejected rather than stripped — pinned by a test and a verify
+check.
+
+**Three pieces of wording that are load-bearing:**
+
+- **"Stop carrying" does not destroy stock.** The toast says the units stay on
+  the shelf, because "not carried" reading as "written off" is the dangerous
+  interpretation for anyone counting inventory. A test asserts the batches
+  survive, and it goes red if the service is made to void them.
+- **Threshold 0 means "never warn"** (§4.8), which is not the same as an empty
+  field. The row renders "No low-stock warning" rather than "Warn at 0".
+- **Archived catalog items are not offered.** `receiveBatch` refuses them, so a
+  "Carry here" button for one would lead to a dead end. Retiring an item does
+  not hide stock already in the branch — that still shows on On hand.
+
+**What I did NOT change, and why it is your call.** §4.9 says staff see only
+prizes "configured at *their current shop*", so the config row is a deliberate
+gate, not an oversight — auto-carrying on receive would quietly remove a
+control the PRD asks for. The Catalog tab makes the gate operable instead of
+bypassing it. If you would rather Receive implied "carry it here", that is a
+one-line change in `receiveBatch` and a §4.9 amendment; say so and I will make
+it.
+
+**Verified in a real browser as a MANAGER**, not just by curl: the tab renders,
+"Carry here" moves the row from *Not carried here* to *Carried here* and takes
+Items stocked 2 → 3, the inline threshold editor saves, and setting 5 flips the
+row to amber "· low" and both Low stock counters 2 → 3. No console errors.
+That is the low-stock feature working end to end for the first time.
+
+**Tests:** 3 new (32 total in `prizes.test.ts`, 357 in the suite), and both new
+invariants confirmed to go red under mutation as CLAUDE.md gate 3 requires —
+voiding batches on unstock, and ignoring the configured threshold. The
+receive-then-invisible case is now pinned by a test that asserts `onHand` is 10
+while `shopConfig` is null, which is precisely the state that used to be
+unreachable from the UI.
+
+`verify-prizes.sh` grows a section 4b (11 checks) covering the whole round
+trip, and now also sweeps retired prizes left by earlier runs — it received
+real stock, so leaving it dirty would have skewed the Stock screen's counts on
+the next run.
+
+### What was built
+
+| File | Role |
+|---|---|
+| `src/app/(app)/stock/stock-tabs.tsx` | **Catalog tab** — `CatalogPanel` + `CatalogRow`, carried/not-carried sections, inline threshold editor. Receive's hint now points at it. |
+| `src/server/services/__tests__/prizes.test.ts` | +3 tests: stock invisible until carried, stock survives unstocking, low-stock flag follows the threshold. |
+| `scripts/verify-prizes.sh` | +11 checks (§4b) and a stale-prize sweep. 31 checks total, re-runnable. |
+
+### D-118 · Prize images, and the square that wasn't
+
+**Owner request, 19 Aug 2026.** The last item from the "built but no UI" audit.
+
+`PrizeItem.imagePath` has existed since Phase 0 and `PrizeDTO` carried it all
+the way to the redemption screen. Nothing ever set it, and §8.6 — *"grid of
+prize cards: image, name, ticket cost, In stock: N"* — rendered text only.
+§7.4's route table also lists "image" as a `PATCH /api/prizes/:id` field, which
+`updatePrizeSchema` never accepted.
+
+**Two owner decisions, both taken before building:**
+
+**1. Images are served through an authenticated route, not as static files.**
+`GET /api/prizes/:id/image`, `requireSettledActor`. A prize photo genuinely is
+not sensitive — it is a picture of a teddy bear, unlike a receipt naming a
+supplier and an amount, or an attendance photo of a person. The reason to keep
+one rule anyway is that "is this image the public kind?" becomes a judgement
+someone gets wrong later, and a static path is a permanently guessable URL into
+the data directory. Reading is open to **any signed-in role** because staff
+need images to redeem; writing is manager-or-owner like every other catalog
+mutation.
+
+**2. Full scope — upload AND render on the cards.** Storing an image that staff
+never see would have delivered none of §8.6's actual benefit, which is
+recognising a prize by sight rather than by name.
+
+**A prize image is catalog data, not evidence — and that drives every
+difference from the two existing image services.** `attendance-photo.ts`
+watermarks and refuses gallery uploads because it is evidence about a person
+being somewhere at a time. `receipts.ts` drops the watermark but keeps the
+storage shape because it is evidence of a purchase. This is neither, so:
+
+| | Attendance | Receipt | Prize |
+|---|---|---|---|
+| Watermark | yes | no | no |
+| EXIF-freshness check | yes | no | **no** — a supplier's product shot is a perfectly good prize image |
+| Replaceable | no (a record) | no | **yes** — a corrigible attribute |
+| Output | 1080 wide | 1600 wide | **600 square** |
+
+What it keeps from both: same data root, same `YYYY/MM/DD/<uuid>` layout, same
+traversal-safe resolver, same re-encode through sharp (which strips EXIF — a
+phone photo of a prize carries the GPS of the shop), files on disk never bytes
+in Postgres.
+
+**The superseded file is deleted on replace.** This is why prize images need no
+retention job the way attendance photos do (`photo-retention.ts`): nothing
+accumulates. Deletion happens **after** the row is updated, so a failed unlink
+can only orphan a file — it can never leave the row pointing at a file that is
+already gone, which is the failure the redemption grid would actually notice.
+
+**A real defect the tests caught, worth recording in full.** The obvious
+implementation of a square thumbnail is:
+
+```ts
+.resize({ width: 600, height: 600, fit: "cover", withoutEnlargement: true })
+```
+
+That does **not** produce a square. `withoutEnlargement` clamps each axis to the
+source independently, so a 1600x400 source came out **600x400** and 300x900 came
+out **300x600**. §8.6 renders a card grid, and a mixed-aspect grid reads as
+broken rather than as "this photo is a funny shape". The fix is to centre-crop
+to a square first (`.extract()` on the shorter side, after `.rotate()` so a
+portrait source is measured upright) and only then resize. Pinned by a
+table-driven test over five source shapes including 50x4000, and confirmed to
+go red when reverted to the one-liner.
+
+This is the case for writing the test that asserts the *property* you actually
+depend on — "width equals height" — rather than the one you assume follows from
+the flag names. Nothing about `fit: "cover"` suggests it yields a non-square.
+
+**Verified in a real browser as a MANAGER**, uploading a deliberately 1200x400
+image: the thumbnail rendered square, the stored file measured **400x400 with
+EXIF stripped**, the redemption card showed the image beside name/cost/stock,
+Remove restored the placeholder, and the data directory was left with **zero**
+files. No console errors.
+
+**Backups already cover this** — `backup.ts` tars the whole `DATA_ROOT` rather
+than a list of known subdirectories, so prize images are archived without
+changing that file. Its two comments naming only "attendance photos and
+receipts" were updated so the next reader is not misled.
+
+**Tests:** 24 new in `prize-image.test.ts` (381 in the suite), with four
+mutations confirmed caught: the non-square regression, skipping the
+delete-on-replace, keeping EXIF, and disabling the traversal guard.
+`verify-prizes.sh` gains a section 4c (13 checks) that uploads a real 900x300
+JPEG through the API and asserts the served bytes are a 300x300 JPEG, that a
+replace deletes the old file from disk, and that removing twice is a no-op
+rather than a 404.
+
+### What was built
+
+| File | Role |
+|---|---|
+| `src/server/services/prize-image.ts` | **New.** Store, resolve and delete. Centre-crop to square, EXIF stripped, 600px. |
+| `src/app/api/prizes/[id]/image/route.ts` | **New.** GET (any session) · POST (manager/owner) · DELETE. |
+| `src/server/services/prizes.ts` | `setPrizeImage`, `clearPrizeImage`, `getPrizeImagePath`. Deletes the superseded file; audits `PRIZE_IMAGE_SET` / `PRIZE_IMAGE_CLEAR`. |
+| `src/app/(app)/settings/prizes/prize-admin.tsx` | `ImageField` (add/replace/remove) and `PrizeThumb`. Uploads on choose, with a cache-buster so a replacement shows immediately. |
+| `src/app/(app)/customers/[id]/redeem/*` | §8.6's card image; `RedeemablePrize` gains `imagePath`. |
+| `src/app/(app)/stock/stock-tabs.tsx` | Thumbnails on the Catalog rows. |
+| `src/server/services/backup.ts` | Comments only — corrected to name prize images. |
+
+### D-119 · Manual stock adjustment, and two tests that passed for the wrong reason
+
+**Owner request, 19 Aug 2026.** The last genuinely orphaned endpoint.
+
+`POST /api/stock/adjust` shipped in Phase 4 with a service, a permission check,
+an idempotency wrapper — and **no caller and no test**. Until now the only way
+stock could move outside a sale, a transfer or a delivery was a full opname. An
+opname is a whole-shop physical count; it is the wrong instrument for "a
+customer dropped one teddy bear", which is exactly the case §4.16's reason
+field is written for.
+
+**Built:** an **Adjust** column on the Stock → On hand table, owner and
+manager, matching the route's `requireManagerOrOwner`.
+
+**Two steps, deliberately.** The first picks a direction and a quantity; the
+second is the shared `ReasonDialog`, where the change is actually confirmed.
+Rolling both into one row-level form would put the reason field beside a
+quantity box and make it look optional — and §4.16's whole value is that an
+owner reading a movement back months later can tell breakage from theft from a
+counting error. The dialog also carries the consequence in words: a removal
+says the units come from the oldest batches first *and* what the count becomes;
+an addition says the found stock has no cost yet and will sit in the uncosted
+queue until priced.
+
+**The direction is a choice, not a sign.** Typing `-3` is easy to get wrong on
+a tablet and impossible to notice afterwards. Two labelled buttons carry the
+meaning the number alone does not, and the negative is built by the client.
+
+**The Low stock tab deliberately does NOT get the control.** It renders the
+same rows through the same component, but it is a read-only view of a warning;
+`shopId` is optional on `OnHandTable` and the column only appears when it is
+passed.
+
+**The service had NO tests, and it writes stock.** That is squarely inside
+CLAUDE.md's "money, stock and balance code needs a test before the phase
+closes", so `stock-adjust.test.ts` adds 18 — FIFO order, splitting across
+batches, `unitCogsAtConsumption`, the negative-stock guard, the adjustment
+batch's `needsCosting` flag, the reason on both paths, and shop scoping.
+
+**Two of those tests initially passed for the wrong reason. Both are worth
+recording, because the suite was green either way:**
+
+| Test | Why it was worthless | Fix |
+|---|---|---|
+| "stops a MANAGER adjusting a branch they do not manage" | The foreign shop had **no stock**, so with `assertShopAccess` deleted the call still threw — `InsufficientStockError`, which *is* an `AppError`, so `rejects.toBeInstanceOf(AppError)` passed. A permission test a stock error can satisfy proves nothing. | Stock the foreign shop, assert the **`FORBIDDEN` code**, and test **both** directions — the positive branch never touches FIFO, so it is the cleaner proof (D-34's rule again). |
+| "writes a MANUAL_ADJUST movement carrying the reason" | It used a negative delta. A negative adjustment's movement is written by `consumeFifo`; the **positive** branch writes its own inline. Deleting `reason:` from the inline write left the suite green. | A second test on the positive path. The two deltas write the movement from different places, so one says nothing about the other. |
+
+Both were found by mutation testing, not by review — and the first mutation
+attempt was itself wrong: `assertShopAccess(actor, input.shopId);` appears five
+times in `stock.ts`, so a naive single replace patched `receiveBatch` instead of
+`adjustStock` and reported a false "caught". **Verify the mutation landed in the
+function under test before trusting a red or a green.**
+
+Five mutations confirmed caught after the fixes: reversed FIFO order, found
+stock not flagged for costing, `assertShopAccess` removed from `adjustStock`,
+the reason dropped from the positive-path movement, and the reason dropped from
+`consumeFifo`.
+
+**Verified in a real browser as a MANAGER**: the column renders, entering 99
+against 10 on hand shows "Only 10 in stock." and keeps Continue disabled,
+removing 3 fires the reason dialog and lands 10 → 7, and the database shows one
+`MANUAL_ADJUST` movement with the typed reason plus a `StockConsumption` row at
+the real 2500 cost. Adding 4 took it to 11 and created an `isAdjustment` +
+`needsCosting` batch carrying the reason as its note. No console errors.
+
+`verify-prizes.sh` gains a section 4d (14 checks) covering the mandatory reason,
+the zero delta, the STAFF 403, both directions, the negative-stock refusal, the
+uncosted flag, idempotent double-submit, and the reason on every movement.
+
+**Two more of the script's own expectations were wrong, and the app was right
+both times** — the same lesson as D-116's 400-vs-422. Insufficient stock returns
+**409**, not 422, because `InsufficientStockError` is a `CONFLICT`: the stock was
+valid when the form was drawn and is not any more, which is a different thing
+from a malformed request, and the distinction is what lets a UI say "someone
+else just took some" rather than "your input is wrong". And the movement count
+is **three**, not four, because the fourth call reused its `Idempotency-Key` —
+which is the idempotency check passing.
+
+### What was built
+
+| File | Role |
+|---|---|
+| `src/app/(app)/stock/stock-tabs.tsx` | `AdjustStockButton` + an Adjust column on On hand. `OnHandTable` takes an optional `shopId`; Low stock omits it. |
+| `src/server/services/__tests__/stock-adjust.test.ts` | **New.** 18 tests — the first coverage `adjustStock` has had. |
+| `scripts/verify-prizes.sh` | +14 checks (§4d). 58 checks total, re-runnable. |
+
+### D-120 · Settings → Current shop and Settings → Shops merged into one tab
+
+**Owner request, 19 Aug 2026.** Two menu items did one job split across a URL
+boundary: `/settings/shop` (singular) was the day-start work-session picker
+every role got, and `/settings/shops` (plural) was OWNER-only branch
+administration — same subject, different screens, and an owner had to hunt for
+branch admin in a place other than the picker they use every day.
+
+**Merged into one screen at `/settings/shops`, split by role inside the page
+rather than by URL.** Every role gets the "Current shop" picker
+(`ChangeShopForm`, unchanged) at the top. OWNER additionally gets a "Your
+branches" section below it — the existing `ShopAdmin` component (create,
+deactivate, presets/shifts/staff links), trimmed of its own page-level `<h1>`
+since it is now a subsection. STAFF and MANAGER see only the picker, exactly
+as before — no read-only branch list was added for them, to avoid dumping
+owner-facing operational detail (presets/shifts/staff counts, the empty-branch
+warnings) on roles that cannot act on any of it.
+
+**`/settings/shop` (singular) is deleted outright, not redirected.** Its only
+two references — the Settings index row and the topbar shop-name link in
+`app-shell.tsx` — were both updated to point at `/settings/shops`. Grepped for
+any other reference (including `scripts/`, `docs/`) before deleting; none
+exist outside historical BUILD-LOG prose, which is left as-is since it
+describes what was true at the time.
+
+The Settings index collapses from two rows to one ("Shops"), whose description
+is now role-aware: the owner sees "Pick today's shop, add a branch, or change
+its options and late grace"; everyone else sees the same "Working at `<shop>`
+today" / "Choose today's shop" line the old "Current shop" row showed.
+
+Verified in the browser as MANAGER: `/settings/shops` shows only the picker,
+no "Current shop" subheading (that heading is owner-only, since it is pointless
+noise when it is the only section), no branch-admin section. The Settings
+index shows one "Shops" row with the working-shop description. Not verified
+live as OWNER — the seeded owner password had rotated past what `.env`
+records and re-deriving it was out of scope for a UI change; the admin
+section itself is untouched code (`ShopAdmin`, `CreateShopCard`,
+`ShopListItem` all moved without behavioural edits beyond the header trim), so
+this rests on code review rather than a live screenshot. Worth a manual check
+next time the owner is in the app.
+
+### What was built
+
+| File | Role |
+|---|---|
+| `src/app/(app)/settings/shops/page.tsx` | Rewritten. Renders the picker for every role, plus `ShopAdmin` for OWNER only. |
+| `src/app/(app)/settings/shops/change-shop-form.tsx` | Moved from `settings/shop/`. No logic changes, doc comment updated. |
+| `src/app/(app)/settings/shops/shop-admin.tsx` | Trimmed its own `<h1>`/page description now that it renders as a subsection. |
+| `src/app/(app)/settings/page.tsx` | Two rows ("Current shop", "Shops") collapsed into one role-aware "Shops" row. |
+| `src/components/app-shell.tsx` | Topbar shop-name link repointed from `/settings/shop` to `/settings/shops`. |
+| `src/app/(app)/settings/shop/` | **Deleted.** |
+
+### D-121 · OWNER never needs a reason to change shop, even with prior records
+
+**Owner request, 19 Aug 2026, immediately after D-120.** §4.7's rule —
+"requires a reason if any records were already created under the old shop
+that day" — is written role-agnostic in the PRD, but the reason it exists is
+to explain **staff covering for each other**: a manager or a staff member who
+recorded a sale at Branch 1 and then jumps to Branch 2 needs to say why, so a
+later reader of the audit log can tell a legitimate shift swap from something
+worth asking about.
+
+**That is not what it means when the owner does it.** The owner moves between
+branches to *monitor* them — checking Branch 2's till while Branch 1 shows
+work recorded under their own account from earlier — not to work a shift
+under a false shop. Making the owner type a reason every time is friction with
+no matching liability: nobody needs to be told why the owner is looking at a
+different branch.
+
+**`changeWorkSession` (`src/server/services/work-session.ts`) now short-circuits
+`priorRecords` to `0` for `actor.role === "OWNER"`** before the reason check,
+rather than skipping the check itself — the audit row is still written on
+every change, `reason: null` when none is given. The distinction matters:
+the record of *that the owner moved* is preserved, only the mandatory
+*explanation* is waived. Every other role's behavior is byte-for-byte
+unchanged — the branch that computed `priorRecords` for non-owners was not
+touched, only wrapped in the role check.
+
+No client change was needed: `ChangeShopForm` (`src/app/(app)/settings/shops/
+change-shop-form.tsx`) only shows the reason box when the server's response
+carries `details.recordsAtOldShop`, which the server now never sends for an
+owner.
+
+**New test file** `src/server/services/__tests__/work-session.test.ts` — this
+was previously untested (`changeWorkSession` shipped in Phase 1 with no
+service-level test, only the API route implied by §7.1). Four tests: a
+MANAGER with a prior sale today is blocked without a reason and unblocked with
+one; a MANAGER with no prior records is never asked; and — the one that
+matters for this decision — an OWNER with a prior sale today changes shop with
+**no** `reason` in the input and the resulting audit row still gets written
+with `reason: null`. Verified this last test actually exercises the new
+branch by reverting the `actor.role === "OWNER"` guard and confirming it fails
+(it does, with the same `VALIDATION_FAILED` a non-owner would get) before
+restoring the fix — CLAUDE.md's "a test you have not seen fail proves
+nothing," same discipline as D-119.
+
+Not re-verified live in the browser: the dev database's MANAGER test account
+(`manager1`) is currently assigned to only one shop (`BR-1`), so there is no
+second branch to switch to and manually trigger the reason prompt against.
+The automated test above exercises the same code path against real database
+rows, including the audit-log write, so this rests on that rather than a
+screenshot. Confirmed there is no OWNER-specific UI to check — the picker
+component (`ChangeShopForm`) is unchanged and role-agnostic; it just never
+receives a `reasonRequired` signal from the server for this role now.
+
+---
+
+### D-122 · Role becomes per-shop — MANAGER/STAFF move to UserShop, OWNER stays a global flag
+
+**Owner request, 19 Aug 2026.** Not a numbered PRD phase — every phase
+through 10 is already shipped (see Phase status above). This is a
+**retroactive, cross-cutting schema and permission-model change**, triggered
+by rebuilding Settings → Users as Settings → Employees against a reference
+UI: a per-shop checklist where each shop row carries its own role dropdown
+("Staff at Shop A, Manager at Shop B, same account"), plus a search bar over
+the shop list.
+
+**This reverses PRD §3's original text — "Role is a property of the user
+account; a user has exactly one role" — deliberately, not by oversight.**
+The PRD was updated in the same change (§3, §3.4, §7.5, §6, §7.9) rather than
+left to drift, per CLAUDE.md's own precedence rule that this file wins where
+the two disagree; the point of updating the PRD too is that a future reader
+searching the PRD alone should not find the stale claim. **If you land here
+because something about role/cost logic looks wrong: read this entry before
+"fixing" it.** The screenshot-driven interaction model was confirmed with the
+owner across two rounds before any code was touched — first that adopting it
+means a real architectural change (~40 call sites), not a UI-only refresh;
+second, that it means reopening the PRD's "one role" decision on purpose.
+
+#### Why role could not stay global
+
+`role` (`OWNER | MANAGER | STAFF`) lived as a single required column on
+`User`, fed into Better Auth via `additionalFields`. `UserShop` was a bare
+`{userId, shopId}` membership join with no role of its own. Under that shape
+there is no way to represent "MANAGER at Branch 1, STAFF at Branch 2" on one
+account — the screenshot's whole interaction model is impossible without
+moving role off `User`.
+
+#### Schema shape
+
+`UserShop` gained the role:
+
+```prisma
+model UserShop {
+  id           String  @id @default(cuid())
+  userId       String
+  shopId       String
+  role         Role                    // MANAGER | STAFF only — DB CHECK below
+  canEnterCost Boolean @default(false) // meaningful only when role = MANAGER
+  user         User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shop         Shop    @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, shopId])
+  @@index([shopId])
+  @@index([userId])   // new — every per-shop-role read fans out from userId
+}
+```
+
+A hand-written `CHECK ("role" <> 'OWNER')` constraint (Prisma cannot express
+a partial-enum constraint declaratively) makes "OWNER never gets a UserShop
+row" a database-enforced invariant, not just an application convention —
+matching what `setShopAssignment` already refused before this change.
+
+`User` lost `role Role` and `canEnterCost Boolean`, gained `isOwner Boolean
+@default(false)`. **`isOwner: boolean` was chosen over a nullable `role:
+Role?`** specifically so a stray `.role` reference on a `User`/`Actor` object
+is a compile error, not a silently-`null` read — a boolean has no third state
+to misuse. `@@index([role, banned])` became `@@index([isOwner, banned])`.
+
+**Two migrations, not one**, both committed (`prisma/migrations/`, never
+`db push`, per CLAUDE.md rule 8):
+
+1. `20260819125417_per_shop_roles` — additive only. Added `UserShop.role`/
+   `canEnterCost` (nullable, backfilled, then `SET NOT NULL`), added
+   `User.isOwner` (backfilled from `role = 'OWNER'`), added the CHECK
+   constraint and the new indexes. Verified before writing it that zero
+   existing `UserShop` rows belonged to an OWNER (the pre-existing guard in
+   `setShopAssignment` already prevented that) — the migration deletes any
+   found regardless, defensively. At the end of this step the app still ran
+   unmodified against the old columns; nothing broke yet. Backfill was
+   verified by hand against the dev database's 4 seed accounts (owner,
+   manager1, staff1, budak) — every `UserShop` row's new `role`/
+   `canEnterCost` exactly matched the user it belonged to, and `isOwner` was
+   `true` only for the seed owner.
+2. `20260819132655_drop_legacy_user_role` — dropped `User.role`,
+   `User.canEnterCost`, and the old `@@index([role, banned])`, only after
+   every call site was confirmed to read `UserShop`/`isOwner` instead (full
+   green typecheck/lint/test pass first). This two-step split is new to this
+   codebase's migration practice — worth naming explicitly since every prior
+   migration here was a single step: it exists so a destructive column drop
+   is never in the same commit as the many call-site rewrites depending on
+   it, which would make a partial rollout (or a bisect) far harder to reason
+   about.
+
+Both migrations were written by hand rather than via `prisma migrate dev`
+directly — that command refuses to run non-interactively when it detects a
+destructive change (a real safety feature, not a bug), so the generated
+`migration.sql` was reviewed and edited before being applied via
+`prisma migrate deploy`, which does not prompt.
+
+#### Actor shape
+
+```ts
+export interface ShopRole {
+  role: "MANAGER" | "STAFF";
+  canEnterCost: boolean;
+}
+
+export interface Actor {
+  // ...
+  isOwner: boolean;                    // replaces role: Role
+  shopRoles: Map<string, ShopRole>;    // replaces assignedShopIds + canEnterCost
+  // ...
+}
+```
+
+`assignedShopIds` is no longer a stored field — it is a derived helper,
+`assignedShopIds(actor) => [...actor.shopRoles.keys()]`, so the many call
+sites that only ever cared about shop *membership*, not role, needed a
+one-line rewrite instead of a structural one. `getActor()`
+(`src/server/auth/context.ts`) now fetches `{shopId, role, canEnterCost}`
+per `UserShop` row and builds the map; `isOwner` comes straight off
+`user.isOwner`.
+
+**Rejected alternative**: deriving a single `role` field from "the role at
+`defaultShopId`" for backward compatibility with old call sites. Rejected
+because it reintroduces exactly the bug this change removes — a
+MANAGER-at-A/STAFF-at-B account's apparent role would depend on an unrelated
+field (which shop happens to be their default), and new code would be too
+tempted to read that shortcut instead of the real shop-scoped check.
+
+#### Guards
+
+`requireOwner()`/`requireOwnerPage()` are nearly unchanged, now checking
+`actor.isOwner`. `requireRole(...roles)`/`requireManagerOrOwner()` (formerly
+unscoped — "OWNER or MANAGER, anywhere") were replaced with
+`requireShopRole(shopId, ...roles)` (`src/server/auth/guards.ts`,
+`page-guard.ts`'s `requireShopRolePage`), which resolves the actor's role
+*at that specific shop*. A narrower, explicitly-documented-as-weak
+`requireManagerOrOwner()`/`requireManagerOrOwnerPage()` survives for the
+handful of genuinely shop-unscoped screens (reports index, dashboard
+dispatch) that only need "is this person privileged at all" before a later,
+real per-shop check narrows the data — every remaining use is commented to
+say so, since pairing it with a real check downstream is easy to forget.
+
+#### The cost-visibility gate — the highest-stakes rewrite
+
+```ts
+export function canSeeCostForShop(actor: Actor, shopId: string): boolean {
+  if (actor.isOwner) return true;
+  const sr = actor.shopRoles.get(shopId);
+  return sr?.role === "MANAGER" && sr.canEnterCost === true;
+}
+```
+
+Before this change, `canEnterCost` was a single flag that happened to
+compose correctly with a MANAGER's shop *membership* list — it read as
+per-shop without actually being stored that way, since a manager only ever
+had one role and the flag applied everywhere they were assigned. After this
+change `canEnterCost` is genuinely stored per `UserShop` row, so it can
+finally vary: a manager can hold Purchasing at Branch 1 and not at Branch 2.
+`reports.ts`'s existing `assertCanSeeCost`/`canSeeCostForScope` (`.every()`
+over every shop in a resolved scope) needed **no logic change** — it already
+composed correctly on top of `canSeeCostForShop`, which is exactly why it
+was the template this rewrite generalized from. **Fixed as a side-effect of
+this pass**: `stock.ts`'s `listUncostedBatches` used the bare, whole-actor
+`canSeeCost(actor)` on a shopId-filterable queue when called with no
+`shopId` — under the old model this was merely imprecise (a Purchasing
+manager's full membership list, not their cost-granted subset), but under
+the new per-shop model it would have been a real leak (cost visible at a
+shop the manager holds no Purchasing grant for). Now filters to
+`shopRoles.entries().filter(role === MANAGER && canEnterCost)`.
+
+**Proven, not assumed** (CLAUDE.md's "a test you have not seen fail proves
+nothing," §15 rule 3): `src/server/services/__tests__/employees.test.ts`'s
+`per-shop role isolation (D-122)` group asserts a MANAGER with Purchasing at
+shop A and plain STAFF at shop B gets `canSeeCostForShop(actor, shopA) ===
+true` and `canSeeCostForShop(actor, shopB) === false`. Broken on purpose by
+temporarily making `canSeeCostForShop` fall through to the whole-actor
+`canSeeCost(actor)` (i.e. reintroducing the shape of the old bug) —
+confirmed the test failed with `expected false, got true` on the `shopB`
+assertion — then reverted. The suite (`npm test`, 405 tests / 24 files) was
+green both before the deliberate break and after the revert.
+
+#### Call-site sweep — the shape of the ~40-file change
+
+Every bare `actor.role === "OWNER"` / `!== "OWNER"` across `src/server` and
+`src/app` fell into one of a few repeating shapes, mechanically rewritten by
+pattern rather than file-by-file:
+
+- **Whole-system, OWNER-only** (`backup.ts`, `shops.ts`, `settings.ts`,
+  `customers.ts`, `audit-log.ts`, `ticket-reports.ts`, `reports-export.ts`,
+  ~15 sites): `!actor.isOwner`. No behavior change.
+- **Filter-shape** ("OWNER sees all, else scope to shops") in `expenses.ts`,
+  `redemptions.ts`, `stock.ts`, `transfers.ts`: the shop-scoping half became
+  `actor.isOwner ? {} : { shopId: { in: assignedShopIds(actor) } }` —
+  mechanical, since shop *visibility* was always membership-based, never
+  role-differentiated. But the outright-forbid half of several of these
+  (`expenses.ts`'s dozen `STAFF` checks) was **not** mechanical: a bare
+  `actor.role === "STAFF"` would have wrongly blocked a STAFF-at-A/
+  MANAGER-at-B account acting at shop B, so each became a real per-shop
+  check (`actor.shopRoles.get(shopId)?.role !== "MANAGER"`). This is the one
+  sub-category where "mechanical" undersold the actual diff.
+- **True per-shop fusions** (small, highest-value): `attendance.ts`'s
+  `assertCanReadAttendance` already combined role with a bound `shopId` and
+  became a single map lookup; `sales.ts`'s `assertVoidable` collapsed an
+  OWNER-bypass-then-separate-`hasShopAccess`-call into one `roleAtShop`
+  check; `work-session.ts`, `api/marbles/adjust`, `api/tickets/adjust` each
+  gained a real per-shop check where they previously ignored an
+  already-bound `shopId`.
+- **`writeAudit`/`AuditLog.role`** (`src/server/audit.ts`) — its own pass,
+  not folded into the above (44 call sites, verified by grep). `writeAudit`
+  now resolves the role to snapshot from whichever shop the action already
+  concerns (`input.shopId ?? actor.workSession?.shopId`), falling back to
+  `"OWNER"`-or-`null` when no shop is in scope — no call site needed a
+  signature change, since the resolution happens inside `writeAudit` itself
+  from data it already receives. `balances.ts`'s `recordDrift` (a second,
+  independent audit-log writer for reconciliation) needed its own fix: its
+  `ReconciliationPrincipal` union type (`Actor | {kind: "SYSTEM"}`) used
+  `"role" in principal` as a discriminant, which stopped working once
+  `Actor` no longer has a `role` key — switched to `"isOwner" in principal`.
+- **`reports.ts`'s `resolveScope()`** — the single function nearly every
+  report calls — done last among services, once every consumer's
+  expectations were settled. Its OWNER branch became `actor.isOwner`; its
+  scoped branch became `assignedShopIds(actor)`. Shop visibility itself did
+  not change, only where the id list comes from.
+- **Display-only** (report page one-liners, `dashboard-view.tsx` reading a
+  service-returned DTO field rather than `actor.role` directly,
+  `settings/audit-log/page.tsx` reading the separate, unaffected
+  `AuditLog.role` snapshot column): mechanical swaps or no change needed.
+
+`app-shell.tsx`'s bottom nav (three role-keyed tab sets) is per-account, not
+per-shop, and role is now per-shop — it now picks OWNER/MANAGER/STAFF tabs by
+`isOwner` / "is MANAGER at at least one shop" / else, a deliberate
+approximation since the nav is UI convenience only and every destination
+re-checks the real per-shop role server-side regardless.
+
+#### Settings → Employees
+
+`services/users.ts` → `services/employees.ts` (full rewrite, not a rename —
+`toUserDTO` → `toEmployeeDTO` returns `shopRoles: {shopId, shopName, role,
+canEnterCost}[]` instead of one flat `role`; `createUserSchema`/
+`updateUserSchema` → `createEmployeeSchema`/`updateEmployeeSchema` accept a
+`shopRoles` array with per-entry `role`/`canEnterCost` instead of a single
+`role` + flat `canEnterCost`). `/api/users*` → `/api/employees*`.
+`/settings/users` → `/settings/employees`, with a redirect stub left at the
+old path for anyone with it bookmarked (`settings/users/page.tsx` now just
+`redirect("/settings/employees")`).
+
+**Wholesale-replace vs. single-pair — kept both, matching the split the
+codebase already made for this exact reason (D-107 vs D-109).** The
+Employees screen's edit form keeps `updateUser`'s wholesale-replace
+semantics for `shopRoles` — the whole point of that screen is "here is the
+complete desired shop-role map, save it," matching the screenshot's
+checklist interaction, and D-109's original rationale gets *stronger* here:
+the form must render every shop the employee currently holds **with its
+current role pre-selected**, not merely checked, so a save cannot silently
+downgrade a role nobody was looking at. The single-shop staff screen
+(`settings/shops/[id]/staff`, D-107's `setShopAssignment`) keeps its narrow
+one-(user,shop)-at-a-time semantics and gained a role parameter —
+`setShopAssignment(actor, shopId, userId, assigned, {role?, canEnterCost?})`
+— still no read-modify-write race, now able to change the role at that one
+shop without touching any other. Both paths write through the same
+underlying `UserShop` upsert/delete.
+
+**UI**: `npx shadcn add checkbox select` — both were genuinely absent from
+`src/components/ui/` before this change (only button, card, dialog, field,
+input, label, separator, sonner existed), confirmed by listing the directory
+before running the command, not assumed. The new "Shop access · set a role
+per shop" section (`employee-admin.tsx`'s `ShopAccessFields`) matches the
+reference screenshot's interaction — one row per shop, a checkbox, a role
+`Select` defaulting to Staff and disabled until checked, a Purchasing
+sub-checkbox that only appears when that row's role is Manager — styled with
+this app's existing shadcn components, not the screenshot's visual style. A
+search bar filters the shop checklist in both the create and edit forms, and
+a second search bar (over name/username/shop) was added to the existing-
+accounts list, matching the owner's explicit ask for the latter.
+
+#### Tests
+
+`users.test.ts` → `employees.test.ts` (renamed, not just edited — the
+fixture shape changed too much to be a patch). `makeUser(role, opts)` →
+`makeEmployee({isOwner} | {shopRoles: {shopId, role, canEnterCost}[]})`. All
+5 pre-existing groups (self-lockout, shops/permissions editing, deactivation,
+password reset, permissions/immutability) got their fixtures and assertions
+updated to the new shape with no behavior change. New: a
+`per-shop role isolation (D-122)` group (the cost-gate proof above, plus a
+test that `requireShopRole` grants/refuses correctly for a MANAGER-at-B/
+STAFF-at-A account depending on which shop is asked about, plus a test that
+a single account can simultaneously read `MANAGER` at one shop and `STAFF`
+at another from `actor.shopRoles`).
+
+A shared `makeActor`/`makeActorWithUser` pair was added to
+`__tests__/helpers.ts` during this change — every other test file
+(`attendance`, `stock-adjust`, `prizes`, `prize-image`, `shifts`,
+`transfers`, `work-session`, `expenses`, `reports`, `shops`, plus
+`opname.test.ts` and `redemption.test.ts`, found only by running the full
+suite since their hand-built `Actor` casts hid the missing `shopRoles` field
+from `tsc`) had its own copy of near-identical actor-building boilerplate
+before this change; several were migrated onto the shared helper as part of
+this sweep rather than patched in place, since fixing 11 near-duplicate
+`role`/`assignedShopIds` constructions independently would have been the
+same bug fixed 11 different, slightly-inconsistent ways. **Typecheck alone
+did not catch every fixture** — `opname.test.ts` and `redemption.test.ts`
+both used `as unknown as Actor` casts that silenced the compiler while
+leaving `shopRoles` genuinely `undefined` at runtime; both surfaced as
+`TypeError: Cannot read properties of undefined` only when `npm test`
+actually ran. Lesson for whoever touches `Actor`'s shape again: `tsc` is not
+sufficient proof that every fixture was found — run the real suite.
+
+#### Verification run, in order
+
+1. `npm run typecheck` — clean (zero errors) after the full sweep.
+2. `npm run lint` — clean.
+3. `npm test` — 405 tests / 24 files, all green, including the deliberate
+   break-and-revert on the cost gate described above.
+4. `docker compose build` — succeeded (`exit 0`), confirming the Linux
+   case-sensitive build compiles every renamed route
+   (`/settings/employees`, `/api/employees*`) cleanly; Docker Desktop was
+   not running at the start of this session and was started for this check.
+5. PRD reconciled: §3 (role is per-shop for MANAGER/STAFF, global for
+   OWNER), §3.4 (table intro notes the per-shop reading), §7.5 (Purchasing
+   is per-shop, updated code sketch), §6 (`User`/`UserShop` model text
+   matches the schema exactly), §7.9 (route table renamed), §8.10 (Settings
+   index copy renamed to Employees).
+
+**Additionally smoke-tested against the real dev database, outside the test
+suite**: the mixed-role scenario specifically (one account MANAGER at one
+shop, STAFF at another) was created for real — a `User` row plus two
+`UserShop` rows with different roles — and `getActor()`'s exact query shape
+was run by hand against it, confirming `canSeeCostForShop` returns `true`
+for the Purchasing-granted shop and `false` for the other, before the test
+rows were deleted.
+
+**Not yet done, and listed in Known issues below**: a click-through in an
+actual rendered browser, as OWNER, a MANAGER-at-one-shop, a
+STAFF-at-another-shop, and the mixed-role account above. No browser
+automation was available in this session to drive one. CLAUDE.md's "load
+every new page as each role that can reach it" is not fully satisfied by the
+automated suite plus the database-level smoke test alone for a change this
+shaped — a rendered page can still surface something the tests do not, per
+D-34's precedent.
+
+---
+
+### D-123 · Exactly one owner, fixed at bootstrap — and a real bug this surfaced
+
+**Owner request, 20 Aug 2026.** Settings → Employees still let the owner tick
+an "Owner" checkbox on the create form, and toggle it on the edit form, to
+promote any employee to OWNER or demote the current one (guarded only by a
+"last active owner" check). The owner asked for that removed: **there is
+exactly one owner, created once when the system is set up, and nobody should
+be able to create or promote another from this screen.**
+
+Changed, in `src/server/services/employees.ts`:
+
+- `createEmployeeSchema` no longer accepts `isOwner` at all. `createEmployee`
+  always creates the account with `isOwner: false` — an employee created here
+  is always MANAGER/STAFF.
+- `updateEmployeeSchema` no longer accepts `isOwner`. `updateEmployee` can
+  edit an owner's name/phone/active-state, but can never change their role or
+  give anyone else the flag. The last-active-owner lockout guard stays — an
+  owner account can still be deactivated in principle, so the "don't leave
+  zero owners" check still has a job — but it now checks only `isActive`, not
+  a demotion path that no longer exists.
+
+Changed in `employee-admin.tsx`: the Owner checkbox is gone from both the
+create card and the edit form. An owner's edit panel instead shows a
+read-only "Owner … set up when the system was installed, and cannot be
+changed here" box; `shopRoles` is never sent for that account at all (not
+even `[]`) rather than being conditioned on a checkbox that no longer exists.
+
+**The one remaining way to become OWNER is the seed script's bootstrap check**
+(`prisma/seed.ts`: create the `SEED_OWNER_USERNAME` account only if no user
+with that username exists yet). See the deploy section below for what that
+means operationally.
+
+#### The bug this surfaced: the admin plugin cannot create ANY user, on ANY path
+
+Verifying this by actually clicking "Create account" in the browser — not
+just running the test suite, which never exercises the real Better Auth
+internal adapter (see the note on `makeEmployee` below) — `createEmployee`
+500'd. Separately, `npm run db:reset` had never been run in this session and
+failed too, at the seed script's owner-creation step, with the same
+underlying error: **`Unknown argument 'role'. Did you mean 'name'?`**
+
+Root cause: `adminPlugin()` (registered in `auth.ts`, kept only for its ban /
+password-reset endpoints per D-4 — `adminRoles` is deliberately never wired
+up) installs a `databaseHooks.user.create.before` hook that unconditionally
+stamps `role: options?.defaultRole ?? "user"` onto **every** user creation.
+This runs inside Better Auth's internal adapter itself, so it fires
+regardless of entry point — `auth.api.createUser` (what the seed script used)
+and `ctx.internalAdapter.createUser` directly (what `createEmployee` uses)
+are both affected equally. It is not specific to the admin-plugin HTTP
+surface that D-4 already reasoned about avoiding.
+
+Our `User` model has no `role` column — D-4's whole point was replacing it
+with `isOwner` — so Prisma rejected the insert every time. This is a
+framework/schema mismatch that predates this session and was never caught,
+because **no test ever calls the real internal adapter**: `employees.test.ts`
+builds its fixture users with a direct `prisma.user.create(...)` in
+`makeEmployee`, which bypasses Better Auth (and its hooks) entirely. The unit
+tests were never able to catch this class of bug — proving `createEmployee`
+and the seed's owner bootstrap actually work requires driving them for real,
+which is why this got caught here and not earlier.
+
+**Fix:** add `role String?` to `User` in `schema.prisma` — an inert column
+the admin plugin's hook can write to and that nothing in this codebase reads
+for permission decisions (`isOwner` and `UserShop.role` remain the only roles
+that matter; see the comment on the column itself). Migration
+`20260820051620_add_admin_plugin_role_column`. Also fixed `prisma/seed.ts` to
+create the owner via `ctx.internalAdapter.createUser` +
+`ctx.internalAdapter.linkAccount` — the same pattern `createEmployee` already
+used — instead of `auth.api.createUser`, for the same reason `employees.ts`
+avoids it (D-4): the admin-plugin HTTP endpoint is gated by `adminRoles`,
+which we deliberately never populate, so it would 403 in a real request even
+once the schema is fixed. `auth.api.createUser` only "worked" for the seed
+script because seed scripts call the auth object in-process, bypassing the
+route-level gate that would stop it in production.
+
+**Verified for real, not just by the suite:** reset the dev DB
+(`npm run db:reset --force` failed until this fix went in, then succeeded),
+logged in as the freshly-seeded owner through the browser, forced through the
+mandatory first-login password change, opened Settings → Employees, created
+a MANAGER/STAFF account through the actual create form (500'd before the
+fix, succeeded after — "Budi Santoso can now sign in as 'budi'"), opened both
+the owner's and the new employee's edit panels to confirm the checkbox is
+gone from both, then deleted the test account by hand. Also re-ran
+`npm run typecheck`, `npm run lint`, and the full `npm test` suite (405
+passing) after every change in this entry.
+
+**Not done:** `docker compose build` — Docker Desktop's daemon was not
+running on this machine during this session, so the Linux-vs-macOS
+case-sensitivity check CLAUDE.md asks for is still outstanding for this
+change. Start Docker and run it before this is trusted in a Linux/production
+build.
+
+#### What this means for going to production
+
+The owner asked, separately, how the first owner account gets created on a
+fresh deploy. There is no separate onboarding UI — it is the seed script:
+
+- `prisma/seed.ts` reads `SEED_OWNER_USERNAME` / `SEED_OWNER_PASSWORD` from
+  the environment (`requireEnv` — it throws rather than default to a guessable
+  password) and creates that one account, with `isOwner: true` and
+  `mustChangePassword: true`, **only if no user with that username already
+  exists**. Every other seed step (`Shop`, `AppSetting`, `SalePreset`,
+  `Shift`, `ExpenseCategory`) is an `upsert`, so the whole script is safe to
+  run on every container boot — `npm run db:seed` runs after every
+  `migrate deploy` (see the Docker entrypoint / `package.json`).
+- To stand up a fresh production instance: set `SEED_OWNER_USERNAME` and a
+  strong `SEED_OWNER_PASSWORD` (8+ chars, checked) in the production `.env`
+  before first boot, run migrations, let the seed step run once. Log in as
+  that account — Better Auth's `mustChangePassword` flag forces the
+  "Choose your password" screen on that very first login (verified above),
+  so the seeded password is never the one actually in use afterward.
+- There is deliberately no in-app "create the first owner" flow, and after
+  this session's change there is no way to mint a *second* owner from inside
+  the app at all — Settings → Employees can only create MANAGER/STAFF now.
+  If the owner ever needs a second owner account (e.g. handing off the
+  business, or a break-glass account), the only path is editing
+  `SEED_OWNER_USERNAME` to a new value and re-running the seed step by hand
+  against production — which is a deliberate, manual, audited action, not
+  a self-service one. Worth flagging to the owner explicitly if that need
+  ever comes up; nothing about that path exists yet as a script.
+
 ---
 
 ## Known issues / debts
 
 | Item | Detail |
 |---|---|
+| D-122's per-shop-role change not verified in a rendered browser page | Typecheck, lint, the full automated suite (405 tests), and `docker compose build` all pass — see D-122's "Verification run" for the full list. The mixed-role scenario itself (one account MANAGER at one shop, STAFF at another) was additionally smoke-tested against the real dev database outside the test suite: a real `User` + two `UserShop` rows were created, `getActor()`'s exact query shape was run by hand, and `canSeeCostForShop` was confirmed to return `true` for the Purchasing-granted shop and `false` for the other, then the rows were deleted. What is still missing is a **rendered page** — nobody has clicked through Settings → Employees, a cost-bearing report, and Purchasing stock entry in an actual browser as OWNER / MANAGER-at-one-shop / STAFF-at-another-shop / the mixed-role account, which CLAUDE.md and D-34's precedent call out as catching a class of bug a passing test suite does not. Blocked in this session on no browser-automation connection being available; also blocked on the same rotated seed-owner password as the row below for a manual login. Do this before the change is considered fully closed out. |
+| `verify-users.sh`/`verify-shops.sh` not updated for D-122's route rename | `/api/users*` moved to `/api/employees*` and gained a `shopRoles` request/response shape; these curl-based phase-verification scripts still reference the old paths/fields and were not in scope for this change (they test HTTP behavior the automated Vitest suite already covers at the service layer). Update them, or retire them in favor of `employees.test.ts`, before next relying on them. |
+| D-120's merged Settings → Shops, and D-121's owner reason exemption, not verified live as OWNER | The seeded owner password has rotated past `.env`'s `SEED_OWNER_PASSWORD` and re-deriving the current one has been out of scope for both of these small changes. Only the MANAGER view was checked in a real browser for D-120; D-121 rests entirely on `work-session.test.ts` against real database rows. Both are low-risk (D-120 moved unchanged code; D-121 is one role check with a mutation-tested proof), but the debt compounds — next time the owner is in the app, either confirm the current password and record it here (not in `.env`, which is seed-time only and already stale), or reset it via Settings → Users so future sessions can log in as owner without asking. |
 | `verify-phase4.sh` cannot run — wrong path | Line 11 is `cd /Users/ricky/redlight`, the project's former name. Same defect D-99 fixed in `verify-phase1.sh`; found while writing `verify-shops.sh` (D-102) and left alone as out of scope. It should resolve the repo from `$(dirname "$0")/..` like the others. Check the remaining `verify-phase*.sh` for the same line. |
+| ~~Per-shop prize stocking has no UI~~ | **Fixed — D-117.** Stock → Catalog, owner + manager. It was not merely wayfinding: with no writer for `ShopPrizeConfig`, received stock never appeared on On hand and the low-stock alert could never fire. |
+| Receive does not imply "carry it here" | `receiveBatch` writes no `ShopPrizeConfig`, so stock received for an item the branch does not carry lands in the database and shows nowhere until someone uses Stock → Catalog. D-117 made that operable but deliberately did not change it, because §4.9 makes the config row a real gate on what staff may redeem. Decide whether Receive should auto-carry (one line in `receiveBatch`, plus a §4.9 amendment) or whether the Receive form should warn when the chosen item is not carried here. |
+| ~~Prize image upload has no UI~~ | **Fixed — D-118.** Settings → Prizes, with thumbnails on the Catalog rows and §8.6's card images on the redemption grid. |
+| ~~`PATCH /api/prizes/:id` does not accept `imagePath`~~ | **Not a debt — §7.4 reconciled in D-118.** Images live on `GET/POST/DELETE /api/prizes/:id/image`, matching the receipt route so a flaky upload cannot take a text edit down with it. The PRD's route table now lists all three and notes the `PATCH` exclusion. |
+| Prize images have no upload-time dimension floor | A 50x50 photo is accepted and stored at 50x50, then rendered into a 56px card — fine — but a 12x12 one would look like a smudge. `withoutEnlargement` is deliberate (upscaling only blurs), so the fix would be a minimum-size check at upload with a clear message, not silent enlargement. Not urgent; no real product shot is that small. |
+| Manager's "Reports" tab lands on one report | `app-shell.tsx:44` points MANAGER at `/reports/tickets-awarded` rather than `/reports`, so the nav's Reports tab opens a single owner-only report instead of the index. Cosmetic, and noticed while auditing unreferenced routes (D-119). Check what a manager should actually land on — `/reports` itself is role-aware. |
 | Shop admin has no edit form | D-101 shipped create, plus deactivate/reopen from the list. Changing a shop's name, address, phone, grace or toggles after creation is supported by `PATCH /api/shops/:id` and covered by tests, but has **no UI** — only the activate toggle is wired. An owner who mistypes a name must call the API. |
 | ~~Presets have no owner screen~~ | **Fixed — D-103.** Settings → Shops → *shop* → Sale prices. Reported by the owner within a day of D-101 shipping. |
 | ~~Shifts have no owner screen~~ | **Fixed — D-105.** Settings → Shops → *shop* → Shifts, manager-or-owner. |

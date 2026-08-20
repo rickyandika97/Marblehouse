@@ -29,6 +29,7 @@ export function ExpenseFilters({
   categories,
   shops,
   businessDate,
+  isDefaultView = false,
 }: {
   from?: string;
   to?: string;
@@ -38,6 +39,12 @@ export function ExpenseFilters({
   shops: { id: string; name: string }[];
   /** The actor's business date — presets anchor here, never the wall clock. */
   businessDate: string;
+  /**
+   * True when nothing was actually in the URL and `from`/`to` are only the
+   * page's own "current month" default — "Clear" has nothing to clear yet,
+   * even though the resolved range matches the "This month" preset.
+   */
+  isDefaultView?: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -64,7 +71,7 @@ export function ExpenseFilters({
 
   const presets = buildPresets(businessDate);
   const active = presets.find((p) => p.from === from && p.to === to);
-  const hasAnyFilter = Boolean(from || to || categoryId);
+  const hasAnyFilter = !isDefaultView && Boolean(from || to || categoryId);
 
   return (
     <div className="space-y-3 rounded-xl border p-3">

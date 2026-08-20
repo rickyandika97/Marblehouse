@@ -65,12 +65,11 @@ async function fixture(opts: {
     userId: user.id,
     username: user.username ?? "test",
     displayName: user.displayName,
-    role: "STAFF",
+    isOwner: false,
+    shopRoles: new Map([[shop.id, { role: "STAFF", canEnterCost: false }]]),
     isActive: true,
     mustChangePassword: false,
-    canEnterCost: false,
     defaultShopId: null,
-    assignedShopIds: [shop.id],
     businessDate: new Date("2026-01-15T00:00:00.000Z"),
     workSession: {
       ...(workSession ?? {
@@ -347,7 +346,7 @@ describe("redemption void", () => {
       }, tx)
     );
 
-    const owner = { ...f.actor, role: "OWNER" } as typeof f.actor;
+    const owner = { ...f.actor, isOwner: true, shopRoles: new Map() } as typeof f.actor;
     await prisma.$transaction((tx) =>
       voidRedemption(owner, created.id, { reason: "wrong prize handed over" }, tx)
     );
@@ -405,7 +404,7 @@ describe("redemption void", () => {
       }, tx)
     );
 
-    const owner = { ...f.actor, role: "OWNER" } as typeof f.actor;
+    const owner = { ...f.actor, isOwner: true, shopRoles: new Map() } as typeof f.actor;
     await prisma.$transaction((tx) =>
       voidRedemption(owner, created.id, { reason: "first" }, tx)
     );

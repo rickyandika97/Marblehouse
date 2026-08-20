@@ -63,17 +63,24 @@ function actorFor(
   } = {}
 ): Actor {
   const shopIds = opts.shopIds ?? [shopA];
+  const shopRoles = new Map(
+    role === "OWNER"
+      ? []
+      : shopIds.map((id) => [
+          id,
+          { role, canEnterCost: opts.canEnterCost ?? false } as const,
+        ])
+  );
   return {
     sessionId: "test-session",
     userId: opts.userId ?? (role === "OWNER" ? ownerId : managerId),
     username: role.toLowerCase(),
     displayName: `Test ${role}`,
-    role,
+    isOwner: role === "OWNER",
+    shopRoles,
     isActive: true,
     mustChangePassword: false,
-    canEnterCost: opts.canEnterCost ?? false,
     defaultShopId: shopIds[0] ?? null,
-    assignedShopIds: shopIds,
     businessDate: DAY,
     workSession:
       opts.workShopId === null
@@ -110,7 +117,7 @@ beforeEach(async () => {
           name: `R8 ${n} ${tag}`,
           displayName: `R8 ${n} ${tag}`,
           username: `r8-${n}-${tag}`,
-          role,
+          isOwner: role === "OWNER",
         },
       })
     ).id;

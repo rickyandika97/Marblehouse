@@ -15,7 +15,8 @@ export interface ShopOption {
 }
 
 /**
- * Settings → Current shop (§4.7).
+ * Settings → Shops, current-shop picker section (§4.7). Every role gets this;
+ * only OWNER also gets the branch-administration section below it.
  *
  * Changing the shop does NOT move records already created today. When the
  * server reports that records exist under the old shop, it demands a reason —

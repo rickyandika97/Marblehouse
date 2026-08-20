@@ -94,15 +94,15 @@ export const auth = betterAuth({
         required: false,
         input: false,
       },
-      role: {
-        type: "string",
-        required: true,
-        defaultValue: "STAFF",
-        input: false,
-      },
-      canEnterCost: {
+      /**
+       * The one role that stays global (D-122): an owner sees and acts on
+       * everything, with no shop assignment needed. Role and Purchasing for
+       * everyone else live on UserShop, not here — a per-user scalar cannot
+       * represent "MANAGER at shop A, STAFF at shop B".
+       */
+      isOwner: {
         type: "boolean",
-        required: false,
+        required: true,
         defaultValue: false,
         input: false,
       },

@@ -13,27 +13,19 @@
 import { describe, expect, it } from "vitest";
 import { landingPathFor } from "../auth";
 
-describe("landingPathFor (§8.0)", () => {
+describe("landingPathFor (§8.0, D-122)", () => {
   it("sends an OWNER to the dashboard", () => {
-    expect(landingPathFor("OWNER")).toBe("/dashboard");
+    expect(landingPathFor(true)).toBe("/dashboard");
   });
 
-  it("sends a MANAGER to the sale screen", () => {
-    // A manager CAN reach /dashboard, but /sale is the working screen they
-    // want after signing in or clocking in.
-    expect(landingPathFor("MANAGER")).toBe("/sale");
-  });
-
-  it("NEVER sends a STAFF member to the dashboard", () => {
-    // The one that matters: /dashboard is `requireManagerOrOwnerPage`, so this
-    // returning "/dashboard" is a guaranteed 403 for staff.
-    expect(landingPathFor("STAFF")).toBe("/sale");
-    expect(landingPathFor("STAFF")).not.toBe("/dashboard");
-  });
-
-  it("defaults an unknown role to the safe screen, not the dashboard", () => {
-    // Defensive: a role that is not OWNER must never fall through to a page
-    // it cannot open.
-    expect(landingPathFor("SOMETHING_NEW")).toBe("/sale");
+  it("NEVER sends a non-owner to the dashboard", () => {
+    // The one that matters: /dashboard is `requireManagerOrOwnerPage`, so
+    // this returning "/dashboard" for a non-owner is a guaranteed 403 —
+    // whether they are STAFF everywhere, MANAGER somewhere, or a mix of
+    // both (D-122: role is per-shop, so "non-owner" is the only distinction
+    // this function can make; a MANAGER still lands on /sale, same as
+    // before, and can navigate to /dashboard themselves).
+    expect(landingPathFor(false)).toBe("/sale");
+    expect(landingPathFor(false)).not.toBe("/dashboard");
   });
 });

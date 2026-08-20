@@ -7,7 +7,7 @@ import { forbidden } from "@/server/errors";
 export async function POST(req: Request) {
   return handleRoute(async () => {
     const actor = await requireWorkSession();
-    if (actor.role === "STAFF") {
+    if (!actor.isOwner && actor.shopRoles.get(actor.workSession.shopId)?.role !== "MANAGER") {
       throw forbidden("Only a manager or the owner can correct a marble balance.");
     }
     const key = parseIdempotencyKey(req);

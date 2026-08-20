@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Loader2, Minus, Plus } from "lucide-react";
+import { Check, ImageIcon, Loader2, Minus, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -28,6 +28,11 @@ export interface RedeemablePrize {
   category: string | null;
   ticketCost: number;
   onHand: number;
+  /**
+   * Presence only — the bytes come from `/api/prizes/:id/image`, never from
+   * this payload. Null renders the placeholder rather than a broken image.
+   */
+  imagePath: string | null;
 }
 
 export function RedeemCart({
@@ -153,8 +158,8 @@ export function RedeemCart({
 
       {prizes.length === 0 ? (
         <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
-          This shop has no prizes stocked yet. A manager can add them from
-          Stock → Receive.
+          This shop has no prizes stocked yet. A manager adds items in
+          Settings → Prizes, then brings quantity in from Stock → Receive.
         </div>
       ) : (
         <ul className="grid gap-3 sm:grid-cols-2">
@@ -175,6 +180,31 @@ export function RedeemCart({
                 )}
               >
                 <div className="flex items-start gap-3">
+                  {/*
+                    §8.6's card image. Staff match the photo to the box on the
+                    shelf, so it sits first in the reading order. `aria-hidden`
+                    with an empty alt: the prize name is right beside it, and
+                    announcing it twice only slows a screen reader down.
+                  */}
+                  {prize.imagePath ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={`/api/prizes/${prize.id}/image`}
+                      alt=""
+                      aria-hidden
+                      width={56}
+                      height={56}
+                      className="size-14 shrink-0 rounded-lg border object-cover"
+                    />
+                  ) : (
+                    <span
+                      aria-hidden
+                      className="flex size-14 shrink-0 items-center justify-center rounded-lg border border-dashed text-muted-foreground"
+                    >
+                      <ImageIcon className="size-5" />
+                    </span>
+                  )}
+
                   <div className="min-w-0 flex-1">
                     <p className="font-semibold">{prize.name}</p>
                     <p className="mt-0.5 text-sm text-muted-foreground tabular-nums">

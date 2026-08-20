@@ -1,6 +1,6 @@
 import { handleRoute, parseJson, clientIp } from "@/server/http";
 import { requireOwner } from "@/server/auth/guards";
-import { resetPasswordSchema, resetUserPassword } from "@/server/services/users";
+import { resetPasswordSchema, resetEmployeePassword } from "@/server/services/employees";
 
 export async function POST(
   req: Request,
@@ -10,7 +10,7 @@ export async function POST(
     const actor = await requireOwner();
     const { id } = await params;
     const { newPassword } = await parseJson(req, resetPasswordSchema);
-    await resetUserPassword(actor, id, newPassword, { ipAddress: clientIp(req) });
+    await resetEmployeePassword(actor, id, newPassword, { ipAddress: clientIp(req) });
     return { ok: true };
   });
 }

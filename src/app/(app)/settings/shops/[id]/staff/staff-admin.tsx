@@ -7,16 +7,25 @@ import { Loader2, UserMinus, UserPlus } from "lucide-react";
 import { toast } from "sonner";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 export interface StaffRow {
   id: string;
   username: string | null;
   displayName: string;
-  role: "OWNER" | "MANAGER" | "STAFF";
+  isOwner: boolean;
   isActive: boolean;
-  canEnterCost: boolean;
   mustChangePassword: boolean;
-  shopIds: string[];
+  /** This employee's role, Purchasing flag and shop name at EVERY shop they
+   *  hold (D-122: role is per-shop). Use `.find(s => s.shopId === shopId)`
+   *  for "their role here". */
+  shopRoles: { shopId: string; role: "MANAGER" | "STAFF"; canEnterCost: boolean }[];
   /** True when this shop is their ONLY one — unassigning would strand them. */
   isOnlyShop: boolean;
 }
@@ -46,13 +55,17 @@ export function StaffAdmin({
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
 
-  async function setAssigned(user: StaffRow, assigned: boolean) {
+  async function setAssigned(
+    user: StaffRow,
+    assigned: boolean,
+    role?: "MANAGER" | "STAFF",
+  ) {
     setBusy(user.id);
     try {
       const res = await fetch(`/api/shops/${shopId}/staff`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: user.id, assigned }),
+        body: JSON.stringify({ userId: user.id, assigned, role }),
       });
       const body = await res.json().catch(() => null);
       if (!res.ok) {
@@ -70,6 +83,10 @@ export function StaffAdmin({
     } finally {
       setBusy(null);
     }
+  }
+
+  function roleHere(u: StaffRow): "MANAGER" | "STAFF" {
+    return u.shopRoles.find((s) => s.shopId === shopId)?.role ?? "STAFF";
   }
 
   return (
@@ -113,8 +130,9 @@ export function StaffAdmin({
                       )}
                     </span>
                     <span className="block truncate text-sm text-muted-foreground">
-                      {u.username} · {u.role.toLowerCase()}
-                      {u.canEnterCost && " · purchasing"}
+                      {u.username}
+                      {u.shopRoles.find((s) => s.shopId === shopId)?.canEnterCost &&
+                        " · purchasing"}
                     </span>
                     {/*
                       Say it before they tap, not after a failed toast. The
@@ -128,6 +146,21 @@ export function StaffAdmin({
                       </span>
                     )}
                   </span>
+                  <Select
+                    value={roleHere(u)}
+                    disabled={busy === u.id}
+                    onValueChange={(value) =>
+                      setAssigned(u, true, value as "MANAGER" | "STAFF")
+                    }
+                  >
+                    <SelectTrigger size="sm" className="w-28 shrink-0">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="STAFF">Staff</SelectItem>
+                      <SelectItem value="MANAGER">Manager</SelectItem>
+                    </SelectContent>
+                  </Select>
                   <Button
                     variant="outline"
                     size="sm"
@@ -162,10 +195,10 @@ export function StaffAdmin({
                       {u.displayName}
                     </span>
                     <span className="block truncate text-sm text-muted-foreground">
-                      {u.username} · {u.role.toLowerCase()}
-                      {u.shopIds.length > 0 &&
-                        ` · already at ${u.shopIds.length} ${
-                          u.shopIds.length === 1 ? "branch" : "branches"
+                      {u.username}
+                      {u.shopRoles.length > 0 &&
+                        ` · already at ${u.shopRoles.length} ${
+                          u.shopRoles.length === 1 ? "branch" : "branches"
                         }`}
                     </span>
                   </span>
@@ -194,7 +227,7 @@ export function StaffAdmin({
         the form keeps a single path for usernames and temporary passwords.
       */}
       <Link
-        href="/settings/users"
+        href="/settings/employees"
         className={buttonVariants({ variant: "outline" })}
       >
         <UserPlus className="size-4" />

@@ -17,21 +17,31 @@ import {
 import { cn } from "@/lib/utils";
 
 /**
- * The roster screen (§4.14.1).
+ * The roster portion of the combined Shifts & roster screen (§4.14.1).
  *
- * Two panels, matching the two layers of the data:
+ * The calendar stays first, then the recurring pattern is grouped by shift:
  *
  *   - **This week** — the RESOLVED grid. Read-only, because nothing stores a
  *     week: it is the pattern plus its overrides, computed on the server. Any
  *     control that let you edit a cell here would have to guess whether you
  *     meant "this Tuesday" or "every Tuesday", and guessing wrong rewrites a
  *     roster people have planned around.
- *   - **Recurring** — the PATTERN itself, edited explicitly.
+ *   - **Shift coverage** — select an operating shift, then explicitly set its
+ *     recurring staff pattern. This keeps the UI shift-focused without merging
+ *     the two data models.
  *
  * Per-date exceptions are added from the grid, where the date is unambiguous,
  * and they always carry a reason.
  */
 const DAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+/** The business week is shown Monday-first; indexes still match the schema. */
+const DAY_PICKER = [1, 2, 3, 4, 5, 6, 0];
+
+function formatDays(days: number[]): string {
+  return DAY_PICKER.filter((day) => days.includes(day))
+    .map((day) => DAY_SHORT[day])
+    .join(", ");
+}
 
 interface Shift {
   id: string;
@@ -107,7 +117,10 @@ export function RosterAdmin({
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
-  const [adding, setAdding] = useState(false);
+  /** The shift whose recurring coverage is being set. */
+  const [selectedShiftId, setSelectedShiftId] = useState(shifts[0]?.id ?? "");
+  /** A staff picker belongs to one shift at a time, never a detached roster. */
+  const [addingFor, setAddingFor] = useState<string | null>(null);
   /**
    * The slot being taken off a date. D-79 removed `window.prompt` from this
    * codebase; this reuses the shared dialog rather than reintroducing it — it
@@ -137,7 +150,7 @@ export function RosterAdmin({
     const next = new Date(`${startDate}T00:00:00.000Z`);
     next.setUTCDate(next.getUTCDate() + byDays);
     router.push(
-      `/settings/shops/${shopId}/roster?week=${next.toISOString().slice(0, 10)}`
+      `/settings/shops/${shopId}/shifts?week=${next.toISOString().slice(0, 10)}`
     );
   }
 
@@ -175,6 +188,10 @@ export function RosterAdmin({
 
   const live = initialAssignments.filter((a) => !a.isRemoved);
   const removed = initialAssignments.filter((a) => a.isRemoved);
+  const selectedShift = shifts.find((shift) => shift.id === selectedShiftId) ?? shifts[0];
+  const selectedAssignments = selectedShift
+    ? live.filter((assignment) => assignment.shiftId === selectedShift.id)
+    : [];
 
   if (shifts.length === 0) {
     return (
@@ -182,7 +199,7 @@ export function RosterAdmin({
         <p className="font-semibold">This branch has no shifts yet.</p>
         <p className="mt-1">
           A roster places people onto shifts, so the shifts have to exist first.
-          Add them under <strong>Shifts</strong>, then come back.
+          Add the first shift below, then assign the people who cover it here.
         </p>
       </div>
     );
@@ -280,80 +297,127 @@ export function RosterAdmin({
         </p>
       </section>
 
-      {/* ────────────────────────── recurring pattern ────────────────────────── */}
+      {/* ───────────────────────── shift coverage ───────────────────────── */}
       <section className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-lg font-semibold">Recurring schedule</h2>
-          <Button size="sm" onClick={() => setAdding((v) => !v)}>
-            <Plus className="size-4" />
-            Add
-          </Button>
-        </div>
-
-        {adding && (
-          <AssignmentForm
-            shopId={shopId}
-            shifts={shifts}
-            staff={staff}
-            onDone={() => setAdding(false)}
-            post={post}
-          />
-        )}
-
-        {live.length === 0 ? (
-          <div className="rounded-xl border p-4 text-sm text-muted-foreground">
-            <p className="font-medium text-foreground">
-              Nobody has a recurring schedule here yet.
-            </p>
-            <p className="mt-1">
-              Until someone does, this branch behaves as it always has: anyone
-              assigned here can clock in on any shift, and the red banner shows
-              for everyone every day.
+          <div>
+            <h2 className="text-lg font-semibold">Shift coverage</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Choose a shift, then pick the staff who regularly cover it.
             </p>
           </div>
-        ) : (
-          <ul className="space-y-2">
-            {live.map((a) => (
-              <li
-                key={a.id}
-                className="flex flex-wrap items-center gap-3 rounded-xl border p-3"
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="font-medium">{a.employeeName}</p>
-                  <p className="text-sm text-muted-foreground">
-                    {a.shiftName} · {a.startTime}–{a.endTime} ·{" "}
-                    {a.daysOfWeek.map((d) => DAY_SHORT[d]).join(", ")}
-                  </p>
-                </div>
+        </div>
 
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setEditing(editing === a.id ? null : a.id)}
-                >
-                  {editing === a.id ? "Close" : "Edit"}
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={pending}
-                  onClick={() => setRemovingRow(a)}
-                >
-                  {pending && <Loader2 className="size-4 animate-spin" />}
-                  Remove
-                </Button>
-
-                {editing === a.id && (
-                  <EditAssignment
-                    assignment={a}
-                    shift={shifts.find((s) => s.id === a.shiftId)}
-                    onDone={() => setEditing(null)}
-                    patch={patch}
-                  />
+        <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {shifts.map((shift) => {
+            const assigned = live.filter((assignment) => assignment.shiftId === shift.id);
+            const selected = selectedShift?.id === shift.id;
+            return (
+              <button
+                key={shift.id}
+                type="button"
+                onClick={() => {
+                  setSelectedShiftId(shift.id);
+                  setAddingFor(null);
+                }}
+                className={cn(
+                  "min-h-24 rounded-xl border p-3 text-left transition-colors hover:bg-muted",
+                  selected && "border-primary bg-primary/5 ring-1 ring-primary"
                 )}
-              </li>
-            ))}
-          </ul>
+              >
+                <p className="font-medium">{shift.name}</p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {shift.startTime}–{shift.endTime}
+                </p>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {assigned.length === 0
+                    ? "No regular staff assigned"
+                    : `${assigned.length} regular ${assigned.length === 1 ? "staff member" : "staff members"}`}
+                </p>
+              </button>
+            );
+          })}
+        </div>
+
+        {selectedShift && (
+          <div className="space-y-3 rounded-xl border bg-muted/20 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="font-semibold">{selectedShift.name}</h3>
+                <p className="text-sm text-muted-foreground">
+                  {selectedShift.startTime}–{selectedShift.endTime} ·{" "}
+                  {formatDays(selectedShift.daysOfWeek)}
+                </p>
+              </div>
+              <Button
+                size="sm"
+                onClick={() => setAddingFor(addingFor === selectedShift.id ? null : selectedShift.id)}
+              >
+                <Plus className="size-4" />
+                Assign staff
+              </Button>
+            </div>
+
+            {addingFor === selectedShift.id && (
+              <AssignmentForm
+                shopId={shopId}
+                shifts={shifts}
+                staff={staff}
+                fixedShift={selectedShift}
+                onDone={() => setAddingFor(null)}
+                post={post}
+              />
+            )}
+
+            {selectedAssignments.length === 0 ? (
+              <p className="rounded-xl border border-dashed bg-background p-3 text-sm text-muted-foreground">
+                No recurring coverage yet. Assign someone above; one-off cover
+                can still be added directly from the calendar.
+              </p>
+            ) : (
+              <ul className="space-y-2">
+                {selectedAssignments.map((assignment) => (
+                  <li
+                    key={assignment.id}
+                    className="flex flex-wrap items-center gap-3 rounded-xl border bg-background p-3"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="font-medium">{assignment.employeeName}</p>
+                      <p className="text-sm text-muted-foreground">
+                        {formatDays(assignment.daysOfWeek)}
+                      </p>
+                    </div>
+
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setEditing(editing === assignment.id ? null : assignment.id)}
+                    >
+                      {editing === assignment.id ? "Close" : "Edit days"}
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={pending}
+                      onClick={() => setRemovingRow(assignment)}
+                    >
+                      {pending && <Loader2 className="size-4 animate-spin" />}
+                      Remove
+                    </Button>
+
+                    {editing === assignment.id && (
+                      <EditAssignment
+                        assignment={assignment}
+                        shift={selectedShift}
+                        onDone={() => setEditing(null)}
+                        patch={patch}
+                      />
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         )}
 
         {/* Removed schedules live behind a toggle. They exist so a mis-tap is
@@ -382,7 +446,7 @@ export function RosterAdmin({
                       <p className="font-medium">{a.employeeName}</p>
                       <p className="text-sm text-muted-foreground">
                         {a.shiftName} · {a.startTime}–{a.endTime} ·{" "}
-                        {a.daysOfWeek.map((d) => DAY_SHORT[d]).join(", ")}
+                        {formatDays(a.daysOfWeek)}
                       </p>
                       <p className="text-xs text-muted-foreground">
                         Removed · past attendance records are unaffected
@@ -515,7 +579,7 @@ export function RosterAdmin({
             {removingRow && (
               <DialogDescription>
                 {removingRow.employeeName} · {removingRow.shiftName} ·{" "}
-                {removingRow.daysOfWeek.map((d) => DAY_SHORT[d]).join(", ")}
+                {formatDays(removingRow.daysOfWeek)}
               </DialogDescription>
             )}
           </DialogHeader>
@@ -642,9 +706,10 @@ function EditAssignment({
       <div className="space-y-1">
         <span className="text-sm font-medium">Days</span>
         <div className="flex flex-wrap gap-1.5">
-          {DAY_SHORT.map((label, index) => {
-            const available = selectableDays.includes(index);
-            const on = days.includes(index);
+          {DAY_PICKER.map((day) => {
+            const label = DAY_SHORT[day];
+            const available = selectableDays.includes(day);
+            const on = days.includes(day);
             return (
               <button
                 key={label}
@@ -657,9 +722,9 @@ function EditAssignment({
                 }
                 onClick={() =>
                   setDays((d) =>
-                    d.includes(index)
-                      ? d.filter((x) => x !== index)
-                      : [...d, index]
+                    d.includes(day)
+                      ? d.filter((value) => value !== day)
+                      : [...d, day]
                   )
                 }
                 className={cn(
@@ -936,20 +1001,22 @@ function AssignmentForm({
   shopId,
   shifts,
   staff,
+  fixedShift,
   onDone,
   post,
 }: {
   shopId: string;
   shifts: Shift[];
   staff: Staff[];
+  fixedShift?: Shift;
   onDone: () => void;
   post: (url: string, body: unknown, ok: string) => Promise<boolean>;
 }) {
   const [userId, setUserId] = useState("");
-  const [shiftId, setShiftId] = useState("");
+  const [shiftId, setShiftId] = useState(fixedShift?.id ?? "");
   const [days, setDays] = useState<number[]>([]);
 
-  const shift = shifts.find((s) => s.id === shiftId);
+  const shift = fixedShift ?? shifts.find((s) => s.id === shiftId);
   // The assignment selects from WITHIN the shift's operating days, so a day the
   // branch does not run this shift is not offered at all. The server enforces
   // the same rule — this only turns a rejection into an absence.
@@ -957,7 +1024,7 @@ function AssignmentForm({
 
   return (
     <div className="space-y-3 rounded-xl border p-4">
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className={cn("grid gap-3", fixedShift ? "sm:grid-cols-1" : "sm:grid-cols-2")}>
         <label className="space-y-1">
           <span className="text-sm font-medium">Employee</span>
           <select
@@ -974,26 +1041,28 @@ function AssignmentForm({
           </select>
         </label>
 
-        <label className="space-y-1">
-          <span className="text-sm font-medium">Shift</span>
-          <select
-            value={shiftId}
-            onChange={(e) => {
-              setShiftId(e.target.value);
-              // Days that the previous shift ran but this one does not would
-              // silently fail on save, so the selection resets with the shift.
-              setDays([]);
-            }}
-            className="min-h-11 w-full rounded-xl border px-3"
-          >
-            <option value="">Choose…</option>
-            {shifts.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name} · {s.startTime}–{s.endTime}
-              </option>
-            ))}
-          </select>
-        </label>
+        {!fixedShift && (
+          <label className="space-y-1">
+            <span className="text-sm font-medium">Shift</span>
+            <select
+              value={shiftId}
+              onChange={(e) => {
+                setShiftId(e.target.value);
+                // Days that the previous shift ran but this one does not would
+                // silently fail on save, so the selection resets with the shift.
+                setDays([]);
+              }}
+              className="min-h-11 w-full rounded-xl border px-3"
+            >
+              <option value="">Choose…</option>
+              {shifts.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name} · {s.startTime}–{s.endTime}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
       </div>
 
       <div className="space-y-1">
@@ -1005,9 +1074,10 @@ function AssignmentForm({
           </p>
         ) : (
           <div className="flex flex-wrap gap-1.5">
-            {DAY_SHORT.map((label, index) => {
-              const available = selectableDays.includes(index);
-              const on = days.includes(index);
+            {DAY_PICKER.map((day) => {
+              const label = DAY_SHORT[day];
+              const available = selectableDays.includes(day);
+              const on = days.includes(day);
               return (
                 <button
                   key={label}
@@ -1020,9 +1090,9 @@ function AssignmentForm({
                   }
                   onClick={() =>
                     setDays((d) =>
-                      d.includes(index)
-                        ? d.filter((x) => x !== index)
-                        : [...d, index]
+                    d.includes(day)
+                      ? d.filter((value) => value !== day)
+                      : [...d, day]
                     )
                   }
                   className={cn(
@@ -1049,7 +1119,7 @@ function AssignmentForm({
               // never wanted to type a from/until, and a schedule that begins
               // when you create it is what "add to the roster" already means.
               { userId, shiftId, daysOfWeek: days },
-              "Added to the roster."
+              `Added to ${shift?.name ?? "the"} roster.`
             );
             if (ok) onDone();
           }}

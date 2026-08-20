@@ -6025,3 +6025,63 @@ full run.
 password returns to `SEED_OWNER_PASSWORD` with a forced change on first login.
 After a reset, run `verify-phase1.sh` before `verify-phase2.sh`, since the
 latter expects the `owner` / `manager1` / `staff1` accounts the former creates.
+
+---
+
+### D-150 · Shifts and roster are one shop workflow
+
+**Owner request, 20 Aug 2026:** the old Shops area made the owner move between
+**Shifts** to define a shift and **Roster** to decide who covered it. Those are
+two data layers, but they are one planning task in the UI: start with the week,
+choose a shift, and assign the people who regularly work it.
+
+**What changed, presentation only:**
+
+- `/settings/shops/:id/shifts` is now **Shifts & roster**. It loads the same
+  resolved week, recurring assignments and leave records that the former roster
+  page loaded, before rendering shift configuration.
+- The calendar remains first. Under it, each active shift is a selectable card
+  showing its time and regular coverage count. Selecting a card opens that
+  shift's staff picker; the picker fixes the shift and asks only for employee
+  and days, so an assignment cannot accidentally land on another shift.
+- Existing people assigned to the selected shift stay beside that picker, with
+  the same edit-days and soft-remove controls. One-date cover and leave remain
+  on the calendar because their dates are the important part of those actions.
+- The Shops list has one **Shifts & roster** entry point instead of separate
+  Shifts and Roster buttons. The previous `/roster` route redirects to the
+  combined page and carries its optional `week` query along, so bookmarks and
+  week navigation continue to work.
+
+**Not changed:** `Shift`, `ScheduleAssignment`, overrides, leave, permissions,
+and their API/service rules. The UI does not merge those records in storage:
+a shift still describes when the branch runs, while an assignment describes who
+is expected on it. That separation preserves historic attendance and the
+single-date exception rules from D-136/D-140.
+
+**Verified:** `npm run typecheck`, `npm run lint`, and `npm test` all pass
+(`475/475`). Browser automation was unavailable in this session, so rendered
+browser confirmation remains the only outstanding presentation check.
+
+### D-151 · Shift coverage weekdays start on Monday
+
+**Owner request, 20 Aug 2026.** The coverage picker now presents Monday through
+Sunday, matching the working week used by the calendar. The stored weekday
+values remain unchanged (`0 = Sunday`), so the resolver and existing schedules
+need no migration or data rewrite. The selected-shift summary, assignment rows,
+and remove confirmation use the same Monday-first display order.
+
+### D-152 · Employee rows open a shop-by-shop schedule summary
+
+**Owner request, 20 Aug 2026.** Clicking an employee in Settings → Employees
+now opens their **Regular schedule** beneath the row. It groups live recurring
+assignments by shop, then shows each shift's time and Monday-first working days.
+The accompanying Schedule button provides the same explicit control on smaller
+screens.
+
+The summary deliberately shows the recurring arrangement, not a resolved day:
+one-date cover and approved leave are exceptions whose date and reason matter,
+so they remain on the relevant shop's calendar. Removed schedules are omitted
+from the normal employee view just as they are from the live roster, preserving
+the requested "what do they normally work?" answer without mixing in history.
+The query is owner-only and reads all live assignments in one query, rather than
+asking the client to assemble branches or expose a new employee-schedule API.

@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { KeyRound, Loader2, Search, UserPlus } from "lucide-react";
+import { CalendarDays, KeyRound, Loader2, Search, UserPlus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -57,6 +57,28 @@ export interface EmployeeRow {
   shopRoles: EmployeeShopRole[];
 }
 
+export interface EmployeeSchedule {
+  id: string;
+  userId: string;
+  shopId: string;
+  shopName: string;
+  shopCode: string;
+  shiftId: string;
+  shiftName: string;
+  startTime: string;
+  endTime: string;
+  daysOfWeek: number[];
+}
+
+const WEEKDAYS_MONDAY_FIRST = [1, 2, 3, 4, 5, 6, 0];
+const DAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function formatDays(days: number[]): string {
+  return WEEKDAYS_MONDAY_FIRST.filter((day) => days.includes(day))
+    .map((day) => DAY_SHORT[day])
+    .join(", ");
+}
+
 /** In-progress shop-role selections, keyed by shopId — the shape both the
  *  create and edit forms share for their "checklist with a role dropdown"
  *  section. */
@@ -101,10 +123,12 @@ function draftToShopRoles(draft: ShopRoleDraft): {
 
 export function EmployeeAdmin({
   initialEmployees,
+  schedules,
   shops,
   currentUserId,
 }: {
   initialEmployees: EmployeeRow[];
+  schedules: EmployeeSchedule[];
   shops: ShopOption[];
   /** Used to mark "You" and to explain the self-edit guards before they fire. */
   currentUserId: string;
@@ -129,6 +153,15 @@ export function EmployeeAdmin({
   // always lands on Active regardless of this split.
   const activeEmployees = filtered.filter((e) => e.isActive);
   const deactivatedEmployees = filtered.filter((e) => !e.isActive);
+  const schedulesByEmployee = useMemo(() => {
+    const grouped = new Map<string, EmployeeSchedule[]>();
+    for (const schedule of schedules) {
+      const existing = grouped.get(schedule.userId) ?? [];
+      existing.push(schedule);
+      grouped.set(schedule.userId, existing);
+    }
+    return grouped;
+  }, [schedules]);
 
   return (
     <div className="space-y-6">
@@ -206,6 +239,7 @@ export function EmployeeAdmin({
                       <EmployeeListItem
                         key={e.id}
                         employee={e}
+                        schedule={schedulesByEmployee.get(e.id) ?? []}
                         shops={shops}
                         currentUserId={currentUserId}
                         onChanged={(next) => {
@@ -231,6 +265,7 @@ export function EmployeeAdmin({
                       <EmployeeListItem
                         key={e.id}
                         employee={e}
+                        schedule={schedulesByEmployee.get(e.id) ?? []}
                         shops={shops}
                         currentUserId={currentUserId}
                         onChanged={(next) => {
@@ -274,23 +309,30 @@ function shopRolesSummary(e: EmployeeRow): string {
  */
 function EmployeeListItem({
   employee,
+  schedule,
   shops,
   currentUserId,
   onChanged,
 }: {
   employee: EmployeeRow;
+  schedule: EmployeeSchedule[];
   shops: ShopOption[];
   currentUserId: string;
   onChanged: (e: EmployeeRow) => void;
 }) {
-  const [panel, setPanel] = useState<"none" | "edit" | "password">("none");
+  const [panel, setPanel] = useState<"none" | "schedule" | "edit" | "password">("none");
 
   const isSelf = employee.id === currentUserId;
 
   return (
     <li className="px-6 py-4">
       <div className="flex items-center gap-3">
-        <span className="min-w-0 flex-1">
+        <button
+          type="button"
+          onClick={() => setPanel(panel === "schedule" ? "none" : "schedule")}
+          className="min-w-0 flex-1 text-left"
+          aria-expanded={panel === "schedule"}
+        >
           <span className="block truncate font-medium">
             {employee.displayName}
             {/* No "Deactivated" badge here — which tab the row is in
@@ -311,9 +353,17 @@ function EmployeeListItem({
               {employee.deactivationReason}
             </span>
           )}
-        </span>
+        </button>
 
         <div className="flex shrink-0 gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setPanel(panel === "schedule" ? "none" : "schedule")}
+          >
+            <CalendarDays className="size-4" />
+            Schedule
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -331,6 +381,8 @@ function EmployeeListItem({
           </Button>
         </div>
       </div>
+
+      {panel === "schedule" && <EmployeeSchedulePanel schedule={schedule} />}
 
       <EditEmployeeDialog
         open={panel === "edit"}
@@ -354,6 +406,55 @@ function EmployeeListItem({
         </div>
       )}
     </li>
+  );
+}
+
+/** The employee view groups recurring assignments by shop, never by a flat list. */
+function EmployeeSchedulePanel({ schedule }: { schedule: EmployeeSchedule[] }) {
+  const byShop = new Map<string, EmployeeSchedule[]>();
+  for (const assignment of schedule) {
+    const existing = byShop.get(assignment.shopId) ?? [];
+    existing.push(assignment);
+    byShop.set(assignment.shopId, existing);
+  }
+
+  return (
+    <div className="mt-4 space-y-3 rounded-xl border bg-muted/30 p-4">
+      <div>
+        <h3 className="font-semibold">Regular schedule</h3>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Recurring shifts only. One-day cover and leave stay on each shop&apos;s roster calendar.
+        </p>
+      </div>
+
+      {byShop.size === 0 ? (
+        <p className="rounded-lg border border-dashed bg-background p-3 text-sm text-muted-foreground">
+          No recurring shifts assigned yet.
+        </p>
+      ) : (
+        <div className="grid gap-3 lg:grid-cols-2">
+          {[...byShop.values()].map((assignments) => {
+            const shop = assignments[0]!;
+            return (
+              <section key={shop.shopId} className="rounded-lg border bg-background p-3">
+                <h4 className="font-medium">{shop.shopName}</h4>
+                <p className="text-xs text-muted-foreground">{shop.shopCode}</p>
+                <ul className="mt-3 space-y-2">
+                  {assignments.map((assignment) => (
+                    <li key={assignment.id} className="text-sm">
+                      <p className="font-medium">
+                        {assignment.shiftName} · {assignment.startTime}–{assignment.endTime}
+                      </p>
+                      <p className="text-muted-foreground">{formatDays(assignment.daysOfWeek)}</p>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 

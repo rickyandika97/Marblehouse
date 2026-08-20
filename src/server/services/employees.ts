@@ -161,6 +161,20 @@ export interface EmployeeShopRoleDTO {
   canEnterCost: boolean;
 }
 
+/** A live recurring shift, shown from Settings → Employees by shop. */
+export interface EmployeeScheduleDTO {
+  id: string;
+  userId: string;
+  shopId: string;
+  shopName: string;
+  shopCode: string;
+  shiftId: string;
+  shiftName: string;
+  startTime: string;
+  endTime: string;
+  daysOfWeek: number[];
+}
+
 type EmployeeRow = User & {
   userShops?: {
     shopId: string;
@@ -228,6 +242,54 @@ export async function listEmployees(actor: Actor) {
   });
 
   return users.map(toEmployeeDTO);
+}
+
+/**
+ * The active recurring schedule for every employee, for the owner-only
+ * employee screen. This intentionally reads assignments rather than resolved
+ * calendar slots: the owner is asking for each person's normal working
+ * arrangement, while one-day cover and leave belong on the roster calendar.
+ */
+export async function listEmployeeSchedules(
+  actor: Actor
+): Promise<EmployeeScheduleDTO[]> {
+  if (!actor.isOwner) {
+    throw forbidden("Only the owner can view employee schedules.");
+  }
+
+  const assignments = await prisma.scheduleAssignment.findMany({
+    where: { removedAt: null },
+    select: {
+      id: true,
+      userId: true,
+      shopId: true,
+      shiftId: true,
+      daysOfWeek: true,
+      shop: { select: { name: true, code: true } },
+      shift: { select: { name: true, startTime: true, endTime: true } },
+    },
+    orderBy: [
+      { shop: { name: "asc" } },
+      { shift: { startTime: "asc" } },
+    ],
+  });
+
+  return assignments.map((assignment) => ({
+    id: assignment.id,
+    userId: assignment.userId,
+    shopId: assignment.shopId,
+    shopName: assignment.shop.name,
+    shopCode: assignment.shop.code,
+    shiftId: assignment.shiftId,
+    shiftName: assignment.shift.name,
+    startTime: `${String(assignment.shift.startTime.getUTCHours()).padStart(2, "0")}:${String(
+      assignment.shift.startTime.getUTCMinutes()
+    ).padStart(2, "0")}`,
+    endTime: `${String(assignment.shift.endTime.getUTCHours()).padStart(2, "0")}:${String(
+      assignment.shift.endTime.getUTCMinutes()
+    ).padStart(2, "0")}`,
+    daysOfWeek: [...assignment.daysOfWeek].sort((a, b) => a - b),
+  }));
 }
 
 // ─────────────────────────────── Mutations ───────────────────────────────

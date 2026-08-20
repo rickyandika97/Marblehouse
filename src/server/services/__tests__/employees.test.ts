@@ -28,6 +28,7 @@ import { describe, expect, it, afterEach, afterAll } from "vitest";
 import { prisma, uniq } from "./helpers";
 import {
   listEmployees,
+  listEmployeeSchedules,
   resetEmployeePassword,
   updateEmployee,
   updateEmployeeSchema,
@@ -549,6 +550,93 @@ describe("resetting a password", () => {
   });
 });
 
+// ─────────────────────── employee schedule summary ───────────────────────
+
+describe("employee schedule summary", () => {
+  it("lists live recurring shifts with their shop and days, not removed history", async () => {
+    const a = await makeShop();
+    const b = await makeShop();
+    const { actor: owner } = await makeEmployee({ isOwner: true });
+    const { user: staff } = await makeEmployee({
+      shopRoles: [
+        { shopId: a.id, role: "STAFF" },
+        { shopId: b.id, role: "STAFF" },
+      ],
+    });
+    const [morning, evening] = await Promise.all([
+      prisma.shift.create({
+        data: {
+          shopId: a.id,
+          name: "Morning",
+          startTime: new Date("1970-01-01T09:00:00.000Z"),
+          endTime: new Date("1970-01-01T17:00:00.000Z"),
+          daysOfWeek: [1, 2, 3, 4, 5],
+        },
+      }),
+      prisma.shift.create({
+        data: {
+          shopId: b.id,
+          name: "Evening",
+          startTime: new Date("1970-01-01T18:00:00.000Z"),
+          endTime: new Date("1970-01-01T23:00:00.000Z"),
+          daysOfWeek: [0, 6],
+        },
+      }),
+    ]);
+
+    await prisma.scheduleAssignment.createMany({
+      data: [
+        {
+          userId: staff.id,
+          shopId: a.id,
+          shiftId: morning.id,
+          daysOfWeek: [1, 2, 3],
+          effectiveFrom: new Date("2026-08-20T00:00:00.000Z"),
+        },
+        {
+          userId: staff.id,
+          shopId: b.id,
+          shiftId: evening.id,
+          daysOfWeek: [0, 6],
+          effectiveFrom: new Date("2026-08-20T00:00:00.000Z"),
+        },
+        {
+          userId: staff.id,
+          shopId: a.id,
+          shiftId: morning.id,
+          daysOfWeek: [4],
+          effectiveFrom: new Date("2026-08-20T00:00:00.000Z"),
+          removedAt: new Date("2026-08-20T00:00:00.000Z"),
+        },
+      ],
+    });
+
+    const schedule = (await listEmployeeSchedules(owner)).filter(
+      (entry) => entry.userId === staff.id,
+    );
+
+    expect(schedule).toHaveLength(2);
+    expect(schedule).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          shopId: a.id,
+          shopName: a.name,
+          shiftName: "Morning",
+          startTime: "09:00",
+          endTime: "17:00",
+          daysOfWeek: [1, 2, 3],
+        }),
+        expect.objectContaining({
+          shopId: b.id,
+          shopName: b.name,
+          shiftName: "Evening",
+          daysOfWeek: [0, 6],
+        }),
+      ]),
+    );
+  });
+});
+
 // ───────────────────────── permissions and immutability ─────────────────────
 
 describe("permissions and immutability", () => {
@@ -565,6 +653,7 @@ describe("permissions and immutability", () => {
       () => updateEmployee(manager, staff.id, { displayName: "Hijacked" }),
       () => resetEmployeePassword(manager, staff.id, "TempPass2026!"),
       () => listEmployees(manager),
+      () => listEmployeeSchedules(manager),
     ]) {
       const error = await call().catch((e) => e);
       expect(error).toBeInstanceOf(AppError);

@@ -1,7 +1,14 @@
 import { requireOwnerPage } from "@/server/auth/page-guard";
 import { prisma } from "@/lib/prisma";
-import { listEmployees } from "@/server/services/employees";
-import { EmployeeAdmin, type EmployeeRow } from "./employee-admin";
+import {
+  listEmployees,
+  listEmployeeSchedules,
+} from "@/server/services/employees";
+import {
+  EmployeeAdmin,
+  type EmployeeRow,
+  type EmployeeSchedule,
+} from "./employee-admin";
 
 export const metadata = { title: "Employees · Marblehouse" };
 export const dynamic = "force-dynamic";
@@ -32,8 +39,9 @@ export default async function EmployeesPage() {
    * offered for a NEW assignment — `assertShopsExist` requires `isActive`, so
    * adding one would be a 422 anyway.
    */
-  const [employees, shops] = await Promise.all([
+  const [employees, schedules, shops] = await Promise.all([
     listEmployees(actor),
+    listEmployeeSchedules(actor),
     prisma.shop.findMany({
       orderBy: [{ isActive: "desc" }, { isHqPseudoShop: "asc" }, { name: "asc" }],
       select: {
@@ -49,6 +57,7 @@ export default async function EmployeesPage() {
   return (
     <EmployeeAdmin
       initialEmployees={employees as EmployeeRow[]}
+      schedules={schedules as EmployeeSchedule[]}
       shops={shops}
       currentUserId={actor.userId}
     />

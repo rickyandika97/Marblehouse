@@ -234,16 +234,10 @@ function ShopListItem({ shop }: { shop: ShopRow }) {
             href={`/settings/shops/${shop.id}/shifts`}
             className={buttonVariants({ variant: "outline", size: "sm" })}
           >
-            Shifts
+            Shifts & roster
             {shop.shiftCount > 0 && (
               <span className="text-muted-foreground">{shop.shiftCount}</span>
             )}
-          </Link>
-          <Link
-            href={`/settings/shops/${shop.id}/roster`}
-            className={buttonVariants({ variant: "outline", size: "sm" })}
-          >
-            Roster
           </Link>
           <Link
             href={`/settings/shops/${shop.id}/staff`}

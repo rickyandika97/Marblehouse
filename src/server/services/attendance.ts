@@ -151,6 +151,9 @@ export async function attendanceStatus(actor: Actor) {
     prompt: !actor.isOwner && scheduledToday && record === null,
     scheduledToday,
     slots,
+    // The app-wide prompt must name the branch that will own the attendance
+    // record. It comes from the server-resolved work session, never the UI.
+    shopName: actor.workSession?.shop?.name ?? null,
     clockedIn: record !== null,
     businessDate: actor.businessDate.toISOString().slice(0, 10),
     record: record

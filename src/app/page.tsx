@@ -14,8 +14,8 @@ export const dynamic = "force-dynamic";
  *   3. no work session today    → /select-shop      (unless auto-selected)
  *   4. otherwise                → the role's home screen
  *
- * Step 3 has a side effect by design: a user with exactly one assigned shop
- * has it selected for them here and never sees the picker (§4.7).
+ * Step 3 has a side effect by design: an unambiguous rostered branch is
+ * selected here and the picker is skipped (§4.7).
  */
 export default async function IndexPage() {
   const actor = await getActor();

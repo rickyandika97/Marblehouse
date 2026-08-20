@@ -19,9 +19,9 @@ export default async function SalePage() {
 
   // Resolve the session HERE rather than trusting `actor.workSession`.
   //
-  // `getActor` is wrapped in React's per-request `cache`, so for a single-shop
-  // user the actor was loaded (workSession: null) BEFORE the layout
-  // auto-selected their only shop — and the cached copy never learns about it.
+  // `getActor` is wrapped in React's per-request `cache`, so for a user whose
+  // roster auto-selects a branch the actor was loaded (workSession: null)
+  // BEFORE the layout resolved it — and the cached copy never learns about it.
   // Reading the cached value would throw NO_WORK_SESSION on the one path §4.7
   // promises is seamless. `resolveWorkSession` is idempotent, so calling it
   // again is free.

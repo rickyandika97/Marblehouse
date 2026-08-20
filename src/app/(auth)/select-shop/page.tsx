@@ -11,8 +11,8 @@ export default async function SelectShopPage() {
   const actor = await requireActorPage();
   const resolution = await resolveWorkSession(actor);
 
-  // Already answered today, or auto-selected because there was only one
-  // choice — either way there is nothing to ask (§4.7).
+  // Already answered today, or auto-selected from one rostered branch — either
+  // way there is nothing to ask (§4.7).
   if (!resolution.needsPicker) redirect("/");
 
   return (

@@ -19,7 +19,13 @@
 import { describe, expect, it, afterEach, afterAll } from "vitest";
 import { Prisma } from "@prisma/client";
 import { prisma, uniq, makeActorWithUser } from "./helpers";
-import { changeWorkSession, setWorkSession } from "../work-session";
+import {
+  changeWorkSession,
+  resolveWorkSession,
+  scheduledShopHandoff,
+  setWorkSession,
+  workSessionRosterMismatch,
+} from "../work-session";
 import type { Actor } from "@/server/auth/context";
 
 const shopIds: string[] = [];
@@ -32,6 +38,8 @@ afterEach(async () => {
   });
   await prisma.sale.deleteMany({ where: { id: { in: saleIds } } });
   await prisma.workSession.deleteMany({ where: { userId: { in: userIds } } });
+  await prisma.scheduleAssignment.deleteMany({ where: { userId: { in: userIds } } });
+  await prisma.shift.deleteMany({ where: { shopId: { in: shopIds } } });
   await prisma.userShop.deleteMany({ where: { userId: { in: userIds } } });
   await prisma.user.deleteMany({ where: { id: { in: userIds } } });
   await prisma.shop.deleteMany({ where: { id: { in: shopIds } } });
@@ -83,6 +91,162 @@ async function recordSaleToday(actor: Actor, shopId: string) {
   });
   saleIds.push(sale.id);
 }
+
+async function rosterToday(
+  actor: Actor,
+  shopId: string,
+  name: string,
+  startTime = "08:00",
+  endTime = "16:00"
+) {
+  const shift = await prisma.shift.create({
+    data: {
+      shopId,
+      name,
+      startTime: new Date(`1970-01-01T${startTime}:00.000Z`),
+      endTime: new Date(`1970-01-01T${endTime}:00.000Z`),
+      daysOfWeek: [2], // BUSINESS_DATE is Tuesday.
+    },
+  });
+
+  await prisma.scheduleAssignment.create({
+    data: {
+      userId: actor.userId,
+      shopId,
+      shiftId: shift.id,
+      daysOfWeek: [2],
+      effectiveFrom: new Date("2026-08-01T00:00:00.000Z"),
+      createdById: actor.userId,
+    },
+  });
+}
+
+describe("resolveWorkSession — timetable auto-selection (§4.7)", () => {
+  it("auto-selects the one branch where a multi-shop user is rostered", async () => {
+    const br1 = await makeShop();
+    const pik = await makeShop();
+    const manager = await makeActor("MANAGER", [br1.id, pik.id]);
+    await rosterToday(manager, pik.id, "PIK morning");
+
+    const resolution = await resolveWorkSession(manager);
+
+    expect(resolution).toMatchObject({
+      needsPicker: false,
+      session: { shopId: pik.id },
+    });
+    await expect(
+      prisma.workSession.findUnique({
+        where: {
+          userId_businessDate: {
+            userId: manager.userId,
+            businessDate: BUSINESS_DATE,
+          },
+        },
+      })
+    ).resolves.toMatchObject({ shopId: pik.id });
+  });
+
+  it("keeps the picker when the timetable places them at two branches", async () => {
+    const br1 = await makeShop();
+    const pik = await makeShop();
+    const manager = await makeActor("MANAGER", [br1.id, pik.id]);
+    await rosterToday(manager, br1.id, "BR-1 morning");
+    await rosterToday(manager, pik.id, "PIK afternoon");
+
+    await expect(resolveWorkSession(manager)).resolves.toMatchObject({
+      needsPicker: true,
+      session: null,
+    });
+  });
+
+  it("keeps the picker when an only-assigned shop has no roster", async () => {
+    const br1 = await makeShop();
+    const staff = await makeActor("STAFF", [br1.id]);
+
+    await expect(resolveWorkSession(staff)).resolves.toMatchObject({
+      needsPicker: true,
+      session: null,
+    });
+  });
+
+  it("does not change the OWNER flow", async () => {
+    const owner = await makeActor("OWNER");
+
+    await expect(resolveWorkSession(owner)).resolves.toMatchObject({
+      needsPicker: true,
+      session: null,
+    });
+  });
+
+  it("flags a one-branch roster mismatch without overwriting a manual session", async () => {
+    const br1 = await makeShop();
+    const pik = await makeShop();
+    const manager = await makeActor("MANAGER", [br1.id, pik.id]);
+    await rosterToday(manager, br1.id, "BR-1 morning");
+    const session = await setWorkSession(manager, { shopId: pik.id });
+    const withSession = { ...manager, workSession: session };
+
+    await expect(resolveWorkSession(withSession)).resolves.toMatchObject({
+      needsPicker: false,
+      session: { shopId: pik.id },
+    });
+    await expect(workSessionRosterMismatch(withSession)).resolves.toMatchObject({
+      id: br1.id,
+    });
+    await expect(
+      prisma.workSession.findUnique({
+        where: {
+          userId_businessDate: {
+            userId: manager.userId,
+            businessDate: BUSINESS_DATE,
+          },
+        },
+      })
+    ).resolves.toMatchObject({ shopId: pik.id });
+  });
+
+  it("offers an unambiguous second-branch handoff 30 minutes before its shift", async () => {
+    const morning = await makeShop();
+    const evening = await makeShop();
+    const manager = await makeActor("MANAGER", [morning.id, evening.id]);
+    await rosterToday(manager, morning.id, "Morning", "08:00", "12:00");
+    await rosterToday(manager, evening.id, "Evening", "16:00", "20:00");
+    const session = await setWorkSession(manager, { shopId: morning.id });
+    const withSession = { ...manager, workSession: session };
+
+    // 15:30 Jakarta, 30 minutes before the 16:00 shift.
+    await expect(
+      scheduledShopHandoff(withSession, new Date("2026-08-18T08:30:00.000Z"))
+    ).resolves.toMatchObject({
+      shopId: evening.id,
+      shopName: evening.name,
+      shiftName: "Evening",
+      startTime: "16:00",
+    });
+
+    // One minute before the arrival window: no premature prompt.
+    await expect(
+      scheduledShopHandoff(withSession, new Date("2026-08-18T08:29:00.000Z"))
+    ).resolves.toBeNull();
+  });
+
+  it("does not guess when two other branches are due in the same handoff window", async () => {
+    const current = await makeShop();
+    const first = await makeShop();
+    const second = await makeShop();
+    const manager = await makeActor("MANAGER", [current.id, first.id, second.id]);
+    await rosterToday(manager, first.id, "First evening", "16:00", "20:00");
+    await rosterToday(manager, second.id, "Second evening", "16:00", "20:00");
+    const session = await setWorkSession(manager, { shopId: current.id });
+
+    await expect(
+      scheduledShopHandoff(
+        { ...manager, workSession: session },
+        new Date("2026-08-18T08:30:00.000Z")
+      )
+    ).resolves.toBeNull();
+  });
+});
 
 describe("changeWorkSession — reason requirement (§4.7)", () => {
   it("requires a reason for a MANAGER who already recorded a sale today", async () => {

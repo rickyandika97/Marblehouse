@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Camera, Loader2, MapPin, RotateCcw } from "lucide-react";
+import { Camera, ChevronDown, Loader2, MapPin, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -309,8 +310,15 @@ export function ClockInFlow({
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Clock in</h1>
-        <p className="mt-1 text-sm text-muted-foreground">{shopName}</p>
+        <Link
+          href="/settings/shops?next=/attendance/clock-in"
+          className="group inline-flex items-center gap-1 rounded-lg text-3xl font-black tracking-tight outline-offset-4 hover:text-primary focus-visible:outline-2 focus-visible:outline-primary"
+          title="Change the branch before clocking in"
+        >
+          {shopName}
+          <ChevronDown className="size-6 transition-transform group-hover:translate-y-0.5" aria-hidden />
+        </Link>
+        <h1 className="mt-1 text-xl font-normal tracking-tight">Clock in</h1>
       </div>
 
       {step === "shift" && (

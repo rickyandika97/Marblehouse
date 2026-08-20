@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Check, Loader2, Store } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,6 +31,7 @@ export function ChangeShopForm({
   currentShopId: string | null;
 }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   const [selected, setSelected] = useState(currentShopId);
   const [reason, setReason] = useState("");
@@ -70,7 +71,8 @@ export function ChangeShopForm({
         return;
       }
 
-      router.replace("/settings");
+      const next = searchParams.get("next");
+      router.replace(next && next.startsWith("/") ? next : "/settings");
       router.refresh();
     } catch {
       setError("Cannot reach the server. Check the shop's internet connection.");

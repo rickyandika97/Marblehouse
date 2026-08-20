@@ -241,7 +241,21 @@ These are the rules the agent must get right. Everything else is UI.
   - does **not** retroactively move records already created that day;
   - writes an audit log entry with old shop, new shop, timestamp and reason;
   - requires a reason if any records were already created under the old shop that day.
-- If a user has exactly one assigned shop, auto-select it and skip the prompt.
+- If a non-owner user has no work session and the timetable resolves them at
+  **exactly one shop** for that business date, auto-select that shop and skip
+  the prompt. Zero or multiple rostered shops always keep the picker; a
+  `UserShop` assignment is access, not evidence of today's placement.
+- An existing work session is never overwritten by the timetable. When it
+  differs from one unambiguous rostered shop, Settings flags the difference and
+  lets the person keep the session for cover work or change it through the
+  normal audited path.
+- **Same-day handoff:** when a non-owner has an active session at one branch
+  and exactly one rostered shift at another branch is due to start within 30
+  minutes (or is in progress), show a prominent app-wide **Switch to [shop]**
+  banner. Tapping it changes the work-session shop through the normal audited
+  path; it is not an attendance clock-in. If records already exist at the old
+  branch, the existing mandatory reason still applies. Two destination branches
+  in the same window are ambiguous and show no automatic handoff prompt.
 
 ### 4.8 Prizes, stock and FIFO
 - The prize catalog is **global** (`PrizeItem`: name, category, image, active, **ticketCost**).
@@ -1591,6 +1605,7 @@ Error codes to define: `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `VALIDATION_
 | POST | `/api/auth/change-password` | any | Requires current password unless `mustChangePassword`. |
 | POST | `/api/work-session` | any | `{ shopId }` — create today's work session. |
 | PATCH | `/api/work-session` | any | `{ shopId, reason? }` — change current shop; reason required if records exist today. |
+| GET | `/api/work-session/handoff` | any | Server-resolved one-branch timetable handoff for the app-wide switch banner. |
 
 ### 7.2 Sales
 
@@ -1775,7 +1790,7 @@ Present on every authenticated screen:
 
 1. `/login` — username, password, big touch targets, show/hide password.
 2. If `mustChangePassword` → forced change screen.
-3. If no work session for today → **full-screen shop picker**. Default shop first and pre-highlighted, then other assigned shops. One tap, one confirm. Skipped automatically if the user has exactly one shop.
+3. If no work session for today → **full-screen shop picker**. Default shop first and pre-highlighted, then other assigned shops. One tap, one confirm. Skipped automatically only for exactly one rostered shop.
 4. Land on the role's home screen, with the red banner if not yet clocked in.
 
 ### 8.2 `/sale` — Record a sale (the most-used screen in the product)
@@ -2383,7 +2398,5 @@ Confirming every numbered item from the original brief is covered.
 ---
 
 *End of document.*
-
-
 
 

@@ -10,12 +10,14 @@ import {
   Settings,
   ShoppingCart,
   Clock,
+  ChevronDown,
   Store,
   User,
   Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AttendanceBanner } from "@/components/attendance-banner";
+import { ShopHandoffBanner } from "@/components/shop-handoff-banner";
 
 /**
  * Role-dependent bottom tab bar (§8.0).
@@ -111,13 +113,14 @@ export function AppShell({
           */}
           <Link
             href="/settings/shops"
-            className="flex min-h-11 min-w-0 items-center gap-2 rounded-lg px-2 hover:bg-muted"
+            className="flex min-h-11 min-w-0 items-center gap-2 rounded-full border border-border bg-background px-3 shadow-sm transition-colors hover:border-primary hover:bg-primary/5"
             title="Change today's shop"
           >
             <Store className="size-4 shrink-0 text-muted-foreground" />
             <span className="truncate font-semibold">
               {shopName ?? "No shop selected"}
             </span>
+            <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden />
           </Link>
 
           <div className="ml-auto flex items-center gap-3">
@@ -145,6 +148,7 @@ export function AppShell({
         (attendance is optional for them), and the component decides that from
         the server's answer rather than from the role prop.
       */}
+      <ShopHandoffBanner />
       <AttendanceBanner />
 
       <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-6 pb-24">

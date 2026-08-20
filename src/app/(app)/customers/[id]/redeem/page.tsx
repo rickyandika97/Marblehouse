@@ -32,7 +32,7 @@ export default async function RedeemPage({
   const { id } = await params;
 
   // Resolve the session here rather than trusting the cached actor — the D-19
-  // reason: for a single-shop user the layout auto-selects after `getActor`
+  // reason: the layout can auto-select after `getActor`
   // has already been cached with `workSession: null`.
   const { session } = await resolveWorkSession(actor);
   if (!session) redirect("/select-shop");

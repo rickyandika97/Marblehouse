@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { AlertTriangle } from "lucide-react";
+import { ArrowRight, Clock } from "lucide-react";
 
 /**
  * The red clock-in banner (§4.13).
@@ -39,23 +39,34 @@ export function AttendanceBanner() {
   const pathname = usePathname();
   const [state, setState] = useState<{
     prompt: boolean;
+    shopName: string | null;
     slots: { shiftName: string; startTime: string; wouldBeLate: boolean }[];
   } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
-    fetch("/api/attendance/status")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (!cancelled && data) {
-          setState({ prompt: data.prompt ?? false, slots: data.slots ?? [] });
-        }
-      })
-      .catch(() => undefined);
+    const load = () => {
+      fetch("/api/attendance/status")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (!cancelled && data) {
+            setState({
+              prompt: data.prompt ?? false,
+              shopName: data.shopName ?? null,
+              slots: data.slots ?? [],
+            });
+          }
+        })
+        .catch(() => undefined);
+    };
+
+    load();
+    window.addEventListener("work-session-changed", load);
 
     return () => {
       cancelled = true;
+      window.removeEventListener("work-session-changed", load);
     };
     // Re-checked on navigation so the banner clears as soon as the clock-in
     // page redirects back, without a full reload.
@@ -76,12 +87,23 @@ export function AttendanceBanner() {
   return (
     <Link
       href="/attendance/clock-in"
-      className="sticky top-14 z-30 flex items-center gap-3 bg-red-600 px-4 py-3 text-white hover:bg-red-700"
+      className="sticky top-14 z-30 border-b-4 border-red-800 bg-red-600 px-4 py-4 text-white shadow-sm hover:bg-red-700"
     >
-      <AlertTriangle className="size-5 shrink-0" aria-hidden />
-      <span className="text-sm font-semibold">
-        {shiftLabel(state.slots)} Tap here to clock in.
-      </span>
+      <div className="mx-auto flex w-full max-w-5xl flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-start gap-3">
+          <Clock className="mt-1 size-6 shrink-0" aria-hidden />
+          <div>
+            <p className="text-sm font-bold uppercase tracking-wide">Your shift is at</p>
+            <p className="text-3xl font-black leading-tight sm:text-4xl">
+              {state.shopName ?? "Your current shop"}
+            </p>
+            <p className="mt-1 text-sm font-medium">{shiftLabel(state.slots)}</p>
+          </div>
+        </div>
+        <span className="inline-flex min-h-12 items-center justify-center gap-2 rounded-lg bg-white/15 px-5 text-base font-bold ring-1 ring-white/30">
+          Clock in <ArrowRight className="size-5" aria-hidden />
+        </span>
+      </div>
     </Link>
   );
 }
@@ -98,9 +120,9 @@ function shiftLabel(
 ): string {
   const first = slots[0];
   if (slots.length !== 1 || !first) {
-    return "You have not clocked in today.";
+    return "Tap to record your arrival.";
   }
   return first.wouldBeLate
-    ? `Your ${first.shiftName} shift started at ${first.startTime}.`
-    : `You are on the ${first.shiftName} shift (${first.startTime}).`;
+    ? `${first.shiftName} · started at ${first.startTime}`
+    : `${first.shiftName} · starts ${first.startTime}`;
 }

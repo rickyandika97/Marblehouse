@@ -5560,6 +5560,185 @@ passwords have been restored. See the debts table.
 
 ---
 
+### D-142 · Day-start shop follows the timetable, never shop access
+
+**Added 20 Aug 2026.** A `WorkSession` decides the `shopId` written on every
+sale and ledger row. The old convenience rule — silently choose the only
+`UserShop` row — answered the wrong question: assignment says where someone is
+*allowed* to work, while the timetable says where they are expected *today*.
+For a person assigned to BR-1 and PIK, automatically using access can put an
+entire day of records at the wrong branch.
+
+### Decisions
+
+| Decision | Why |
+|---|---|
+| **Auto-select exactly one rostered shop, otherwise retain the picker** | `resolveDay` is the timetable authority and already applies assignments, overrides, removed patterns, retired shifts and leave. One or more slots at one shop is unambiguous; zero and two shops are not. The latter must ask rather than guess. |
+| **OWNER remains unchanged** | OWNER has no `UserShop` rows and is deliberately never rostered. Their existing all-branch picker flow stays intact. |
+| **Existing sessions are never changed by the roster** | A person can legitimately cover another branch. Overwriting a declaration after records may exist would be worse than the original mismatch. Settings now gives a non-blocking notice only when one rostered shop clearly differs, and preserves `changeWorkSession()`'s audited/reasoned override path. |
+| **No `WorkSession.source` column** | AUTO/MANUAL would describe how the day started, not whether the person ultimately worked where scheduled; covering and later manual changes make it a misleading proxy. The live comparison of session versus the day's resolver is the truthful fact, so a migration adds cost without answering the later report question. |
+
+### What was built
+
+| File | What it is |
+|---|---|
+| `src/server/services/work-session.ts` | Reuses `resolveDay` across accessible shops to auto-create only an unambiguous rostered session. Adds the non-mutating mismatch resolver. |
+| `src/app/(app)/settings/shops/page.tsx` | Shows the expected branch when one rostered shop disagrees with a manual current-shop session. |
+| `src/server/services/__tests__/work-session.test.ts` | Covers exactly-one selection, zero/two-shop picker fallback, OWNER no-op, and the visible-but-never-overwritten mismatch. |
+| `docs/PRD.md` | §4.7 now names timetable placement rather than `UserShop` count. |
+
+### Mutation checks
+
+- Replaced the exactly-one condition with a multi-shop auto-select: the
+  two-branch test failed, proving the picker cannot silently choose a branch.
+- Forced OWNER through the automatic path: the OWNER no-op test failed.
+- Blocked a MANAGER's explained shop change: the existing override-path test
+  failed, proving a cover move remains available once its reason is recorded.
+
+### Verification
+
+- `npm run typecheck` and `npm run lint` — passed.
+- `npm test` — **473 tests / 25 files** passed, including 5 new timetable
+  work-session tests (the intentional attendance-race unique-constraint log is
+  expected by that test).
+- `docker compose build` — passed. The existing Better Auth/Edge Runtime and
+  Prisma deprecation warnings remain non-fatal and unchanged.
+- **Real-browser role checks are still REVERIFY.** No app server was listening
+  on port 5050 and the available browser connection reported no browser, so the
+  OWNER, MANAGER and STAFF rendered checks could not be performed in this
+  session. Do not treat this change as phase-complete until those three flows
+  have been loaded and the one-rostered, picker-fallback and mismatch-notice
+  paths have been checked visually.
+
+---
+
+### D-143 · A split shift hands the shop session to the next branch
+
+**Added 20 Aug 2026.** A person can cover two branches on the same business
+day: a morning at PIK and an evening at MKG. A single work-session value cannot
+follow that change by itself, and leaving PIK selected files the evening's sale
+and ledger records at the wrong branch.
+
+### Decisions
+
+| Decision | Why |
+|---|---|
+| **Prompt from 30 minutes before the next shift until it ends** | A staff member needs time to travel and open the destination branch; keeping the prompt through the shift prevents one missed minute from stranding the session at the morning branch. |
+| **One destination branch or nothing** | A roster can technically put someone at two branches in the same arrival window. Choosing between them would reintroduce the wrong-branch failure, so the user keeps the normal Settings switcher in that exceptional case. |
+| **Switches the work session, never attendance** | The owner called this a "check in" in the sense of selecting the right shop. Attendance remains its existing photo/location record. The handoff uses `changeWorkSession`, keeping the audit and reason requirement after recorded work. |
+| **Destination branch is the largest text** | A handoff is a location instruction, often read while walking between branches. The banner headline is the branch name; shift and start time are supporting details. |
+
+### What was built
+
+| File | What it is |
+|---|---|
+| `src/server/services/work-session.ts` | `scheduledShopHandoff` resolves one eligible other-branch shift from the timetable. |
+| `src/app/api/work-session/handoff/route.ts` | Authenticated server endpoint for the app shell. |
+| `src/components/shop-handoff-banner.tsx` | Prominent app-wide destination banner, with the existing explained-switch safeguard. |
+| `src/components/app-shell.tsx` | Renders the handoff banner on every authenticated app screen. |
+| `src/server/services/__tests__/work-session.test.ts` | Covers the 30-minute boundary and no-guess multi-destination rule. |
+
+### Mutation check
+
+- Changed the 30-minute arrival window to start only at shift time: the
+  15:30-for-16:00 handoff test failed, then the condition was restored.
+
+### Verification
+
+- `npm test` — **475 tests / 25 files** passed; focused work-session coverage,
+  typecheck and lint also passed.
+- `docker compose build` — passed, with the same non-fatal Better Auth/Edge
+  Runtime and Prisma deprecation warnings recorded in D-142.
+- Rendered browser checks remain `REVERIFY`: no server was listening at 5050
+  and no browser connection was available, as documented in D-142.
+
+---
+
+### D-144 · Shop choices look tappable before they are tapped
+
+**Added 20 Aug 2026.** The day-start `ShopPicker` used neutral rectangular
+tiles that could read as a status list rather than a choice. Each option is now
+a full-width, touch-sized pill with a forward chevron; selection fills the pill
+and replaces the chevron with a check. The branch remains name-first, with its
+code and usual-branch note secondary.
+
+No service, session or permission behavior changed. `npm run typecheck` and
+`npm run lint` passed; rendered browser review remains `REVERIFY` with the
+existing unavailable server/browser boundary in D-142.
+
+---
+
+### D-145 · The current-shop control is a control
+
+**Added 20 Aug 2026.** The top-bar shop icon and name looked like a static
+label. It is now an outlined, 44px-tall pill with a down chevron, making its
+link to Settings → Shops legible as the current-shop switcher rather than
+status text.
+
+No behavior changed. `npm run typecheck` and `npm run lint` passed; browser
+review remains `REVERIFY` with D-142's unavailable server/browser boundary.
+
+---
+
+### D-146 · Clock-in starts with the location
+
+**Added 20 Aug 2026.** The clock-in page put the shop name beneath the action
+title as muted helper text, making it too easy to miss the branch that will own
+the attendance record. The shop is now a bold, large heading above the smaller
+"Clock in" label.
+
+No attendance behavior changed. `npm run typecheck` and `npm run lint` passed;
+browser review remains `REVERIFY` with D-142's unavailable server/browser
+boundary.
+
+---
+
+### D-147 · The clock-in location is also the branch switcher
+
+**Added 20 Aug 2026.** The bold shop name on Clock in now links to the existing
+Settings → Shops chooser and returns to Clock in after a successful change. A
+staff member can correct the branch before taking their attendance photo,
+without needing to discover a separate switcher. The destination is still
+validated server-side, and a prior-record reason is still required through
+`changeWorkSession`.
+
+No attendance behavior changed. `npm run typecheck` and `npm run lint` passed;
+browser review remains `REVERIFY` with D-142's unavailable server/browser
+boundary.
+
+---
+
+### D-148 · A branch handoff lands on Sale, then attendance reads the same way
+
+**Added 20 Aug 2026.** After accepting the next-branch handoff, the employee
+now lands on **Sale**, not Settings/Me, so their normal operational screen
+immediately shows the attendance prompt. That red prompt now uses the same
+location-first layout as the amber handoff: action label, large branch name,
+shift detail, and an obvious Clock in control. The branch name is server-derived
+from the active work session, so the attendance record cannot be visually or
+actually pointed at a client-selected shop.
+
+No permission or attendance capture rule changed. `npm run typecheck` and
+`npm run lint` passed; browser review remains `REVERIFY` with D-142's
+unavailable server/browser boundary.
+
+---
+
+### D-149 · Handoff changes the attendance banner immediately
+
+**Added 20 Aug 2026.** A handoff can begin on Sale and also end on Sale. Since
+the attendance banner previously refetched only when the pathname changed, it
+kept its pre-handoff quiet state until a manual browser refresh. A successful
+handoff now emits a local session-change event; the banner refetches its
+server-derived attendance status immediately and becomes the red clock-in
+prompt without a reload.
+
+No client decides attendance or branch state. `npm run typecheck` and
+`npm run lint` passed; browser review remains `REVERIFY` with D-142's
+unavailable server/browser boundary.
+
+---
+
 ## Known issues / debts
 
 | Item | Detail |

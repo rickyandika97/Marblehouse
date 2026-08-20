@@ -88,7 +88,6 @@ export async function login(input: LoginInput): Promise<LoginResult> {
       id: true,
       isOwner: true,
       mustChangePassword: true,
-      _count: { select: { userShops: true } },
     },
   });
 
@@ -99,9 +98,10 @@ export async function login(input: LoginInput): Promise<LoginResult> {
     data: { lastLoginAt: new Date() },
   });
 
-  // A user with exactly one assigned shop never sees the picker (§4.7);
-  // resolveWorkSession auto-selects it on the next request.
-  const needsWorkSession = user.isOwner ? true : user._count.userShops !== 1;
+  // The following request resolves the timetable before deciding whether the
+  // picker is needed. Keep this conservative login hint rather than re-create
+  // roster logic beside the day-start service.
+  const needsWorkSession = true;
 
   return {
     mustChangePassword: user.mustChangePassword,

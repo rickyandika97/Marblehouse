@@ -1,6 +1,7 @@
 import { requireActorPage } from "@/server/auth/page-guard";
 import { selectableShops } from "@/server/auth/context";
 import { listShops } from "@/server/services/shops";
+import { workSessionRosterMismatch } from "@/server/services/work-session";
 import { ChangeShopForm } from "./change-shop-form";
 import { ShopAdmin } from "./shop-admin";
 
@@ -23,8 +24,11 @@ export const dynamic = "force-dynamic";
  */
 export default async function ShopsPage() {
   const actor = await requireActorPage();
-  const shops = await selectableShops(actor);
-  const ownerShops = actor.isOwner ? await listShops(actor) : null;
+  const [shops, ownerShops, rosterMismatch] = await Promise.all([
+    selectableShops(actor),
+    actor.isOwner ? listShops(actor) : Promise.resolve(null),
+    workSessionRosterMismatch(actor),
+  ]);
 
   return (
     <div className="space-y-8">
@@ -47,6 +51,13 @@ export default async function ShopsPage() {
           shops={shops.map((s) => ({ id: s.id, code: s.code, name: s.name }))}
           currentShopId={actor.workSession?.shopId ?? null}
         />
+        {rosterMismatch && (
+          <p className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100">
+            Your timetable places you at {rosterMismatch.name} today. Your
+            current shop has not been changed automatically — keep it for cover
+            work, or change it above before recording new items.
+          </p>
+        )}
       </section>
 
       {ownerShops && (

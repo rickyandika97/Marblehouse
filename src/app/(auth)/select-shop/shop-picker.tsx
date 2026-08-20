@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Loader2, Search, Store } from "lucide-react";
+import { Check, ChevronRight, Loader2, Search, Store } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -118,8 +118,8 @@ export function ShopPicker({
           ) : (
             <ul
               className={cn(
-                "grid gap-3",
-                useSearch ? "grid-cols-1" : "grid-cols-1 sm:grid-cols-2"
+                "flex flex-col gap-3",
+                !useSearch && "sm:grid sm:grid-cols-2"
               )}
             >
               {visible.map((shop) => {
@@ -133,18 +133,17 @@ export function ShopPicker({
                       onClick={() => setSelected(shop.id)}
                       aria-pressed={isSelected}
                       className={cn(
-                        "flex w-full items-center gap-4 rounded-xl border-2 p-4 text-left transition-colors",
-                        "min-h-16",
+                        "group flex min-h-16 w-full items-center gap-4 rounded-full border-2 px-5 py-3 text-left transition-all",
                         isSelected
-                          ? "border-primary bg-primary/5"
-                          : "border-border hover:bg-muted"
+                          ? "border-primary bg-primary text-primary-foreground shadow-sm"
+                          : "border-border bg-card hover:border-primary/50 hover:bg-primary/5"
                       )}
                     >
                       <span
                         className={cn(
-                          "flex size-11 shrink-0 items-center justify-center rounded-lg",
+                          "flex size-10 shrink-0 items-center justify-center rounded-full",
                           isSelected
-                            ? "bg-primary text-primary-foreground"
+                            ? "bg-primary-foreground/15 text-primary-foreground"
                             : "bg-muted text-muted-foreground"
                         )}
                       >
@@ -159,11 +158,19 @@ export function ShopPicker({
                         <span className="block truncate font-semibold">
                           {shop.name}
                         </span>
-                        <span className="block text-sm text-muted-foreground">
+                        <span className={cn(
+                          "block text-sm",
+                          isSelected ? "text-primary-foreground/80" : "text-muted-foreground"
+                        )}>
                           {shop.code}
                           {isDefault && " · your usual branch"}
                         </span>
                       </span>
+                      {isSelected ? (
+                        <Check className="size-5 shrink-0" aria-label="Selected" />
+                      ) : (
+                        <ChevronRight className="size-5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" aria-hidden />
+                      )}
                     </button>
                   </li>
                 );

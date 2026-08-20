@@ -4516,6 +4516,60 @@ fresh deploy. There is no separate onboarding UI — it is the seed script:
 
 ---
 
+### D-124 · Expense entry gets a date override — a deliberate, narrow exception to "the client never sends businessDate"
+
+**Owner request, 20 Aug 2026,** as part of the Expenses/Expense-categories UI
+merge (recording an expense and managing categories both moved into modals on
+the Expenses screen). The owner asked for a manual date picker on the
+"Record expense" modal, defaulting to today but overridable — the real case is
+a receipt that gets entered the morning after, which should land in the
+report it actually belongs to, not today's.
+
+This runs straight into CLAUDE.md's rule 6 and D-18: `businessDate` is
+computed by the server, the client never sends it. That rule exists because a
+cost recorded against the wrong reporting day is a different event, not a
+typo — which is also why `updateExpense` still refuses to let the OWNER change
+the date on an *existing* row (`edit-expense.tsx`'s docstring). D-124 does not
+reopen that: editing an already-recorded expense's date is still blocked. This
+is only about the date an expense is recorded *as*, at entry time, once.
+
+**What shipped, in `src/server/services/expenses.ts`:**
+
+- `createExpenseSchema` gained an optional `businessDate: YYYY-MM-DD`.
+- `createExpense` still computes today's business date itself
+  (`businessDateFor`, shop timezone + the global day-start hour, unchanged).
+  If the client sends a `businessDate`, it is used **only as a value to
+  validate, never trusted outright** — reject with `VALIDATION_FAILED` if it
+  is after today. There is deliberately **no lower bound**: the owner
+  reconciling a stack of old receipts is exactly who asked for this, and an
+  arbitrary cutoff (7 days, 30 days) would have turned into a second support
+  request the moment someone hit it.
+- Both OWNER and MANAGER get the override — it follows who can record an
+  expense at all, not a narrower owner-only carve-out. A Purchasing-style
+  split (owner backdates, manager doesn't) was considered and rejected: there
+  is no cost-visibility reason to withhold it, and the same "enter it the next
+  morning" case applies to whoever is doing the entering.
+
+**UI (`add-expense.tsx`):** a `type="date"` field, `value` defaulting to the
+page's business date, `max` pinned to the same value so the native picker
+cannot even offer a future date — belt-and-suspenders with the server check,
+not a replacement for it. The request body only includes `businessDate` when
+it differs from today, so the common case (recording today) is byte-for-byte
+what it was before this change.
+
+**Verified for real:** backdated an expense through the actual modal against
+the dev database (`2026-08-10`, while the business date was `2026-08-20`) and
+confirmed it landed with that date, appeared correctly in the "This month"
+filtered history, and the running total picked it up. Broke the future-date
+guard on purpose (`if (false)` in place of the comparison), confirmed the new
+"refuses a future date" test in `expenses.test.ts` goes red, then reverted —
+CLAUDE.md gate 3. The stale test that used to assert "the schema strips
+`businessDate`" was rewritten into three: defaults to today when omitted,
+honours an explicit past date, refuses a future one. Full suite (407 tests),
+`typecheck`, `lint` and `docker compose build` all pass.
+
+---
+
 ## Known issues / debts
 
 | Item | Detail |

@@ -16,7 +16,9 @@
  *    tests that difference.
  *  - **Money survives the round trip as a string** (§4.1, D-13) — no float
  *    artefact, and two decimal places preserved.
- *  - **`businessDate` is server-computed** (§4.2, D-18), never client-sent.
+ *  - **`businessDate` is server-computed by default** (§4.2, D-18), and a
+ *    client-sent one is honoured only up to today — D-124's future-date
+ *    ceiling, never a delegation of the value itself.
  *  - **Role scoping**, including a manager reaching another branch by ID.
  */
 import { describe, expect, it, afterEach, afterAll } from "vitest";
@@ -294,30 +296,59 @@ describe("money", () => {
   });
 });
 
-// ────────────────────── businessDate (§4.2, D-18) ──────────────────────
+// ────────────────────── businessDate (§4.2, D-18, D-124) ──────────────────────
 
 describe("businessDate", () => {
-  it("is computed by the server, not sent by the client", async () => {
+  it("defaults to today when the client sends nothing", async () => {
     const shop = await makeShop(prisma, "Expense");
     shopIds.push(shop.id);
     const owner = await makeUser("OWNER", [shop.id]);
     const category = await makeCategory();
 
-    // A client trying to backdate the row. `createExpenseSchema` has no
-    // `businessDate` field, so Zod strips it before the service ever sees it —
-    // the parse is the control, and this asserts it holds.
-    const hostile = createExpenseSchema.parse({
+    const input = createExpenseSchema.parse({
+      shopId: shop.id,
+      categoryId: category.id,
+      amount: "1000",
+    });
+
+    const expense = await createExpense(owner, input);
+
+    expect(expense.businessDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it("honours an explicit past date — D-124's whole reason to exist", async () => {
+    const shop = await makeShop(prisma, "Expense");
+    shopIds.push(shop.id);
+    const owner = await makeUser("OWNER", [shop.id]);
+    const category = await makeCategory();
+
+    const input = createExpenseSchema.parse({
       shopId: shop.id,
       categoryId: category.id,
       amount: "1000",
       businessDate: "1999-01-01",
     });
-    expect(hostile).not.toHaveProperty("businessDate");
 
-    const expense = await createExpense(owner, hostile);
+    const expense = await createExpense(owner, input);
 
-    expect(expense.businessDate).not.toBe("1999-01-01");
-    expect(expense.businessDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(expense.businessDate).toBe("1999-01-01");
+  });
+
+  it("refuses a future date — the client's date is a ceiling the server still enforces", async () => {
+    const shop = await makeShop(prisma, "Expense");
+    shopIds.push(shop.id);
+    const owner = await makeUser("OWNER", [shop.id]);
+    const category = await makeCategory();
+
+    const farFuture = "2999-01-01";
+    const input = createExpenseSchema.parse({
+      shopId: shop.id,
+      categoryId: category.id,
+      amount: "1000",
+      businessDate: farFuture,
+    });
+
+    await expect(createExpense(owner, input)).rejects.toThrow(AppError);
   });
 });
 

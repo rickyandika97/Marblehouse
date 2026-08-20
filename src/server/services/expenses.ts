@@ -102,6 +102,18 @@ export const createExpenseSchema = z.object({
   note: z.string().trim().max(500).optional(),
   /** Relative path from `storeReceipt`; the client never invents one. */
   receiptPath: z.string().trim().max(300).optional(),
+  /**
+   * D-124: a deliberate, narrow exception to "the client never sends
+   * businessDate" (§4.2, CLAUDE.md rule 6). It backdates a receipt entered
+   * late — it does not let the client pick an arbitrary reporting day.
+   * `createExpense` still computes today's business date itself and refuses
+   * anything after it; this is only ever a ceiling, never a value it trusts
+   * outright.
+   */
+  businessDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "Enter a date like 2026-08-20")
+    .optional(),
 });
 
 export const updateExpenseSchema = z.object({
@@ -388,9 +400,17 @@ async function assertCanRecordAgainst(
 /**
  * Record an expense (§7.6).
  *
- * `businessDate` is computed from the shop's timezone and the GLOBAL day-start
- * hour (§4.2, D-18) — the client never sends it, the same rule every other
- * dated row follows.
+ * `businessDate` defaults to the shop's timezone and the GLOBAL day-start hour
+ * (§4.2, D-18), same as every other dated row. **D-124 is the one deliberate
+ * exception to "the client never sends it":** a manager entering a receipt the
+ * morning after can supply `businessDate` to backdate the expense, so it lands
+ * in the report it actually belongs to instead of today's.
+ *
+ * This is a ceiling, not a delegation. The server still computes today's
+ * business date itself and REJECTS anything after it — a client cannot record
+ * an expense against tomorrow no matter what it sends. There is deliberately
+ * no lower bound: an owner reconciling a stack of receipts from last quarter
+ * is exactly who this exists for.
  */
 export async function createExpense(
   actor: Actor,
@@ -417,11 +437,25 @@ export async function createExpense(
     select: { timezone: true },
   });
 
-  const businessDate = businessDateFor(
+  const today = businessDateFor(
     new Date(),
     shop.timezone,
     await getBusinessDayStartHour(),
   );
+
+  let businessDate = today;
+  if (input.businessDate) {
+    // Parsed the same way `listExpenses` parses a filter date — UTC midnight,
+    // matching the column type. Comparing as Dates rather than strings keeps
+    // this correct regardless of format.
+    businessDate = new Date(`${input.businessDate}T00:00:00Z`);
+    if (businessDate.getTime() > today.getTime()) {
+      throw new AppError(
+        "VALIDATION_FAILED",
+        "An expense cannot be dated in the future.",
+      );
+    }
+  }
 
   const created = await tx.expense.create({
     data: {

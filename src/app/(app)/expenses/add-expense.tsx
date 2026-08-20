@@ -41,10 +41,13 @@ export function AddExpense({
   currentShopId,
   shops,
   categories,
+  businessDate,
 }: {
   currentShopId: string;
   shops: { id: string; name: string }[];
   categories: CategoryOption[];
+  /** Today's business date, `YYYY-MM-DD` — the default and the latest date the picker allows (D-124). */
+  businessDate: string;
 }) {
   const router = useRouter();
 
@@ -53,6 +56,7 @@ export function AddExpense({
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
+  const [date, setDate] = useState(businessDate);
   const [submitting, setSubmitting] = useState(false);
 
   const idempotencyKey = useRef(crypto.randomUUID());
@@ -62,9 +66,15 @@ export function AddExpense({
     setCategoryId(null);
     setAmount("");
     setNote("");
+    setDate(businessDate);
   }
 
-  const canSubmit = categoryId !== null && amount.trim() !== "" && !submitting;
+  const canSubmit =
+    categoryId !== null &&
+    amount.trim() !== "" &&
+    date.trim() !== "" &&
+    date <= businessDate &&
+    !submitting;
 
   async function submit() {
     if (!canSubmit) return;
@@ -82,6 +92,9 @@ export function AddExpense({
           categoryId,
           amount: amount.trim(),
           note: note.trim() || undefined,
+          // Only sent when backdated — omitting it on the common case (today)
+          // keeps the request identical to before D-124 for the normal path.
+          businessDate: date !== businessDate ? date : undefined,
         }),
       });
       const body = await response.json().catch(() => null);
@@ -127,11 +140,25 @@ export function AddExpense({
         <DialogHeader>
           <DialogTitle>Record expense</DialogTitle>
           <DialogDescription>
-            Recorded against today&apos;s business date, for the shop below.
+            Defaults to today. Back-date it if you&apos;re entering a receipt
+            late — it cannot be dated in the future.
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
+          <div className="space-y-1">
+            <label htmlFor="expense-date" className="text-sm font-medium">
+              Date
+            </label>
+            <Input
+              id="expense-date"
+              type="date"
+              value={date}
+              max={businessDate}
+              onChange={(e) => setDate(e.target.value)}
+            />
+          </div>
+
           {shops.length > 1 && (
             <div className="space-y-1">
               <label htmlFor="expense-shop" className="text-sm font-medium">

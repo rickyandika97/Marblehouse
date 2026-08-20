@@ -124,6 +124,7 @@ export default async function ExpensesPage({
             currentShopId={session.shopId}
             shops={shops.map((s) => ({ id: s.id, name: s.name }))}
             categories={categories}
+            businessDate={businessDate}
           />
         </div>
       </div>

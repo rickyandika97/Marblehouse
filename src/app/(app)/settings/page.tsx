@@ -40,11 +40,12 @@ export default async function SettingsPage() {
       show: true,
     },
     {
-      href: "/change-password",
-      icon: KeyRound,
-      title: "Change password",
-      description: "Update the password for this account",
-      show: true,
+      href: "/settings/employees",
+      icon: Users,
+      title: "Employees",
+      description: "Create accounts, set each shop's role and access",
+      // Shown only to the owner — but the page enforces it again server-side.
+      show: actor.isOwner,
     },
     {
       href: "/expenses",
@@ -67,14 +68,6 @@ export default async function SettingsPage() {
       show: !isStaffOnly,
     },
     {
-      href: "/settings/employees",
-      icon: Users,
-      title: "Employees",
-      description: "Create accounts, set each shop's role and access",
-      // Shown only to the owner — but the page enforces it again server-side.
-      show: actor.isOwner,
-    },
-    {
       href: "/settings/backups",
       icon: DatabaseBackup,
       title: "Backups",
@@ -87,6 +80,13 @@ export default async function SettingsPage() {
       title: "Audit log",
       description: "Every privileged change, with who and when",
       show: actor.isOwner,
+    },
+    {
+      href: "/change-password",
+      icon: KeyRound,
+      title: "Change password",
+      description: "Update the password for this account",
+      show: true,
     },
     {
       href: "/settings/system",

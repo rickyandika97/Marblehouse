@@ -54,7 +54,7 @@ const REPORTS: {
     description: "What customers took home, and the tickets they spent.",
   },
   {
-    href: "/reports/attendance",
+    href: "/attendance?view=report",
     title: "Attendance & Lateness",
     description: "Late counts and late rate per staff member.",
   },

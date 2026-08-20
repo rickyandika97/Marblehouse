@@ -7,9 +7,8 @@
  *
  * What is worth proving here rather than assuming:
  *
- *  - **One record per user per business day** (§4.13), including under a
- *    concurrent double-tap. The unique constraint is the arbiter; the service
- *    must turn the violation into a friendly conflict, not a 500.
+ *  - **One record per configured shift per user per business day**, including
+ *    under a concurrent double-tap. A later shift at another branch is allowed.
  *  - **Lateness is snapshotted** (§4.14) so editing a shift later cannot
  *    rewrite history.
  *  - **A denied location is recorded, not refused** — the clock-in still
@@ -26,6 +25,7 @@ import {
   clockOut,
   editAttendance,
   listAttendance,
+  listAttendanceAttention,
   localWeekday,
 } from "../attendance";
 import { deleteAttendancePhoto } from "../attendance-photo";
@@ -81,7 +81,11 @@ async function photo(): Promise<ArrayBuffer> {
 }
 
 async function fixture(
-  opts: { role?: "OWNER" | "MANAGER" | "STAFF"; shiftStart?: string } = {}
+  opts: {
+    role?: "OWNER" | "MANAGER" | "STAFF";
+    shiftStart?: string;
+    shiftEnd?: string;
+  } = {}
 ) {
   const shop = await makeShop(prisma, "Attendance");
   shopIds.push(shop.id);
@@ -102,12 +106,13 @@ async function fixture(
 
   // A shift starting at the given wall-clock time, every day.
   const [h, m] = (opts.shiftStart ?? "09:00").split(":").map(Number);
+  const [endH, endM] = (opts.shiftEnd ?? "17:00").split(":").map(Number);
   const shift = await prisma.shift.create({
     data: {
       shopId: shop.id,
       name: "Test shift",
       startTime: new Date(Date.UTC(1970, 0, 1, h, m, 0)),
-      endTime: new Date(Date.UTC(1970, 0, 1, 17, 0, 0)),
+      endTime: new Date(Date.UTC(1970, 0, 1, endH, endM, 0)),
       daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
     },
     select: { id: true },
@@ -175,7 +180,7 @@ describe("clock-in (§4.13)", () => {
     expect(row?.graceMinAtCapture).toBe(5);
   });
 
-  it("refuses a SECOND clock-in on the same business day", async () => {
+  it("refuses a SECOND clock-in for the same shift on the same business day", async () => {
     const { shop, shift, actor } = await fixture();
 
     await track(
@@ -195,6 +200,60 @@ describe("clock-in (§4.13)", () => {
     expect(
       await prisma.attendance.count({ where: { userId: actor.userId } })
     ).toBe(1);
+  });
+
+  it("allows a later shift at a different shop on the same business day", async () => {
+    const { shop, shift, actor } = await fixture();
+    const secondShop = await makeShop(prisma, "Later shift");
+    shopIds.push(secondShop.id);
+    await prisma.userShop.create({
+      data: { userId: actor.userId, shopId: secondShop.id, role: "STAFF" },
+    });
+    actor.shopRoles.set(secondShop.id, { role: "STAFF", canEnterCost: false });
+    const secondShift = await prisma.shift.create({
+      data: {
+        shopId: secondShop.id,
+        name: "Evening shift",
+        startTime: new Date(Date.UTC(1970, 0, 1, 18, 0, 0)),
+        endTime: new Date(Date.UTC(1970, 0, 1, 23, 0, 0)),
+        daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+      },
+    });
+
+    await track(clockIn(actor, shop.id, await photo(), {
+      shiftId: shift.id,
+      locationDenied: true,
+    }));
+    await track(clockIn(actor, secondShop.id, await photo(), {
+      shiftId: secondShift.id,
+      locationDenied: true,
+    }));
+
+    expect(await prisma.attendance.count({ where: { userId: actor.userId } })).toBe(2);
+  });
+
+  it("allows two different shifts at the same shop on the same business day", async () => {
+    const { shop, shift, actor } = await fixture();
+    const laterShift = await prisma.shift.create({
+      data: {
+        shopId: shop.id,
+        name: "Evening shift",
+        startTime: new Date(Date.UTC(1970, 0, 1, 18, 0, 0)),
+        endTime: new Date(Date.UTC(1970, 0, 1, 23, 0, 0)),
+        daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+      },
+    });
+
+    await track(clockIn(actor, shop.id, await photo(), {
+      shiftId: shift.id,
+      locationDenied: true,
+    }));
+    await track(clockIn(actor, shop.id, await photo(), {
+      shiftId: laterShift.id,
+      locationDenied: true,
+    }));
+
+    expect(await prisma.attendance.count({ where: { userId: actor.userId } })).toBe(2);
   });
 
   it("creates exactly one record when two clock-ins race", async () => {
@@ -353,6 +412,43 @@ describe("attendance status — the red banner (§4.13)", () => {
     expect(status.record?.clockOutAt).toBeNull();
   });
 
+  it("prompts a staff member to clock out once their shift has ended", async () => {
+    const { shop, shift, actor } = await fixture();
+    await track(
+      clockIn(actor, shop.id, await photo(), {
+        shiftId: shift.id,
+        locationDenied: false,
+      })
+    );
+
+    // 18:00 in the fixture shop's Asia/Jakarta timezone, after 17:00.
+    const status = await attendanceStatus(actor, new Date("2026-03-11T11:00:00.000Z"));
+    expect(status.clockOutPrompt).toEqual({
+      shopName: shop.name,
+      shiftName: "Test shift",
+      endTime: "17:00",
+    });
+  });
+
+  it("does not prompt before a shift ends or after it is clocked out", async () => {
+    const { shop, shift, actor } = await fixture();
+    await track(
+      clockIn(actor, shop.id, await photo(), {
+        shiftId: shift.id,
+        locationDenied: false,
+      })
+    );
+
+    expect(
+      (await attendanceStatus(actor, new Date("2026-03-11T07:00:00.000Z"))).clockOutPrompt
+    ).toBeNull();
+
+    await clockOut(actor, {});
+    expect(
+      (await attendanceStatus(actor, new Date("2026-03-11T11:00:00.000Z"))).clockOutPrompt
+    ).toBeNull();
+  });
+
   /**
    * §8.9's "No shift applies — clock in anyway" path stores `shiftId: null`
    * (D-52). The card must render for that person too, so `shift` has to be a
@@ -403,6 +499,36 @@ describe("clock-out", () => {
   it("refuses a clock-out with no clock-in", async () => {
     const { actor } = await fixture();
     await expect(clockOut(actor, {})).rejects.toThrow(/have not clocked in/i);
+  });
+
+  it("closes the selected record without closing another open shift", async () => {
+    const { shop, shift, actor } = await fixture();
+    const laterShift = await prisma.shift.create({
+      data: {
+        shopId: shop.id,
+        name: "Later shift",
+        startTime: new Date(Date.UTC(1970, 0, 1, 18, 0, 0)),
+        endTime: new Date(Date.UTC(1970, 0, 1, 23, 0, 0)),
+        daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+      },
+    });
+    const first = await track(clockIn(actor, shop.id, await photo(), {
+      shiftId: shift.id,
+      locationDenied: true,
+    }));
+    const second = await track(clockIn(actor, shop.id, await photo(), {
+      shiftId: laterShift.id,
+      locationDenied: true,
+    }));
+
+    await clockOut(actor, { attendanceId: first.id });
+
+    const rows = await prisma.attendance.findMany({
+      where: { id: { in: [first.id, second.id] } },
+      select: { id: true, clockOutAt: true },
+    });
+    expect(rows.find((row) => row.id === first.id)?.clockOutAt).not.toBeNull();
+    expect(rows.find((row) => row.id === second.id)?.clockOutAt).toBeNull();
   });
 });
 
@@ -476,6 +602,100 @@ describe("read scoping (§3.4)", () => {
     expect(serialized).not.toContain("photoPath");
     expect(serialized).not.toMatch(/attendance[/\\]\d{4}[/\\]/);
   });
+});
+
+it("lists the named people behind today's dashboard attendance alerts", async () => {
+  const staff = await fixture();
+  const owner = await fixture({ role: "OWNER" });
+
+  // The dashboard's "not clocked in" count is based on branch assignments,
+  // not on attendance rows (there is intentionally no row until they clock in).
+  await prisma.userShop.create({
+    data: { userId: staff.actor.userId, shopId: staff.shop.id, role: "STAFF" },
+  });
+
+  const missing = await listAttendanceAttention(owner.actor, {
+    issue: "not-clocked-in",
+    shopId: staff.shop.id,
+  });
+  expect(missing).toEqual([
+    expect.objectContaining({
+      userId: staff.actor.userId,
+      displayName: staff.user.displayName,
+      shop: expect.objectContaining({ id: staff.shop.id }),
+    }),
+  ]);
+
+  const record = await prisma.attendance.create({
+    data: {
+      userId: staff.actor.userId,
+      shopId: staff.shop.id,
+      shiftId: staff.shift.id,
+      businessDate: staff.actor.businessDate,
+      clockInAt: new Date("2026-03-11T02:30:00.000Z"),
+      isLate: true,
+      lateMinutes: 25,
+      status: "LATE",
+    },
+  });
+  attendanceIds.push(record.id);
+
+  const late = await listAttendanceAttention(owner.actor, {
+    issue: "late",
+    shopId: staff.shop.id,
+  });
+  expect(late).toHaveLength(1);
+  expect(late[0]).toMatchObject({
+    id: record.id,
+    user: { id: staff.actor.userId, displayName: staff.user.displayName },
+    isLate: true,
+    lateMinutes: 25,
+  });
+});
+
+it("keeps a multi-branch manager's team list to branches they manage", async () => {
+  const manager = await fixture({ role: "MANAGER" });
+  const staffBranch = await fixture();
+
+  await prisma.userShop.create({
+    data: {
+      userId: manager.actor.userId,
+      shopId: staffBranch.shop.id,
+      role: "STAFF",
+    },
+  });
+  manager.actor.shopRoles.set(staffBranch.shop.id, {
+    role: "STAFF",
+    canEnterCost: false,
+  });
+
+  const today = await prisma.attendance.create({
+    data: {
+      userId: manager.actor.userId,
+      shopId: manager.shop.id,
+      businessDate: manager.actor.businessDate,
+      clockInAt: new Date("2026-03-11T02:00:00.000Z"),
+    },
+  });
+  const previousDay = new Date(manager.actor.businessDate);
+  previousDay.setUTCDate(previousDay.getUTCDate() - 1);
+  const staffBranchRecord = await prisma.attendance.create({
+    data: {
+      userId: manager.actor.userId,
+      shopId: staffBranch.shop.id,
+      businessDate: previousDay,
+      clockInAt: new Date("2026-03-10T02:00:00.000Z"),
+    },
+  });
+  attendanceIds.push(today.id, staffBranchRecord.id);
+
+  const team = await listAttendance(manager.actor, {});
+  expect(team.map((row) => row.shop.id)).toEqual([manager.shop.id]);
+
+  const mine = await listAttendance(manager.actor, { mineOnly: true });
+  expect(mine.map((row) => row.shop.id)).toEqual(
+    expect.arrayContaining([manager.shop.id, staffBranch.shop.id])
+  );
 });
 
 describe("owner edit / excuse (§4.13)", () => {

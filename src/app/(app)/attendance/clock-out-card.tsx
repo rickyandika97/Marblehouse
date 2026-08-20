@@ -39,13 +39,12 @@ import {
  * enough", and here you always may.
  */
 interface ClockOutState {
-  clockedIn: boolean;
-  record: {
+  openRecords: {
+    id: string;
     clockInAt: string;
-    clockOutAt: string | null;
     shopName: string;
     shift: { id: string; name: string; endTime: string } | null;
-  } | null;
+  }[];
 }
 
 /** "7h 14m" — how long they have been on shift, from the server's clock-in. */
@@ -66,7 +65,7 @@ function timeLabel(iso: string): string {
 export function ClockOutCard() {
   const router = useRouter();
   const [state, setState] = useState<ClockOutState | null>(null);
-  const [open, setOpen] = useState(false);
+  const [record, setRecord] = useState<ClockOutState["openRecords"][number] | null>(null);
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
   // Ticks the elapsed label. Held in state rather than read at render time so
@@ -79,7 +78,7 @@ export function ClockOutCard() {
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (!cancelled && data) {
-          setState({ clockedIn: data.clockedIn, record: data.record });
+          setState({ openRecords: data.openRecords ?? [] });
         }
       })
       .catch(() => undefined);
@@ -94,6 +93,7 @@ export function ClockOutCard() {
   }, []);
 
   async function clockOut() {
+    if (!record) return;
     setSubmitting(true);
     try {
       const response = await fetch("/api/attendance/clock-out", {
@@ -101,7 +101,10 @@ export function ClockOutCard() {
         headers: { "Content-Type": "application/json" },
         // Omitted entirely when blank — the schema treats the note as optional,
         // and sending "" would store an empty string rather than nothing.
-        body: JSON.stringify(note.trim() === "" ? {} : { note: note.trim() }),
+        body: JSON.stringify({
+          attendanceId: record.id,
+          ...(note.trim() === "" ? {} : { note: note.trim() }),
+        }),
       });
       const body = await response.json().catch(() => null);
 
@@ -115,10 +118,15 @@ export function ClockOutCard() {
           ? `Clocked out at ${timeLabel(body.clockOutAt)}.`
           : "Clocked out."
       );
-      setOpen(false);
+      // Let the app-wide reminder disappear immediately instead of waiting for
+      // its minute refresh interval.
+      window.dispatchEvent(new Event("attendance-changed"));
+      setRecord(null);
       setNote("");
       setState((s) =>
-        s?.record ? { ...s, record: { ...s.record, clockOutAt: body.clockOutAt } } : s
+        s
+          ? { ...s, openRecords: s.openRecords.filter((row) => row.id !== record.id) }
+          : s
       );
       router.refresh();
     } catch {
@@ -128,44 +136,50 @@ export function ClockOutCard() {
     }
   }
 
-  // Nothing to offer until the server has answered, to someone who never
-  // clocked in, or to someone already finished for the day.
-  if (!state?.clockedIn || !state.record || state.record.clockOutAt) return null;
-
-  const { record } = state;
+  // A split-shift employee can have more than one open attendance record.
+  // Each card chooses its exact row, so clocking out at PIK cannot close MKG.
+  if (!state?.openRecords.length) return null;
 
   return (
     <>
-      <section className="flex flex-wrap items-center gap-3 rounded-xl border bg-muted/30 p-4">
-        <div className="min-w-0 flex-1">
-          <p className="font-semibold">
-            Clocked in {timeLabel(record.clockInAt)} · {record.shopName}
-          </p>
-          <p className="text-sm text-muted-foreground">
-            On shift for {elapsedLabel(record.clockInAt, now)}
-            {record.shift && ` · ${record.shift.name} ends ${record.shift.endTime}`}
-          </p>
-        </div>
-        <Button size="lg" variant="outline" onClick={() => setOpen(true)}>
-          <LogOut className="size-4" />
-          Clock out
-        </Button>
-      </section>
+      {state.openRecords.map((openRecord) => (
+        <section key={openRecord.id} className="flex flex-wrap items-center gap-3 rounded-xl border bg-muted/30 p-4">
+          <div className="min-w-0 flex-1">
+            <p className="font-semibold">
+              Clocked in {timeLabel(openRecord.clockInAt)} · {openRecord.shopName}
+            </p>
+            <p className="text-sm text-muted-foreground">
+              On shift for {elapsedLabel(openRecord.clockInAt, now)}
+              {openRecord.shift && ` · ${openRecord.shift.name} ends ${openRecord.shift.endTime}`}
+            </p>
+          </div>
+          <Button size="lg" variant="outline" onClick={() => setRecord(openRecord)}>
+            <LogOut className="size-4" />
+            Clock out
+          </Button>
+        </section>
+      ))}
 
       <Dialog
-        open={open}
+        open={record !== null}
         onOpenChange={(next) => {
-          setOpen(next);
-          if (!next) setNote("");
+          if (!next) {
+            setRecord(null);
+            setNote("");
+          }
         }}
       >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Clock out?</DialogTitle>
             <DialogDescription>
-              {timeLabel(record.clockInAt)} → now · on shift for{" "}
-              {elapsedLabel(record.clockInAt, now)}
-              {record.shift && ` · scheduled to ${record.shift.endTime}`}
+              {record && (
+                <>
+                  {timeLabel(record.clockInAt)} → now · on shift for{" "}
+                  {elapsedLabel(record.clockInAt, now)}
+                  {record.shift && ` · scheduled to ${record.shift.endTime}`}
+                </>
+              )}
             </DialogDescription>
           </DialogHeader>
 
@@ -197,7 +211,7 @@ export function ClockOutCard() {
           <DialogFooter className="gap-2">
             <Button
               variant="outline"
-              onClick={() => setOpen(false)}
+              onClick={() => setRecord(null)}
               disabled={submitting}
             >
               Cancel

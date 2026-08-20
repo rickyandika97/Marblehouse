@@ -7,9 +7,9 @@ import { clockIn, clockInSchema } from "@/server/services/attendance";
  * Clock in (§4.13, §7.7). `multipart/form-data` — the photo is a blob.
  *
  * The shop comes from the work session, never the request body, exactly as a
- * sale does. Not idempotency-keyed: the unique constraint on
- * `(userId, businessDate)` already makes a double-tap safe, and it returns a
- * friendly conflict rather than a duplicate record.
+ * sale does. Not idempotency-keyed: a database constraint on the same shift
+ * (or the same branch's no-shift arrival) makes a double-tap safe while still
+ * allowing a later shift at another shop.
  */
 export async function POST(req: Request) {
   return handleRoute(async () => {

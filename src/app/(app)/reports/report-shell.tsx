@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Download } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatAmount, formatMoney } from "@/lib/money";
+import { cn } from "@/lib/utils";
 import { selectableShops, type Actor } from "@/server/auth/context";
 import { ReportFilters, type ShopOption } from "./report-filters";
 
@@ -154,14 +155,17 @@ export function ReportTable<Row>({
 /** A row of headline figures above a table. */
 export function ReportTotals({
   items,
+  contentClassName,
 }: {
   items: { label: string; value: string; hint?: string }[];
+  /** Lets a dense dashboard-style report opt out of the extra top inset. */
+  contentClassName?: string;
 }) {
   return (
     <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
       {items.map((it) => (
         <Card key={it.label}>
-          <CardContent className="pt-6">
+          <CardContent className={cn("pt-6", contentClassName)}>
             <p className="text-xs font-medium text-muted-foreground">{it.label}</p>
             <p className="mt-1 text-2xl font-semibold tabular-nums">{it.value}</p>
             {it.hint && <p className="mt-0.5 text-xs text-muted-foreground">{it.hint}</p>}

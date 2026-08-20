@@ -49,7 +49,7 @@ const TABS: Record<ShellRole, { href: string; label: string; icon: typeof User }
     { href: "/sale", label: "Sales", icon: ShoppingCart },
     { href: "/customers", label: "Customers", icon: Users },
     { href: "/stock", label: "Stock", icon: Package },
-    { href: "/reports/tickets-awarded", label: "Reports", icon: BarChart3 },
+    { href: "/reports", label: "Reports", icon: BarChart3 },
     { href: "/settings", label: "Settings", icon: Settings },
   ],
   MANAGER: [

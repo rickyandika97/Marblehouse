@@ -12,6 +12,9 @@ export async function GET(req: Request) {
       entity: params.get("entity") || undefined,
       action: params.get("action") || undefined,
       userId: params.get("userId") || undefined,
+      from: params.get("from") || undefined,
+      to: params.get("to") || undefined,
+      q: params.get("q") || undefined,
       cursor: params.get("cursor") || undefined,
       limit: params.get("limit") ? Number(params.get("limit")) : undefined,
     });

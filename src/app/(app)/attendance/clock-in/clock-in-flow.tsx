@@ -226,6 +226,9 @@ export function ClockInFlow({
       }
 
       setResult(body);
+      // Keep the app-wide attendance prompt in sync even before the user
+      // leaves this confirmation page.
+      window.dispatchEvent(new Event("attendance-changed"));
       router.refresh();
     } catch {
       toast.error("No connection. Check the wifi and try again.");
@@ -257,8 +260,8 @@ export function ClockInFlow({
             ) : null}
           </p>
           <p className="mt-2 text-sm text-muted-foreground">
-            Only one clock-in is recorded per day. Ask the owner if this needs
-            correcting.
+            This shift is already clocked in. You can still clock in for a
+            later shift at another branch.
           </p>
         </div>
         <Button render={<a href={doneHref} />} size="lg" className="w-full">

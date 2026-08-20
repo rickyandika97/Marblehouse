@@ -3,6 +3,7 @@ import { requireOwnerPage, asPageError } from "@/server/auth/page-guard";
 import { auditLogFilters, listAuditLog } from "@/server/services/audit-log";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { AuditLogFilters } from "./audit-log-filters";
 
 export const metadata = { title: "Audit log · Marblehouse" };
 export const dynamic = "force-dynamic";
@@ -28,10 +29,13 @@ export default async function AuditLogPage({
 
   const entity = one(params.entity);
   const action = one(params.action);
+  const from = one(params.from);
+  const to = one(params.to);
+  const q = one(params.q);
   const cursor = one(params.cursor);
 
   const [{ rows, nextCursor }, filters] = await Promise.all([
-    listAuditLog(actor, { entity, action, cursor }).catch(asPageError),
+    listAuditLog(actor, { entity, action, from, to, q, cursor }).catch(asPageError),
     auditLogFilters(actor).catch(asPageError),
   ]);
 
@@ -39,7 +43,7 @@ export default async function AuditLogPage({
   // path would silently drop them and page into a different result set (D-69).
   const linkWith = (patch: Record<string, string | undefined>) => {
     const sp = new URLSearchParams();
-    const merged = { entity, action, ...patch };
+    const merged = { entity, action, from, to, q, ...patch };
     for (const [k, v] of Object.entries(merged)) if (v) sp.set(k, v);
     const qs = sp.toString();
     return qs ? `/settings/audit-log?${qs}` : "/settings/audit-log";
@@ -77,6 +81,8 @@ export default async function AuditLogPage({
         ))}
       </div>
 
+      <AuditLogFilters q={q} from={from} to={to} />
+
       {rows.length === 0 ? (
         <Card className="p-6 text-center text-sm text-muted-foreground">
           No audit entries match these filters.
@@ -100,7 +106,6 @@ export default async function AuditLogPage({
                 {r.actor ?? "system"}
                 {r.role ? ` (${r.role})` : ""}
                 {r.shopName ? ` · ${r.shopName}` : ""}
-                {r.entityId ? ` · ${r.entityId}` : ""}
               </div>
               {r.reason && (
                 <div className="text-sm">
@@ -119,7 +124,7 @@ export default async function AuditLogPage({
           className="w-full"
           render={<Link href={linkWith({ cursor: nextCursor })} />}
         >
-          Load more
+          Next 30 entries
         </Button>
       )}
     </div>

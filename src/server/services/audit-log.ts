@@ -12,14 +12,21 @@
  * reason — they are small, and losing them is worse than keeping them.
  */
 import { prisma } from "@/lib/prisma";
+import { localParts } from "@/lib/business-date";
 import type { Actor } from "@/server/auth/context";
 import { forbidden } from "@/server/errors";
+import { Prisma } from "@prisma/client";
 import { z } from "zod";
 
 export const listAuditLogSchema = z.object({
   entity: z.string().max(64).optional(),
   action: z.string().max(64).optional(),
   userId: z.string().max(64).optional(),
+  /** Inclusive calendar-date range in the app timezone, not UTC days. */
+  from: z.string().date().optional(),
+  to: z.string().date().optional(),
+  /** Searches the complete trail before pagination, including change details. */
+  q: z.string().trim().max(120).optional(),
   /** Opaque continuation cursor — the id of the last row on the page. */
   cursor: z.string().max(64).optional(),
   limit: z.number().int().min(1).max(100).optional(),
@@ -43,7 +50,32 @@ export interface AuditLogRow {
 }
 
 /** NF-4's page size. A trail is browsed, not loaded whole. */
-const DEFAULT_LIMIT = 50;
+const DEFAULT_LIMIT = 30;
+
+/**
+ * Convert an ISO calendar date to its start instant in the app timezone.
+ * Audit timestamps are UTC, but an owner choosing 20 Aug expects their local
+ * 20 Aug, not the UTC slice that overlaps two Jakarta calendar days.
+ */
+function calendarDayStart(date: string, timezone = process.env.TZ ?? "Asia/Jakarta") {
+  const toInstant = (ymd: string) => {
+    const [year, month, day] = ymd.split("-").map(Number) as [number, number, number];
+    const guessedUtc = Date.UTC(year, month - 1, day);
+    const local = localParts(new Date(guessedUtc), timezone);
+    const offsetMs =
+      Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute, local.second) -
+      guessedUtc;
+    return new Date(guessedUtc - offsetMs);
+  };
+
+  return toInstant(date);
+}
+
+function nextCalendarDate(date: string) {
+  const next = new Date(`${date}T00:00:00.000Z`);
+  next.setUTCDate(next.getUTCDate() + 1);
+  return next.toISOString().slice(0, 10);
+}
 
 export async function listAuditLog(
   actor: Actor,
@@ -57,14 +89,88 @@ export async function listAuditLog(
   }
 
   const take = input.limit ?? DEFAULT_LIMIT;
+  const q = input.q?.trim();
+
+  // Prisma's JSON filters only inspect a declared path, whereas audit detail
+  // objects have intentionally varied shapes. Cast the two immutable snapshots
+  // to text for a safe parameterised whole-document search, then feed their IDs
+  // back into the normal paged query below.
+  const matchingDetailIds = q
+    ? (
+        await prisma.$queryRaw<{ id: string }[]>(Prisma.sql`
+          SELECT "id"
+          FROM "AuditLog"
+          WHERE "before"::text ILIKE ${`%${q}%`}
+             OR "after"::text ILIKE ${`%${q}%`}
+        `)
+      ).map((row) => row.id)
+    : [];
+
+  // AuditLog deliberately stores shopId without a relation so a historical row
+  // survives a renamed/deactivated shop. Find matching shops separately, then
+  // include those immutable IDs in the trail search.
+  const matchingShopIds = q
+    ? (
+        await prisma.shop.findMany({
+          where: {
+            OR: [
+              { name: { contains: q, mode: "insensitive" } },
+              { code: { contains: q, mode: "insensitive" } },
+            ],
+          },
+          select: { id: true },
+        })
+      ).map((shop) => shop.id)
+    : [];
+
+  const matchingRoles = q
+    ? (["OWNER", "MANAGER", "STAFF"] as const).filter((role) =>
+        role.includes(q.toUpperCase())
+      )
+    : [];
+
+  const where: Prisma.AuditLogWhereInput = {
+    ...(input.entity ? { entity: input.entity } : {}),
+    ...(input.action ? { action: input.action } : {}),
+    ...(input.userId ? { userId: input.userId } : {}),
+    ...(input.from || input.to
+      ? {
+          occurredAt: {
+            ...(input.from ? { gte: calendarDayStart(input.from) } : {}),
+            ...(input.to ? { lt: calendarDayStart(nextCalendarDate(input.to)) } : {}),
+          },
+        }
+      : {}),
+    ...(q
+      ? {
+          OR: [
+            { id: { contains: q, mode: "insensitive" } },
+            { entity: { contains: q, mode: "insensitive" } },
+            { action: { contains: q, mode: "insensitive" } },
+            { entityId: { contains: q, mode: "insensitive" } },
+            { reason: { contains: q, mode: "insensitive" } },
+            { ipAddress: { contains: q, mode: "insensitive" } },
+            {
+              user: {
+                is: {
+                  OR: [
+                    { displayName: { contains: q, mode: "insensitive" } },
+                    { username: { contains: q, mode: "insensitive" } },
+                  ],
+                },
+              },
+            },
+            ...(matchingDetailIds.length ? [{ id: { in: matchingDetailIds } }] : []),
+            ...(matchingShopIds.length ? [{ shopId: { in: matchingShopIds } }] : []),
+            ...(matchingRoles.length ? [{ role: { in: matchingRoles } }] : []),
+          ],
+        }
+      : {}),
+  };
 
   const rows = await prisma.auditLog.findMany({
-    where: {
-      ...(input.entity ? { entity: input.entity } : {}),
-      ...(input.action ? { action: input.action } : {}),
-      ...(input.userId ? { userId: input.userId } : {}),
-    },
-    orderBy: { occurredAt: "desc" },
+    where,
+    orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
     take: take + 1,
     ...(input.cursor ? { cursor: { id: input.cursor }, skip: 1 } : {}),
     select: {

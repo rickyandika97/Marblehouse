@@ -152,14 +152,14 @@ export function DashboardView({
               key={s.shopId}
               show
               tone="warn"
-              href="/attendance"
+              href="/attendance?view=report"
               text={`${s.count} not clocked in at ${s.shopName}`}
             />
           ))}
           <Alert
             show={dashboard.alerts.lateToday > 0}
             tone="warn"
-            href="/attendance"
+            href="/attendance?view=report"
             text={`${dashboard.alerts.lateToday} arrived late today`}
           />
           <Alert
@@ -248,7 +248,7 @@ export function DashboardView({
               value={`${(Number(dashboard.team.lateRate) * 100).toFixed(1)}%`}
             />
             <Link
-              href="/reports/attendance"
+              href="/attendance?view=report"
               className="ml-auto self-center text-sm underline underline-offset-4"
             >
               Attendance report

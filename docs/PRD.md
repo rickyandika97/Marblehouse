@@ -307,8 +307,8 @@ These are the rules the agent must get right. Everything else is UI.
 
 ### 4.13 Attendance
 - **Required for STAFF and MANAGER. Optional for OWNER.**
-- Flow: log in → pick shop (§4.7) → **big red banner appears** → user can work normally → user taps banner → clock-in → banner disappears for the rest of the business day.
-- The banner is fixed to the top of the viewport, high-contrast red, present on every screen, and **not dismissible**. It reads: *"You have not clocked in today. Tap here to clock in."*
+- Flow: log in → pick shop (§4.7) → **big red banner appears for each scheduled shift not yet recorded** → user can work normally → user taps banner → clock-in.
+- The banner is fixed to the top of the viewport, high-contrast red, present on every screen, and **not dismissible** while a scheduled shift at the current shop has not been recorded.
 - Clock-in requires, in order:
   1. **Shift selection** — the shifts configured for that shop (§4.14).
   2. **Photo** — captured live from the device camera via `getUserMedia`. **File upload from the gallery is blocked** (`capture="user"` plus a server-side check that the image has no EXIF suggesting an older capture date; reject if EXIF `DateTimeOriginal` is more than 10 minutes old).
@@ -317,7 +317,7 @@ These are the rules the agent must get right. Everything else is UI.
 - If the user denies location permission, clock-in still proceeds but the record is flagged `locationDenied = true`, the watermark says `LOCATION UNAVAILABLE`, and the record appears highlighted in the owner's attendance report.
 - **Lateness:** `isLate = clockInAt > shiftStart + gracePeriod`. Grace period is **5 minutes**, configurable per shop. `lateMinutes` is stored as an integer for reporting.
 - Clock-out is captured (photo optional, configurable per shop) but lateness reporting in v1 is based on clock-in only.
-- **One attendance record per user per business day** (enforced by a unique constraint on `userId + businessDate`). A second clock-in on the same day is blocked with a friendly message. A user cannot clock in at two shops on the same day — if they genuinely move branches mid-day, the owner edits the record.
+- **One attendance record per user, configured shift, and business day** (enforced by a unique constraint on `userId + businessDate + shiftId`). A duplicate tap for the same shift is blocked with a friendly message, but a user may clock in for later shifts at the same or another shop. A no-shift arrival is limited to one record per user, shop, and business day.
 - Owner can edit or excuse a record (e.g. approved late arrival). Every edit is audit-logged with before/after values.
 
 ### 4.14 Shifts
@@ -1003,7 +1003,7 @@ model WorkSession {
   user          User     @relation(fields: [userId], references: [id])
   shop          Shop     @relation(fields: [shopId], references: [id])
 
-  @@unique([userId, businessDate])
+  @@unique([userId, businessDate, shiftId])
   @@index([shopId, businessDate])
 }
 
@@ -1779,7 +1779,7 @@ Build two explicit response shapes per resource — `toCostDTO()` and `toRestric
 Present on every authenticated screen:
 
 - **Top bar:** shop name (tap to switch, per §4.7), user name, role chip, logout.
-- **Red attendance banner** (§4.13) — fixed below the top bar, full width, only for users who have not clocked in today.
+- **Red attendance banner** (§4.13) — fixed below the top bar, full width, for users with an unrecorded scheduled shift at their current shop.
 - **Bottom tab bar on tablet/phone**, role-dependent:
   - STAFF: `Sale` · `Customers` · `Prizes` · `Me`
   - MANAGER: `Dashboard` · `Sale` · `Customers` · `Stock` · `More`
@@ -2398,5 +2398,4 @@ Confirming every numbered item from the original brief is covered.
 ---
 
 *End of document.*
-
 

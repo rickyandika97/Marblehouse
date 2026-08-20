@@ -14,10 +14,11 @@
  *     (§4.14).
  *   - The photo is watermarked server-side (see `attendance-photo.ts`).
  *
- * **One record per user per business day** (§4.13) is enforced by a unique
- * constraint on `(userId, businessDate)`. The service catches the violation and
- * returns a friendly conflict rather than a 500 — a staff member double-tapping
- * the clock-in button is the expected case, not an exceptional one.
+ * A person may work more than one scheduled shift in a business day, including
+ * at different branches. The database permits that while enforcing one record
+ * for each configured shift (and one no-shift record per branch/day). The
+ * service catches a duplicate double-tap and returns a friendly conflict rather
+ * than a 500.
  */
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
@@ -62,6 +63,8 @@ export const clockInSchema = z.object({
 });
 
 export const clockOutSchema = z.object({
+  /** The particular shift to close when a person has multiple open records. */
+  attendanceId: z.string().min(1).optional(),
   note: z.string().trim().max(500).optional(),
 });
 
@@ -71,6 +74,14 @@ export const listAttendanceSchema = z.object({
   from: z.string().optional(),
   to: z.string().optional(),
   lateOnly: z.boolean().optional(),
+  /** Personal history across every branch assigned to the current user. */
+  mineOnly: z.boolean().optional(),
+});
+
+/** The two kinds of live exception the dashboard can link to. */
+export const attendanceAttentionSchema = z.object({
+  shopId: z.string().min(1).optional(),
+  issue: z.enum(["not-clocked-in", "late"]),
 });
 
 export const editAttendanceSchema = z.object({
@@ -87,20 +98,38 @@ function shiftTimeToMinutes(time: Date): number {
 }
 
 /**
+ * A clock-out reminder is about the shift that is happening now, so unlike
+ * lateness it deliberately reads the current shift end time rather than a
+ * historical snapshot.  Overnight shifts belong to the business day on which
+ * they began: between midnight and their end time they are still in progress.
+ */
+function hasShiftEnded(
+  shift: { startTime: Date; endTime: Date },
+  timezone: string,
+  now: Date
+): boolean {
+  const nowParts = localParts(now, timezone);
+  const nowMin = minutesFromMidnight(nowParts.hour, nowParts.minute);
+  const startMin = shiftTimeToMinutes(shift.startTime);
+  const endMin = shiftTimeToMinutes(shift.endTime);
+
+  if (endMin >= startMin) return nowMin >= endMin;
+
+  // e.g. 18:00–02:00: prompt from 02:00 until the next day's 18:00 start.
+  return nowMin >= endMin && nowMin < startMin;
+}
+
+/**
  * Today's attendance state for the banner (§7.7, §4.13).
  *
  * The banner is driven entirely by this: `required` decides whether it shows at
  * all, `clockedIn` whether it has been satisfied. OWNER is optional (§4.13), so
  * an owner never sees a red banner they cannot dismiss.
  */
-export async function attendanceStatus(actor: Actor) {
-  const record = await prisma.attendance.findUnique({
-    where: {
-      userId_businessDate: {
-        userId: actor.userId,
-        businessDate: actor.businessDate,
-      },
-    },
+export async function attendanceStatus(actor: Actor, now = new Date()) {
+  const records = await prisma.attendance.findMany({
+    where: { userId: actor.userId, businessDate: actor.businessDate },
+    orderBy: { clockInAt: "desc" },
     select: {
       id: true,
       clockInAt: true,
@@ -109,15 +138,29 @@ export async function attendanceStatus(actor: Actor) {
       lateMinutes: true,
       status: true,
       shopId: true,
-      shop: { select: { name: true } },
+      shop: { select: { name: true, timezone: true } },
       // endTime drives the clock-out card's "scheduled to X" line. There is no
       // *end*-time snapshot on Attendance the way there is for the start
       // (`shiftStartAtCapture`), so this is read live: it is shown as context
       // for a decision being made now, and is never stored or used to judge a
       // past record. Editing a shift must not rewrite history (§4.14).
-      shift: { select: { id: true, name: true, endTime: true } },
+      shift: { select: { id: true, name: true, startTime: true, endTime: true } },
     },
   });
+
+  // The banner and clock-in screen are about the currently selected branch.
+  // An earlier PIK attendance must not suppress an MKG evening arrival, while
+  // the clock-out screen receives every still-open record below.
+  const recordsHere = actor.workSession
+    ? records.filter((row) => row.shopId === actor.workSession!.shopId)
+    : records;
+  const openRecord = recordsHere.find((row) => row.clockOutAt === null) ?? null;
+  // Keep the latest completed record in `record` for the existing detail
+  // surfaces; `clockedIn` below intentionally remains about an open record.
+  const record = openRecord ?? recordsHere[0] ?? null;
+  const clockedShiftIds = new Set(
+    recordsHere.flatMap((row) => (row.shift ? [row.shift.id] : []))
+  );
 
   /**
    * Is this person on today's roster (§4.14.1)?
@@ -139,6 +182,19 @@ export async function attendanceStatus(actor: Actor) {
     slots = mine.slots;
   }
 
+  // This is intentionally distinct from `prompt` (which asks someone to
+  // clock *in*). A person can have a later rostered shift and an earlier open
+  // shift at the same time; the end-of-shift reminder takes precedence in the
+  // shell because leaving the earlier record open is the more urgent action.
+  const clockOutPrompt = !actor.isOwner
+    ? records.find(
+        (row) =>
+          row.clockOutAt === null &&
+          row.shift !== null &&
+          hasShiftEnded(row.shift, row.shop.timezone, now)
+      )
+    : undefined;
+
   return {
     // §4.13: required for STAFF and MANAGER, optional for OWNER.
     required: !actor.isOwner,
@@ -148,13 +204,27 @@ export async function attendanceStatus(actor: Actor) {
      * today. Someone unscheduled can still clock in — they just have to go
      * looking for it, and give a reason (D-136).
      */
-    prompt: !actor.isOwner && scheduledToday && record === null,
+    // A completed morning shift is still evidence of that arrival, but a
+    // later scheduled shift at this shop remains eligible for a new clock-in.
+    prompt:
+      !actor.isOwner &&
+      scheduledToday &&
+      slots.some((slot) => !clockedShiftIds.has(slot.shiftId)),
+    clockOutPrompt: clockOutPrompt
+      ? {
+          shopName: clockOutPrompt.shop.name,
+          shiftName: clockOutPrompt.shift!.name,
+          endTime: formatTime(clockOutPrompt.shift!.endTime),
+        }
+      : null,
     scheduledToday,
     slots,
     // The app-wide prompt must name the branch that will own the attendance
     // record. It comes from the server-resolved work session, never the UI.
     shopName: actor.workSession?.shop?.name ?? null,
-    clockedIn: record !== null,
+    // `clockedIn` describes an OPEN attendance record at the current shop;
+    // callers that need to offer clock-out receive `openRecords` below.
+    clockedIn: openRecord !== null,
     businessDate: actor.businessDate.toISOString().slice(0, 10),
     record: record
       ? {
@@ -175,6 +245,21 @@ export async function attendanceStatus(actor: Actor) {
             : null,
         }
       : null,
+    openRecords: records
+      .filter((row) => row.clockOutAt === null)
+      .map((row) => ({
+        id: row.id,
+        clockInAt: row.clockInAt.toISOString(),
+        shopId: row.shopId,
+        shopName: row.shop.name,
+        shift: row.shift
+          ? {
+              id: row.shift.id,
+              name: row.shift.name,
+              endTime: formatTime(row.shift.endTime),
+            }
+          : null,
+      })),
   };
 }
 
@@ -289,23 +374,6 @@ export async function clockIn(
   });
   if (!shop) throw notFound("That branch no longer exists.");
 
-  // Fail fast on the duplicate before spending time on image processing.
-  const existing = await prisma.attendance.findUnique({
-    where: {
-      userId_businessDate: {
-        userId: actor.userId,
-        businessDate: actor.businessDate,
-      },
-    },
-    select: { id: true },
-  });
-  if (existing) {
-    throw new AppError(
-      "CONFLICT",
-      "You have already clocked in today. Only one clock-in per day is recorded."
-    );
-  }
-
   // The server's clock decides the time, not the device's.
   const clockInAt = new Date();
 
@@ -323,6 +391,26 @@ export async function clockIn(
     if (!shift) {
       throw notFound("That shift is not available at this branch.");
     }
+  }
+
+  // Fail before image processing, but only for the same scheduled shift (or
+  // the same branch's no-shift arrival). A PIK morning clock-in must never
+  // prevent an MKG evening clock-in on the same business date.
+  const existing = await prisma.attendance.findFirst({
+    where: {
+      userId: actor.userId,
+      businessDate: actor.businessDate,
+      ...(shift ? { shiftId: shift.id } : { shopId, shiftId: null }),
+    },
+    select: { id: true },
+  });
+  if (existing) {
+    throw new AppError(
+      "CONFLICT",
+      shift
+        ? "You have already clocked in for this shift today."
+        : "You have already clocked in at this branch without a shift today."
+    );
   }
 
   /**
@@ -500,7 +588,7 @@ export async function clockIn(
     ) {
       throw new AppError(
         "CONFLICT",
-        "You have already clocked in today. Only one clock-in per day is recorded."
+        "You have already clocked in for this shift today."
       );
     }
     throw error;
@@ -512,13 +600,13 @@ export async function clockOut(
   actor: Actor,
   input: z.infer<typeof clockOutSchema>
 ) {
-  const record = await prisma.attendance.findUnique({
+  const record = await prisma.attendance.findFirst({
     where: {
-      userId_businessDate: {
-        userId: actor.userId,
-        businessDate: actor.businessDate,
-      },
+      userId: actor.userId,
+      businessDate: actor.businessDate,
+      ...(input.attendanceId ? { id: input.attendanceId } : {}),
     },
+    orderBy: { clockInAt: "desc" },
     select: { id: true, clockOutAt: true, shopId: true },
   });
 
@@ -548,9 +636,10 @@ export async function clockOut(
 /**
  * Attendance records (§7.7).
  *
- * Scoped in SQL, never in JavaScript (§5.6). A manager sees only their own
- * shops; a staff member sees only themselves. The caller's filters can narrow
- * that but never widen it.
+ * Scoped in SQL, never in JavaScript (§5.6). A manager sees team records only
+ * at branches they manage; a staff member sees only themselves. `mineOnly`
+ * lets a multi-branch manager read their own history without turning their
+ * staff assignment at another branch into team visibility.
  */
 export async function listAttendance(
   actor: Actor,
@@ -560,31 +649,34 @@ export async function listAttendance(
 
   const scope: Prisma.AttendanceWhereInput = {};
 
-  // Role is per-shop (D-122): a bare "is this actor STAFF" is meaningless
-  // once they can be MANAGER at one shop and STAFF at another. Resolve the
-  // relevant role at the shop actually in scope; with no shop given, "can
-  // see team attendance anywhere" gates the same as the dashboard/report
-  // dispatch above.
-  const roleHere = input.shopId ? roleAtShop(actor, input.shopId) : null;
-  const isManagerSomewhere = [...actor.shopRoles.values()].some(
-    (sr) => sr.role === "MANAGER"
-  );
-  const staffOnly = input.shopId
-    ? roleHere === "STAFF"
-    : !actor.isOwner && !isManagerSomewhere;
-
-  if (staffOnly) {
-    // §3.4 gives STAFF their own history only.
+  if (input.mineOnly) {
+    // Personal history is allowed at every branch a person has worked at,
+    // including a branch where they are STAFF as well as managing elsewhere.
     scope.userId = actor.userId;
-  } else if (!actor.isOwner) {
-    scope.shopId = input.shopId
-      ? input.shopId
-      : { in: assignedShopIds(actor) };
-  } else if (input.shopId) {
-    scope.shopId = input.shopId;
-  }
+  } else {
+    // Role is per-shop (D-122). A manager at A remains ordinary staff at B;
+    // an unscoped team query must therefore use only their MANAGER branches.
+    const roleHere = input.shopId ? roleAtShop(actor, input.shopId) : null;
+    const staffOnly = input.shopId
+      ? roleHere === "STAFF"
+      : !actor.isOwner && ![...actor.shopRoles.values()].some((sr) => sr.role === "MANAGER");
 
-  if (input.userId && !staffOnly) scope.userId = input.userId;
+    if (staffOnly) {
+      scope.userId = actor.userId;
+    } else if (!actor.isOwner) {
+      scope.shopId = input.shopId
+        ? input.shopId
+        : {
+            in: assignedShopIds(actor).filter(
+              (shopId) => roleAtShop(actor, shopId) === "MANAGER"
+            ),
+          };
+    } else if (input.shopId) {
+      scope.shopId = input.shopId;
+    }
+
+    if (input.userId && !staffOnly) scope.userId = input.userId;
+  }
   if (input.lateOnly) scope.isLate = true;
 
   if (input.from || input.to) {
@@ -617,6 +709,106 @@ export async function listAttendance(
   });
 
   return rows.map(toAttendanceDTO);
+}
+
+/**
+ * Today's attendance exceptions behind the dashboard alerts.
+ *
+ * An employee who has not clocked in deliberately has no `Attendance` row,
+ * so `listAttendance` alone cannot answer the dashboard link. Keep this
+ * query beside the ordinary history query and give it the same server-side
+ * shop boundary: a URL may narrow the result but can never widen it.
+ */
+export async function listAttendanceAttention(
+  actor: Actor,
+  input: z.infer<typeof attendanceAttentionSchema>
+) {
+  if (input.shopId) assertShopAccess(actor, input.shopId);
+
+  const isManagerSomewhere = [...actor.shopRoles.values()].some(
+    (sr) => sr.role === "MANAGER"
+  );
+
+  // Staff may read their own attendance history, but an exception list names
+  // their colleagues. Do not turn a hand-written query string into team access.
+  if (!actor.isOwner && !isManagerSomewhere) return [];
+
+  // Being a manager at one branch does not grant team visibility at another
+  // branch where the same person is ordinary staff.
+  if (
+    input.shopId &&
+    !actor.isOwner &&
+    roleAtShop(actor, input.shopId) !== "MANAGER"
+  ) {
+    throw forbidden("You do not have access to this shop's team attendance.");
+  }
+
+  const shopIds = input.shopId
+    ? [input.shopId]
+    : actor.isOwner
+      ? (
+          await prisma.shop.findMany({
+            where: { isActive: true, isHqPseudoShop: false },
+            select: { id: true },
+          })
+        ).map((shop) => shop.id)
+      : assignedShopIds(actor).filter(
+          (shopId) => roleAtShop(actor, shopId) === "MANAGER"
+        );
+
+  if (input.issue === "not-clocked-in") {
+    const [assigned, clockedIn] = await Promise.all([
+      prisma.userShop.findMany({
+        where: { shopId: { in: shopIds }, user: { banned: false } },
+        select: {
+          userId: true,
+          user: { select: { displayName: true } },
+          shop: { select: { id: true, name: true, code: true } },
+        },
+        orderBy: [{ shop: { name: "asc" } }, { user: { displayName: "asc" } }],
+      }),
+      prisma.attendance.findMany({
+        where: { shopId: { in: shopIds }, businessDate: actor.businessDate },
+        select: { userId: true, shopId: true },
+      }),
+    ]);
+
+    const clockedInKeys = new Set(clockedIn.map((row) => `${row.shopId}:${row.userId}`));
+    return assigned
+      .filter((row) => !clockedInKeys.has(`${row.shop.id}:${row.userId}`))
+      .map((row) => ({
+        userId: row.userId,
+        displayName: row.user.displayName,
+        shop: row.shop,
+      }));
+  }
+
+  const late = await prisma.attendance.findMany({
+    where: {
+      shopId: { in: shopIds },
+      businessDate: actor.businessDate,
+      isLate: true,
+    },
+    orderBy: [{ shop: { name: "asc" } }, { clockInAt: "asc" }],
+    select: {
+      id: true,
+      businessDate: true,
+      clockInAt: true,
+      clockOutAt: true,
+      isLate: true,
+      lateMinutes: true,
+      status: true,
+      locationDenied: true,
+      photoPath: true,
+      photoPurgedAt: true,
+      note: true,
+      user: { select: { id: true, displayName: true } },
+      shop: { select: { id: true, name: true, code: true } },
+      shift: { select: { id: true, name: true } },
+    },
+  });
+
+  return late.map(toAttendanceDTO);
 }
 
 /**

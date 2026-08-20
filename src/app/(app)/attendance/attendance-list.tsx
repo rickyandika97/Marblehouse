@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { MapPinOff, Loader2 } from "lucide-react";
 import { toast } from "sonner";
@@ -26,27 +27,40 @@ import { cn } from "@/lib/utils";
  * drill-in so the two renderings of a record cannot drift.
  */
 export function AttendanceList({
-  rows,
+  myRows,
+  teamRows,
   canSeeTeam,
+  showMyAttendance,
   canExcuse,
   selfUserId,
+  attention,
 }: {
-  rows: AttendanceRecord[];
+  myRows: AttendanceRecord[];
+  teamRows: AttendanceRecord[];
   canSeeTeam: boolean;
+  showMyAttendance: boolean;
   canExcuse: boolean;
   selfUserId: string;
+  attention: {
+    issue: "not-clocked-in" | "late";
+    rows: AttendanceRecord[] | {
+      userId: string;
+      displayName: string;
+      shop: { id: string; name: string; code: string };
+    }[];
+  } | null;
 }) {
   const router = useRouter();
-  const [scope, setScope] = useState<"mine" | "team">("mine");
+  const [scope, setScope] = useState<"mine" | "team">(
+    showMyAttendance ? "mine" : "team"
+  );
   const [open, setOpen] = useState<AttendanceRecord | null>(null);
   // Separate from `open`: the detail panel stays visible behind the dialog, so
   // the owner can still see the photo they are judging while typing the reason.
   const [excusing, setExcusing] = useState<AttendanceRecord | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const visible = rows.filter((r) =>
-    scope === "mine" ? r.user.id === selfUserId : true
-  );
+  const visible = scope === "mine" ? myRows : teamRows;
 
   async function excuse(row: AttendanceRecord, note: string) {
     setBusy(true);
@@ -74,14 +88,85 @@ export function AttendanceList({
 
   return (
     <div className="space-y-5">
-      <h1 className="text-2xl font-bold tracking-tight">Attendance</h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-bold tracking-tight">Attendance</h1>
+        {canSeeTeam && (
+          <Link
+            href="/attendance?view=report"
+            className="inline-flex min-h-11 items-center rounded-md border px-3 text-sm font-medium hover:bg-muted"
+          >
+            Attendance & lateness
+          </Link>
+        )}
+      </div>
 
       {/* Renders nothing unless the viewer is clocked in and not yet out. */}
       <ClockOutCard />
 
-      {canSeeTeam && (
+      {attention && (
+        <section className="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/30">
+          <h2 className="font-semibold text-amber-950 dark:text-amber-100">
+            {attention.issue === "late"
+              ? "Arrived late today"
+              : "Not clocked in today"}
+          </h2>
+          <p className="mt-1 text-sm text-amber-900 dark:text-amber-200">
+            {attention.issue === "late"
+              ? "These clock-ins were recorded after their grace period."
+              : "These assigned employees do not yet have a clock-in record."}
+          </p>
+
+          {attention.rows.length === 0 ? (
+            <p className="mt-3 text-sm text-amber-900 dark:text-amber-200">
+              This alert has cleared since the dashboard was loaded.
+            </p>
+          ) : attention.issue === "late" ? (
+            <ul className="mt-3 divide-y divide-amber-200 rounded-lg border border-amber-200 bg-background dark:divide-amber-900 dark:border-amber-900">
+              {(attention.rows as AttendanceRecord[]).map((row) => (
+                <li key={row.id}>
+                  <button
+                    type="button"
+                    onClick={() => setOpen(row)}
+                    className="flex w-full items-center justify-between gap-3 p-3 text-left hover:bg-muted"
+                  >
+                    <span>
+                      <span className="block text-sm font-medium">{row.user.displayName}</span>
+                      <span className="block text-xs text-muted-foreground">
+                        {row.shop.name} · {clockRange(row.clockInAt, row.clockOutAt)}
+                      </span>
+                    </span>
+                    <StatusPill record={row} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <ul className="mt-3 divide-y divide-amber-200 rounded-lg border border-amber-200 bg-background dark:divide-amber-900 dark:border-amber-900">
+              {(attention.rows as {
+                userId: string;
+                displayName: string;
+                shop: { id: string; name: string; code: string };
+              }[]).map((row) => (
+                <li key={`${row.shop.id}:${row.userId}`} className="p-3">
+                  <p className="text-sm font-medium">{row.displayName}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {row.shop.name} · {row.shop.code}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
+
+      {(showMyAttendance || canSeeTeam) && (
         <div className="flex gap-1 border-b">
-          {(["mine", "team"] as const).map((s) => (
+          {(
+            [
+              ...(showMyAttendance ? (["mine"] as const) : []),
+              ...(canSeeTeam ? (["team"] as const) : []),
+            ] as const
+          ).map((s) => (
             <button
               key={s}
               type="button"

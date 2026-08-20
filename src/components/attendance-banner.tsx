@@ -6,7 +6,7 @@ import { usePathname } from "next/navigation";
 import { ArrowRight, Clock } from "lucide-react";
 
 /**
- * The red clock-in banner (§4.13).
+ * The attendance prompt banner (§4.13).
  *
  * "Fixed to the top of the viewport, high-contrast red, present on every
  * screen, and **not dismissible**."
@@ -22,8 +22,8 @@ import { ArrowRight, Clock } from "lucide-react";
  * still captures their real arrival time, so lateness reporting is unaffected.
  *
  * Status comes from the server (`/api/attendance/status`), never from local
- * state: whether someone has clocked in is a fact about the database, and a
- * client that decided for itself would let a page refresh hide the banner.
+ * state: whether someone has clocked in or their shift has ended is a fact
+ * about the database and branch timezone, not the browser clock.
  *
  * **§4.14.1 narrowed WHEN it appears.** It used to show for every non-owner
  * every day, including a staff member's day off — which taught everyone to
@@ -39,6 +39,11 @@ export function AttendanceBanner() {
   const pathname = usePathname();
   const [state, setState] = useState<{
     prompt: boolean;
+    clockOutPrompt: {
+      shopName: string;
+      shiftName: string;
+      endTime: string;
+    } | null;
     shopName: string | null;
     slots: { shiftName: string; startTime: string; wouldBeLate: boolean }[];
   } | null>(null);
@@ -53,6 +58,7 @@ export function AttendanceBanner() {
           if (!cancelled && data) {
             setState({
               prompt: data.prompt ?? false,
+              clockOutPrompt: data.clockOutPrompt ?? null,
               shopName: data.shopName ?? null,
               slots: data.slots ?? [],
             });
@@ -63,10 +69,17 @@ export function AttendanceBanner() {
 
     load();
     window.addEventListener("work-session-changed", load);
+    window.addEventListener("attendance-changed", load);
+
+    // The shift can end while the person is working on the same screen. Poll
+    // once per minute so the reminder appears without requiring navigation.
+    const interval = window.setInterval(load, 60_000);
 
     return () => {
       cancelled = true;
       window.removeEventListener("work-session-changed", load);
+      window.removeEventListener("attendance-changed", load);
+      window.clearInterval(interval);
     };
     // Re-checked on navigation so the banner clears as soon as the clock-in
     // page redirects back, without a full reload.
@@ -75,6 +88,36 @@ export function AttendanceBanner() {
   // Nothing until the server has answered — a banner that flashes on every
   // page load and then vanishes is worse than one that appears a moment late.
   if (!state) return null;
+
+  // An unclosed ended shift is more urgent than a later clock-in, and keeping
+  // the priority here gives the shell one banner instead of overlapping bars.
+  if (state.clockOutPrompt) {
+    const reminder = state.clockOutPrompt;
+    return (
+      <Link
+        href="/attendance"
+        className="sticky top-14 z-30 border-b-4 border-amber-800 bg-amber-500 px-4 py-4 text-amber-950 shadow-sm hover:bg-amber-400"
+      >
+        <div className="mx-auto flex w-full max-w-5xl flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-3">
+            <Clock className="mt-1 size-6 shrink-0" aria-hidden />
+            <div>
+              <p className="text-sm font-bold uppercase tracking-wide">Your shift has ended</p>
+              <p className="text-3xl font-black leading-tight sm:text-4xl">
+                {reminder.shopName}
+              </p>
+              <p className="mt-1 text-sm font-medium">
+                {reminder.shiftName} ended at {reminder.endTime}. Please clock out.
+              </p>
+            </div>
+          </div>
+          <span className="inline-flex min-h-12 items-center justify-center gap-2 rounded-lg bg-black/10 px-5 text-base font-bold ring-1 ring-black/20">
+            Clock out <ArrowRight className="size-5" aria-hidden />
+          </span>
+        </div>
+      </Link>
+    );
+  }
 
   // The server has already weighed role, roster and whether they clocked in.
   // Deliberately ONE flag rather than three conditions re-derived here — the

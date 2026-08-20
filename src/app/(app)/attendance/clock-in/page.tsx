@@ -5,6 +5,7 @@ import {
   attendanceStatus,
   listShiftsForToday,
 } from "@/server/services/attendance";
+import { myScheduleToday, resolveDay } from "@/server/services/schedule";
 import { landingPathFor } from "@/server/services/auth";
 import { ClockInFlow } from "./clock-in-flow";
 
@@ -24,15 +25,35 @@ export default async function ClockInPage() {
   const { session } = await resolveWorkSession(actor);
   if (!session) redirect("/select-shop");
 
-  const [status, shifts] = await Promise.all([
+  /**
+   * Both lists, deliberately (§4.14.1).
+   *
+   * `mine` is what the roster expects of this person today — the happy path,
+   * and usually one card. `shifts` is every shift the branch runs today, which
+   * is what someone COVERING needs: they are not on the roster, so their own
+   * schedule is empty and choosing from it would be impossible.
+   */
+  const [status, shifts, mine, shopRoster] = await Promise.all([
     attendanceStatus(actor),
     listShiftsForToday(actor, session.shopId),
+    myScheduleToday(actor, session.shopId),
+    resolveDay(actor, session.shopId, actor.businessDate),
   ]);
 
   return (
     <ClockInFlow
       shopName={session.shop.name}
       shifts={shifts}
+      mySlots={mine.slots}
+      scheduled={mine.scheduled}
+      onLeave={mine.onLeave}
+      /**
+       * Whether ANYONE is rostered here today. A branch with no timetable yet
+       * behaves exactly as it did pre-§4.14.1 — no cover prompt — and the
+       * server's gate agrees (`hasRoster` in `clockIn`). The two must match, or
+       * the screen demands a reason the API would have accepted without.
+       */
+      shopHasRoster={shopRoster.length > 0}
       alreadyClockedIn={status.clockedIn}
       record={status.record}
       /**

@@ -28,17 +28,48 @@ interface ShiftOption {
   wouldBeLateMinutes: number;
 }
 
+/** One slot from the caller's own roster for today (§4.14.1). */
+interface MySlot {
+  shiftId: string;
+  shiftName: string;
+  startTime: string;
+  endTime: string;
+  via: "PATTERN" | "OVERRIDE";
+  wouldBeLate: boolean;
+  wouldBeLateMinutes: number;
+}
+
 type Step = "shift" | "camera" | "confirm";
 
 export function ClockInFlow({
   shopName,
   shifts,
+  mySlots,
+  scheduled,
+  onLeave,
+  shopHasRoster,
   alreadyClockedIn,
   record,
   doneHref,
 }: {
   shopName: string;
   shifts: ShiftOption[];
+  /** What the roster expects of THIS person today. Empty when off-roster. */
+  mySlots: MySlot[];
+  scheduled: boolean;
+  /**
+   * Approved leave covering today (§4.14.2), or null. Present so the screen can
+   * say WHY there is no shift to clock into — a blank list with no explanation
+   * reads as a bug, and someone on leave who has come in to cover needs to know
+   * the app knows they are off.
+   */
+  onLeave: { reason: string; endDate: string } | null;
+  /**
+   * Whether the branch has ANY roster today. False means the timetable has not
+   * been filled in here yet, and the screen must behave exactly as it did
+   * before §4.14.1 — no cover prompt, matching the server's own gate.
+   */
+  shopHasRoster: boolean;
   alreadyClockedIn: boolean;
   record: { clockInAt: string; isLate: boolean; lateMinutes: number } | null;
   /**
@@ -53,7 +84,19 @@ export function ClockInFlow({
   const streamRef = useRef<MediaStream | null>(null);
 
   const [step, setStep] = useState<Step>(shifts.length > 0 ? "shift" : "camera");
-  const [shiftId, setShiftId] = useState<string | null>(null);
+  /**
+   * Pre-selected when the roster names exactly one shift. The common case is a
+   * staff member arriving for their own shift, and making them tap a card to
+   * confirm what the system already knows is friction for no information.
+   */
+  const [shiftId, setShiftId] = useState<string | null>(
+    mySlots.length === 1 ? (mySlots[0]?.shiftId ?? null) : null
+  );
+  /** §4.14.1: covering means saying who for. Empty until they opt in. */
+  const [covering, setCovering] = useState(
+    shopHasRoster && !scheduled && mySlots.length === 0
+  );
+  const [coverReason, setCoverReason] = useState("");
   const [shot, setShot] = useState<Blob | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
@@ -152,6 +195,11 @@ export function ClockInFlow({
       const form = new FormData();
       form.append("photo", shot, "clock-in.jpg");
       if (shiftId) form.append("shiftId", shiftId);
+      // Only when actually covering. The server ignores it otherwise, but
+      // sending it regardless would be a lie in the request itself.
+      if (covering && coverReason.trim()) {
+        form.append("coverReason", coverReason.trim());
+      }
 
       if (position) {
         form.append("latitude", String(position.coords.latitude));
@@ -267,45 +315,190 @@ export function ClockInFlow({
 
       {step === "shift" && (
         <div className="space-y-3">
-          <p className="text-sm font-medium">Which shift are you working?</p>
-          <ul className="space-y-2">
-            {shifts.map((s) => (
-              <li key={s.id}>
+          {/* ─── No timetable here yet: the pre-§4.14.1 screen, unchanged ─── */}
+          {!covering && mySlots.length === 0 && (
+            <>
+              <p className="text-sm font-medium">Which shift are you working?</p>
+              <ul className="space-y-2">
+                {shifts.map((s) => (
+                  <li key={s.id}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShiftId(s.id);
+                        setStep("camera");
+                      }}
+                      className="flex min-h-16 w-full items-center gap-3 rounded-xl border p-4 text-left hover:bg-muted"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="font-medium">{s.name}</p>
+                        <p className="text-sm text-muted-foreground">
+                          {s.startTime} – {s.endTime}
+                        </p>
+                      </div>
+                      {s.wouldBeLate && (
+                        <span className="shrink-0 text-sm font-semibold text-red-600">
+                          {s.wouldBeLateMinutes} min late
+                        </span>
+                      )}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <button
+                type="button"
+                onClick={() => setStep("camera")}
+                className="min-h-11 w-full rounded-xl px-4 text-sm text-muted-foreground underline hover:bg-muted"
+              >
+                No shift applies — clock in anyway
+              </button>
+            </>
+          )}
+
+          {/* ─── The rostered case: greet them with their own shift ─── */}
+          {!covering && mySlots.length > 0 && (
+            <>
+              <p className="text-sm font-medium">
+                {mySlots.length === 1
+                  ? "You are scheduled for this shift today."
+                  : "You are scheduled for these shifts today."}
+              </p>
+              <ul className="space-y-2">
+                {mySlots.map((slot) => (
+                  <li key={slot.shiftId}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShiftId(slot.shiftId);
+                        setStep("camera");
+                      }}
+                      className={cn(
+                        "flex min-h-16 w-full items-center gap-3 rounded-xl border-2 p-4 text-left hover:bg-muted",
+                        slot.shiftId === shiftId
+                          ? "border-primary bg-muted"
+                          : "border-transparent bg-muted/50"
+                      )}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="font-medium">{slot.shiftName}</p>
+                        <p className="text-sm text-muted-foreground">
+                          {slot.startTime} – {slot.endTime}
+                          {slot.via === "OVERRIDE" && " · added for today"}
+                        </p>
+                      </div>
+                      {slot.wouldBeLate && (
+                        <span className="shrink-0 text-sm font-semibold text-red-600">
+                          {slot.wouldBeLateMinutes} min late
+                        </span>
+                      )}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+
+              {/* Rostered, but here for a DIFFERENT shift — covering on top of
+                  their own day. Rare, so it is secondary, but reachable. */}
+              <button
+                type="button"
+                onClick={() => setCovering(true)}
+                className="min-h-11 w-full rounded-xl px-4 text-sm text-muted-foreground underline hover:bg-muted"
+              >
+                I am covering a different shift
+              </button>
+            </>
+          )}
+
+          {/* ─── The cover case: not on today's roster ─── */}
+          {covering && (
+            <>
+              <div className="rounded-xl border-2 border-amber-400 bg-amber-50 p-4 text-sm text-amber-950">
+                {onLeave ? (
+                  <>
+                    <p className="font-semibold">
+                      You are on leave until {onLeave.endDate}.
+                    </p>
+                    <p className="mt-1">
+                      {onLeave.reason}. You are not expected today — but if you
+                      have come in to cover, you can still clock in. Say who for.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="font-semibold">
+                      You are not on today&apos;s roster.
+                    </p>
+                    <p className="mt-1">
+                      You can still clock in — say who you are covering for so
+                      the owner can see why this shift was worked.
+                    </p>
+                  </>
+                )}
+              </div>
+
+              <label className="block space-y-1.5">
+                <span className="text-sm font-medium">
+                  Who are you covering for?
+                </span>
+                <input
+                  value={coverReason}
+                  onChange={(e) => setCoverReason(e.target.value)}
+                  placeholder="e.g. Covering for Budi, he is sick"
+                  maxLength={200}
+                  className="min-h-11 w-full rounded-xl border px-3 text-base"
+                />
+              </label>
+
+              <p className="text-sm font-medium">Which shift are you working?</p>
+              <ul className="space-y-2">
+                {shifts.map((s) => (
+                  <li key={s.id}>
+                    <button
+                      type="button"
+                      disabled={coverReason.trim().length < 3}
+                      onClick={() => {
+                        setShiftId(s.id);
+                        setStep("camera");
+                      }}
+                      className="flex min-h-16 w-full items-center gap-3 rounded-xl border p-4 text-left hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="font-medium">{s.name}</p>
+                        <p className="text-sm text-muted-foreground">
+                          {s.startTime} – {s.endTime}
+                        </p>
+                      </div>
+                      {s.wouldBeLate && (
+                        <span className="shrink-0 text-sm font-semibold text-red-600">
+                          {s.wouldBeLateMinutes} min late
+                        </span>
+                      )}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+
+              {/* §8.11: the only route through for someone whose shift is not
+                  listed, so it clears the 44px floor like the cards above. */}
+              <button
+                type="button"
+                disabled={coverReason.trim().length < 3}
+                onClick={() => setStep("camera")}
+                className="min-h-11 w-full rounded-xl px-4 text-sm text-muted-foreground underline hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                No shift applies — clock in anyway
+              </button>
+
+              {mySlots.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => {
-                    setShiftId(s.id);
-                    setStep("camera");
-                  }}
-                  className="flex min-h-16 w-full items-center gap-3 rounded-xl border p-4 text-left hover:bg-muted"
+                  onClick={() => setCovering(false)}
+                  className="min-h-11 w-full rounded-xl px-4 text-sm text-muted-foreground underline hover:bg-muted"
                 >
-                  <div className="min-w-0 flex-1">
-                    <p className="font-medium">{s.name}</p>
-                    <p className="text-sm text-muted-foreground">
-                      {s.startTime} – {s.endTime}
-                    </p>
-                  </div>
-                  {s.wouldBeLate && (
-                    <span className="shrink-0 text-sm font-semibold text-red-600">
-                      {s.wouldBeLateMinutes} min late
-                    </span>
-                  )}
+                  Back to my own shift
                 </button>
-              </li>
-            ))}
-          </ul>
-          {/* §8.11: this is the ONLY route through the screen for someone
-              working an unscheduled shift, so it has to clear the 44px floor
-              like the cards above — a text link would be the one control with
-              no larger equivalent anywhere. Kept visually secondary (no border,
-              muted) so it does not compete with the real shift options. */}
-          <button
-            type="button"
-            onClick={() => setStep("camera")}
-            className="min-h-11 w-full rounded-xl px-4 text-sm text-muted-foreground underline hover:bg-muted"
-          >
-            No shift applies — clock in anyway
-          </button>
+              )}
+            </>
+          )}
         </div>
       )}
 

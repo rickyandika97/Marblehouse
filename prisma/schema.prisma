@@ -75,6 +75,35 @@ enum AttendanceStatus {
   ABSENT
 }
 
+/// Why a person is at a shop on a given day (§4.14.1).
+///
+/// The distinction that matters is SCHEDULED versus everything else: a
+/// scheduled arrival is the normal case and is what the clock-in prompt greets.
+/// The other two are exceptions the owner needs to see in a report, which is
+/// why they are recorded rather than inferred — "was Ricky covering, or did he
+/// just turn up?" is not answerable after the fact from an attendance row.
+enum ScheduleSource {
+  /// The person's own recurring assignment, or a per-date override placing them.
+  SCHEDULED
+  /// Covering for someone else, or working an extra shift. Requires a reason.
+  COVER
+  /// Recorded by a manager or the owner after the fact, not by the person.
+  MANUAL
+}
+
+/// A per-date exception to the recurring pattern (§4.14.1).
+///
+/// Overrides are ADDITIVE or SUBTRACTIVE against whatever the pattern says for
+/// that date. They are never edits of the pattern itself: a swap next Tuesday
+/// must not silently change every Tuesday, which is exactly the mistake an
+/// "edit the assignment" flow invites.
+enum ScheduleOverrideKind {
+  /// Place this person on this shift on this date, pattern or not.
+  ADDED
+  /// Remove this person from this shift on this date. Leave, swap-out, closure.
+  REMOVED
+}
+
 // ─────────────────────────────── ORG ───────────────────────────────
 
 model Shop {
@@ -97,23 +126,26 @@ model Shop {
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
-  userShops       UserShop[]
-  defaultForUsers User[]            @relation("DefaultShop")
-  presets         SalePreset[]
-  sales           Sale[]
-  shifts          Shift[]
-  attendances     Attendance[]
-  expenses        Expense[]
-  prizeConfigs    ShopPrizeConfig[]
-  batches         PrizeBatch[]
-  redemptions     Redemption[]
-  movements       StockMovement[]
-  workSessions    WorkSession[]
-  marbleTxns      MarbleLedger[]
-  ticketTxns      TicketLedger[]
-  transfersOut    PrizeTransfer[]   @relation("TransferFrom")
-  transfersIn     PrizeTransfer[]   @relation("TransferTo")
-  opnames         OpnameSession[]
+  userShops         UserShop[]
+  defaultForUsers   User[]               @relation("DefaultShop")
+  presets           SalePreset[]
+  sales             Sale[]
+  shifts            Shift[]
+  attendances       Attendance[]
+  assignments       ScheduleAssignment[]
+  scheduleOverrides ScheduleOverride[]
+  scheduleLeave     ScheduleLeave[]
+  expenses          Expense[]
+  prizeConfigs      ShopPrizeConfig[]
+  batches           PrizeBatch[]
+  redemptions       Redemption[]
+  movements         StockMovement[]
+  workSessions      WorkSession[]
+  marbleTxns        MarbleLedger[]
+  ticketTxns        TicketLedger[]
+  transfersOut      PrizeTransfer[]      @relation("TransferFrom")
+  transfersIn       PrizeTransfer[]      @relation("TransferTo")
+  opnames           OpnameSession[]
 
   @@index([isActive])
 }
@@ -200,15 +232,18 @@ model User {
   accounts Account[]
 
   // ── Domain relations (unchanged — all still point at User) ──────────
-  userShops    UserShop[]
-  workSessions WorkSession[]
-  sales        Sale[]
-  attendances  Attendance[]
-  expenses     Expense[]
-  redemptions  Redemption[]
-  auditLogs    AuditLog[]
-  marbleTxns   MarbleLedger[]
-  ticketTxns   TicketLedger[]
+  userShops         UserShop[]
+  workSessions      WorkSession[]
+  sales             Sale[]
+  attendances       Attendance[]
+  assignments       ScheduleAssignment[]
+  scheduleOverrides ScheduleOverride[]
+  expenses          Expense[]
+  redemptions       Redemption[]
+  auditLogs         AuditLog[]
+  marbleTxns        MarbleLedger[]
+  ticketTxns        TicketLedger[]
+  scheduleLeave     ScheduleLeave[]
 
   @@index([isOwner, banned])
   @@map("user")
@@ -221,16 +256,16 @@ model User {
 /// cannot express a partial-enum constraint declaratively) enforces
 /// `role <> 'OWNER'` at the database level.
 model UserShop {
-  id     String @id @default(cuid())
-  userId String
-  shopId String
+  id           String  @id @default(cuid())
+  userId       String
+  shopId       String
   /// MANAGER or STAFF only — see the CHECK constraint above.
   role         Role
   /// Purchasing permission (§7.5), meaningful only when role = MANAGER.
   /// Unlocks prize cost entry and stock valuation for THIS shop only.
   canEnterCost Boolean @default(false)
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  shop   Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  user         User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shop         Shop    @relation(fields: [shopId], references: [id], onDelete: Cascade)
 
   @@unique([userId, shopId])
   @@index([shopId])
@@ -661,9 +696,9 @@ model OpnameLine {
   prizeItemId String
   prizeItem   PrizeItem     @relation(fields: [prizeItemId], references: [id])
 
-  systemQty  Int
-  countedQty Int
-  variance   Int
+  systemQty     Int
+  countedQty    Int
+  variance      Int
   /// OWNER-ONLY.
   varianceValue Decimal? @db.Decimal(14, 2)
   note          String?
@@ -716,18 +751,174 @@ model Shift {
   isActive   Boolean  @default(true)
 
   attendances Attendance[]
+  assignments ScheduleAssignment[]
+  overrides   ScheduleOverride[]
 
   @@index([shopId, isActive])
 }
 
-model Attendance {
+/// A person's RECURRING place in the timetable (§4.14.1).
+///
+/// "Budi works Mon-Wed on PIK's morning shift" is one row. It repeats until
+/// `effectiveTo` is set, so a stable roster costs one row per person per shift
+/// pattern rather than one row per person per day forever.
+///
+/// **`daysOfWeek` here is intersected with the shift's own `daysOfWeek`, never
+/// unioned.** A person cannot be scheduled on a day the shop does not run that
+/// shift; the shift is the shop's operating reality and the assignment only
+/// selects from within it. Getting this backwards would roster staff on days
+/// the branch is shut.
+///
+/// **Closing an assignment sets `effectiveTo` rather than deleting the row.**
+///
+/// The reason is EVIDENTIARY, not structural: `Attendance` deliberately has no
+/// foreign key to this table, so a delete would break nothing and cascade
+/// nowhere. What it would destroy is the ability to answer "was this person
+/// scheduled that day?" after the fact — and an attendance row reading
+/// `SCHEDULED, 440 minutes late` only means anything because a schedule put
+/// them on a shift starting at a particular time. That is a wage conversation
+/// (§4.13), which is the category this system decides server-side precisely
+/// because it will be argued about later.
+///
+/// Ending also leaves a READABLE trace — "worked Mon-Wed until 20 Aug" — where a
+/// delete cannot be told apart from the arrangement never having existed.
+///
+/// An assignment that never took effect IS hard-deleted (see `endAssignment`):
+/// nothing could have relied on it, and keeping mistyped future rows forever
+/// would only clutter the roster.
+model ScheduleAssignment {
   id      String @id @default(cuid())
   userId  String
-  user    User   @relation(fields: [userId], references: [id])
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   shopId  String
-  shop    Shop   @relation(fields: [shopId], references: [id])
+  shop    Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  shiftId String
+  shift   Shift  @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+
+  /// 0 = Sunday, matching `Shift.daysOfWeek`. A day absent here means the
+  /// person does not work that shift that day — Sunday off is simply Sunday
+  /// missing from the array, not a separate holiday record.
+  daysOfWeek Int[]
+
+  /// When this pattern started governing days.
+  ///
+  /// **Not entered by hand** — the roster form defaults it to today (D-140).
+  /// It exists because "was this person scheduled last Monday?" needs an
+  /// answer for dates before the row was created, and without a start date
+  /// every pattern would claim to have always been true.
+  effectiveFrom DateTime @db.Date
+
+  /// **Soft delete** (D-140). Set when the person leaves and their schedule is
+  /// removed from the roster.
+  ///
+  /// The row is hidden everywhere — the roster screen, `resolveDay`, the
+  /// clock-in prompt — but survives, so a past attendance record reading
+  /// "SCHEDULED, 440 minutes late" keeps the schedule that justifies it. That
+  /// is a wage conversation (§4.13), and the owner asked explicitly to keep
+  /// every late record intact while removing the roster clutter.
+  ///
+  /// There is deliberately no `effectiveTo`: an end date was a second way of
+  /// saying the same thing, and having both meant "ended" and "removed" could
+  /// disagree. Temporary absence is `ScheduleLeave`, not an end date.
+  removedAt   DateTime?
+  removedById String?
+
+  note      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Who rostered them. Kept for the same reason `editedById` is kept on
+  /// Attendance: schedule disputes are people disputes.
+  createdById String?
+
+  @@index([userId, effectiveFrom])
+  @@index([shopId, effectiveFrom])
+  @@index([shiftId])
+  @@index([shopId, removedAt])
+}
+
+/// A period of approved absence (§4.14.2, D-140).
+///
+/// "Budi is on leave 1–14 September." One row covers the whole range rather
+/// than one per date: leave is granted as a period, and a fortnight of holiday
+/// should not be fourteen rows the owner has to revoke individually.
+///
+/// **Leave suppresses the clock-in prompt and lateness, but never BLOCKS a
+/// clock-in.** Someone on leave who comes in to cover a sick colleague can
+/// still record their attendance by giving a reason — the same escape hatch
+/// unscheduled staff have (§4.14.1). A branch must never be unable to record
+/// somebody who is standing in it.
+///
+/// **Shop-wide, not per-shift.** Somebody on holiday is away from the whole
+/// business, not from one shift at one branch; `shopId` is null for leave that
+/// covers every branch the person works at, which is the normal case.
+model ScheduleLeave {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Null = every branch this person works at. A value scopes the leave to one
+  /// branch, for the rarer case of dropping one site but still working another.
+  shopId String?
+  shop   Shop?   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  /// Business dates, INCLUSIVE at both ends. A single day off is the same date
+  /// twice, which keeps every query one comparison rather than two shapes.
+  startDate DateTime @db.Date
+  endDate   DateTime @db.Date
+
+  /// Why. Required — leave is always somebody's decision, and "why was this
+  /// person away?" is the question the record exists to answer.
+  reason String
+
+  createdAt   DateTime @default(now())
+  createdById String?
+
+  @@index([userId, startDate, endDate])
+  @@index([shopId, startDate])
+}
+
+/// A single-date exception to the pattern (§4.14.1).
+///
+/// One row per person per shift per date. `ADDED` puts someone on a shift they
+/// are not patterned for; `REMOVED` takes them off one they are. Both carry a
+/// reason, because an override is always somebody's decision and the report
+/// that matters is "why was the roster different that week?".
+model ScheduleOverride {
+  id      String @id @default(cuid())
+  userId  String
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shopId  String
+  shop    Shop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  shiftId String
+  shift   Shift  @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+
+  /// The business date this applies to. Not a range: a week of leave is seven
+  /// rows, which keeps "what does the roster say for this exact date?" a single
+  /// indexed lookup with no interval arithmetic in the hot path.
+  businessDate DateTime @db.Date
+
+  kind   ScheduleOverrideKind
+  reason String
+
+  createdAt   DateTime @default(now())
+  createdById String?
+
+  /// One decision per person per shift per date. A second attempt is an edit
+  /// of the first, not a stacked pair of contradictory rows.
+  @@unique([userId, shiftId, businessDate])
+  @@index([shopId, businessDate])
+  @@index([userId, businessDate])
+}
+
+model Attendance {
+  id      String  @id @default(cuid())
+  userId  String
+  user    User    @relation(fields: [userId], references: [id])
+  shopId  String
+  shop    Shop    @relation(fields: [shopId], references: [id])
   shiftId String?
-  shift   Shift? @relation(fields: [shiftId], references: [id])
+  shift   Shift?  @relation(fields: [shiftId], references: [id])
 
   businessDate DateTime  @db.Date
   clockInAt    DateTime
@@ -741,12 +932,22 @@ model Attendance {
   isLate      Boolean          @default(false)
   lateMinutes Int              @default(0)
 
+  /// Why this person was here (§4.14.1). Defaults to SCHEDULED so every row
+  /// that predates the timetable keeps reading as a normal day rather than
+  /// appearing in a "unscheduled arrivals" report retroactively.
+  scheduleSource ScheduleSource @default(SCHEDULED)
+
+  /// Required when `scheduleSource = COVER` — enforced in the service, not by
+  /// the database, because a MANUAL record entered by the owner may legitimately
+  /// have no reason and a NOT NULL here would block that path too.
+  coverReason String?
+
   photoPath      String?
   photoPurgedAt  DateTime?
-  latitude       Decimal? @db.Decimal(10, 7)
-  longitude      Decimal? @db.Decimal(10, 7)
+  latitude       Decimal?  @db.Decimal(10, 7)
+  longitude      Decimal?  @db.Decimal(10, 7)
   accuracyM      Int?
-  locationDenied Boolean  @default(false)
+  locationDenied Boolean   @default(false)
 
   clockOutPhotoPath String?
   note              String?

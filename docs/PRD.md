@@ -311,6 +311,80 @@ These are the rules the agent must get right. Everything else is UI.
 - Shifts may cross midnight (`endTime < startTime`); handle explicitly.
 - Editing a shift's times does **not** retroactively change past lateness — attendance records store a snapshot of `shiftStartAtCapture` so historical lateness stays correct.
 
+### 4.14.1 The staff timetable (roster)
+- §4.14's `Shift` says when a **shop** is open. This says which **person** is
+  expected on which shift on which day. The two are separate on purpose: a shop
+  runs a Morning shift every day, but Budi only works it Mon–Wed.
+- Two layers, composed at read time — never merged into storage:
+  - **`ScheduleAssignment`** — the recurring pattern. One row = "this person,
+    this shift, these weekdays". It repeats until removed. `effectiveFrom` is
+    stored (defaulted to the day it was created, **never entered by hand**) so
+    "was this person scheduled last Monday?" stays answerable; there is
+    deliberately **no `effectiveTo`** — an end date was a second way of saying
+    "this has stopped" and could disagree with removal.
+  - **`ScheduleOverride`** — a single-date exception, `ADDED` or `REMOVED`,
+    always with a **reason**. Leave, a swap, an extra body on a busy Saturday.
+- **An override never edits the pattern.** Changing next Tuesday must not change
+  every Tuesday. The resolver applies overrides on top of the pattern for the
+  one date asked about.
+- `REMOVED` is keyed on **(user, shift, date)**, not (user, date). Someone off
+  the morning is still on the evening; a whole day's leave is two rows.
+- **An assignment's `daysOfWeek` is intersected with its shift's, never
+  unioned.** A person cannot be rostered on a day the branch does not run that
+  shift, and retiring a shift or dropping one of its days immediately stops
+  rostering against it.
+- **Removing an assignment is a SOFT delete** (`removedAt`). It disappears from
+  the roster, from `resolveDay` and from the clock-in prompt, but the row
+  survives. `Attendance` has no foreign key to it, so a hard delete would break
+  nothing structurally — what it would destroy is the evidence behind a past
+  record: an attendance row reading `SCHEDULED, 440 minutes late` only means
+  something while the schedule that put that person on a 10:00 shift can still
+  be read. That is a wage conversation (§4.13). A removal can be restored.
+- A person must already hold a `UserShop` row at the branch before they can be
+  rostered there, and a deactivated employee never resolves onto a roster.
+- **Who may edit:** owner, or a MANAGER at that shop — the same delegation §3.4
+  gives shift configuration. STAFF are refused the screen outright.
+
+### 4.14.2 Leave
+- A **date range** of approved absence: `userId`, optional `shopId`,
+  `startDate`, `endDate` (both **inclusive**), and a required `reason`.
+- One row covers the whole period. A fortnight's holiday is one record, not
+  fourteen — leave is granted as a period, and it **ends by itself**: the
+  person's recurring schedule resumes with nothing to switch back on.
+- **`shopId` is null by default**, meaning every branch this person works at.
+  Somebody on holiday is away from the business, not from one site. A value
+  scopes it to one branch for the rarer case.
+- **Leave is applied last in `resolveDay`, after overrides.** Approved leave
+  beats an `ADDED` override: to bring somebody in during their leave you cancel
+  the leave — which leaves a record — rather than layering an override on top,
+  which would not.
+- **Leave suppresses the clock-in prompt and lateness. It never BLOCKS a
+  clock-in.** Somebody on leave who comes in to cover a sick colleague can still
+  record their attendance by giving a reason, exactly as unscheduled staff do
+  (§4.14.1). A branch must never be unable to record somebody standing in it.
+- Leave is **not** the same as removing a schedule. Leave is temporary and
+  self-reversing; removal is for a person who no longer works that shift.
+
+**Effect on clock-in (§4.13).**
+- The red banner is no longer unconditional for every non-owner. It appears only
+  when the roster **expects this person at this branch today** — `prompt` in
+  `GET /api/attendance/status`. A staff member is not nagged on their day off.
+- **Settings carries a clock-in row** for every non-owner, since the banner no
+  longer fires for people the roster does not expect. It shows what it will
+  actually do: "you are scheduled today", "covering a shift you are not rostered
+  for", or the time they already clocked in at. Without it, the people most
+  likely to need the cover flow have no route to it.
+- **Being unscheduled never blocks a clock-in.** Someone covering at short
+  notice can still clock in; they must give a **reason**, and the record is
+  stored with `scheduleSource = COVER` plus `coverReason` so the owner can see
+  why that shift was worked. Blocking would mean a branch cannot open because
+  nobody updated the roster.
+- **A branch with no roster at all behaves exactly as it did before this
+  section existed** — no cover prompt, `scheduleSource = SCHEDULED`. Every shop
+  that predates the timetable, and every new branch on its first day, is in this
+  state; gating them would make the feature an obstacle to opening the shop and
+  train everyone to type "n/a" into the reason field.
+
 ### 4.15 Attendance photo retention
 - Photos are retained **61 days**. A nightly job deletes photo files whose `capturedAt` business date is older than 61 days, then nulls the `photoPath` and sets `photoPurgedAt` on the record.
 - **The attendance record itself is kept forever** — only the image is removed. Lateness history must survive.
@@ -670,6 +744,19 @@ enum AttendanceStatus {
   LATE
   EXCUSED
   ABSENT
+}
+
+/// §4.14.1 — why a person was at a shop that day.
+enum ScheduleSource {
+  SCHEDULED   // on the roster, OR the branch has no roster at all
+  COVER       // not rostered; a reason is required
+  MANUAL      // entered after the fact by a manager or the owner
+}
+
+/// §4.14.1 — a per-date exception, additive or subtractive against the pattern.
+enum ScheduleOverrideKind {
+  ADDED
+  REMOVED
 }
 
 // ─────────────────────────────── ORG ───────────────────────────────
@@ -1300,6 +1387,64 @@ model Shift {
   @@index([shopId, isActive])
 }
 
+/// §4.14.1 — the recurring pattern. `daysOfWeek` is intersected with the
+/// shift's own days, never unioned. Closed with `effectiveTo`, not deleted.
+model ScheduleAssignment {
+  id            String    @id @default(cuid())
+  userId        String
+  shopId        String
+  shiftId       String
+  daysOfWeek    Int[]                       // 0 = Sunday
+  /// Defaulted to today by the service; never typed by the owner.
+  effectiveFrom DateTime  @db.Date
+  /// SOFT DELETE. Hidden everywhere, kept as the record behind past attendance.
+  removedAt     DateTime?
+  removedById   String?
+  note          String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  createdById   String?
+
+  @@index([userId, effectiveFrom])
+  @@index([shopId, effectiveFrom])
+  @@index([shiftId])
+  @@index([shopId, removedAt])
+}
+
+/// §4.14.2 — a period of approved absence. Inclusive at both ends.
+model ScheduleLeave {
+  id          String   @id @default(cuid())
+  userId      String
+  /// Null = every branch this person works at, which is the normal case.
+  shopId      String?
+  startDate   DateTime @db.Date
+  endDate     DateTime @db.Date
+  reason      String
+  createdAt   DateTime @default(now())
+  createdById String?
+
+  @@index([userId, startDate, endDate])
+  @@index([shopId, startDate])
+}
+
+/// §4.14.1 — a single-date exception. Keyed on (user, shift, date), so a whole
+/// day's leave is one row per shift. Always carries a reason.
+model ScheduleOverride {
+  id           String               @id @default(cuid())
+  userId       String
+  shopId       String
+  shiftId      String
+  businessDate DateTime             @db.Date
+  kind         ScheduleOverrideKind // ADDED | REMOVED
+  reason       String
+  createdAt    DateTime             @default(now())
+  createdById  String?
+
+  @@unique([userId, shiftId, businessDate])
+  @@index([shopId, businessDate])
+  @@index([userId, businessDate])
+}
+
 model Attendance {
   id             String           @id @default(cuid())
   userId         String
@@ -1319,6 +1464,13 @@ model Attendance {
   status         AttendanceStatus @default(PRESENT)
   isLate         Boolean          @default(false)
   lateMinutes    Int              @default(0)
+
+  /// §4.14.1. Defaults to SCHEDULED so rows predating the timetable, and rows
+  /// at branches with no roster, are not retroactively reported as cover.
+  scheduleSource ScheduleSource   @default(SCHEDULED)
+  /// Required by the SERVICE when scheduleSource = COVER; nullable in the
+  /// database so an owner-entered MANUAL record is not forced to invent one.
+  coverReason    String?
 
   photoPath      String?
   photoPurgedAt  DateTime?
@@ -1563,6 +1715,15 @@ Build two explicit response shapes per resource — `toCostDTO()` and `toRestric
 | GET | `/api/attendance/:id/photo` | O/M(own shop)/self | Authenticated image stream. Never a static path. |
 | PATCH | `/api/attendance/:id` | OWNER | Excuse, correct, annotate. Audit-logged. |
 | POST/PATCH/DELETE | `/api/shops/:id/shifts` | O/M | Manage shifts. |
+| GET | `/api/shops/:id/schedule` | any | The timetable (§4.14.1). `?week=YYYY-MM-DD` → seven resolved days; `?date=` → one resolved day; `?leave=true` → leave records; neither → the raw recurring assignments (`?includeRemoved=true` to include removed ones). |
+| POST | `/api/shops/:id/schedule` | O/M | Roster someone onto a recurring shift. |
+| PATCH/DELETE | `/api/schedule/assignments/:id` | O/M | Change a recurring assignment's days, or remove it. DELETE is a **soft delete** (`removedAt`) — hidden from the roster, kept as the record behind past attendance. |
+| POST | `/api/schedule/assignments/:id/restore` | O/M | Undo a removal. Re-checks the shift is active and the person still works here. |
+| POST | `/api/schedule/leave` | O/M | Record approved leave over a date range (§4.14.2). |
+| DELETE | `/api/schedule/leave/:id` | O/M | Cancel leave. The schedule resumes for those dates. |
+| POST | `/api/shops/:id/schedule/overrides` | O/M | Add a single-date exception (`ADDED`/`REMOVED`), reason required. Upserts on (user, shift, date). |
+| DELETE | `/api/schedule/overrides/:id` | O/M | Undo an exception, restoring whatever the pattern said. |
+| GET | `/api/schedule/me` | any | What the caller is rostered for today at their work-session shop. Drives the clock-in screen. |
 
 ### 7.8 Reports & dashboard
 

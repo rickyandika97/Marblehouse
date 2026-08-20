@@ -47,6 +47,9 @@ afterEach(async () => {
 
   await prisma.auditLog.deleteMany({ where: { entityId: { in: attendanceIds } } });
   await prisma.attendance.deleteMany({ where: { id: { in: attendanceIds } } });
+  await prisma.scheduleLeave.deleteMany({ where: { userId: { in: userIds } } });
+  await prisma.scheduleOverride.deleteMany({ where: { shopId: { in: shopIds } } });
+  await prisma.scheduleAssignment.deleteMany({ where: { shopId: { in: shopIds } } });
   await prisma.shift.deleteMany({ where: { shopId: { in: shopIds } } });
   await prisma.userShop.deleteMany({ where: { userId: { in: userIds } } });
   await prisma.user.deleteMany({ where: { id: { in: userIds } } });
@@ -548,5 +551,271 @@ describe("localWeekday", () => {
     const at = new Date("2026-08-07T20:00:00.000Z");
     expect(localWeekday(at, "Asia/Jakarta")).toBe(6); // Saturday
     expect(localWeekday(at, "UTC")).toBe(5); // still Friday
+  });
+});
+
+// ──────────────── the timetable gate (§4.14.1, D-136) ────────────────
+
+describe("§4.14.1 — the roster decides SCHEDULED vs COVER", () => {
+  /**
+   * The three branches, and why each matters:
+   *
+   *   1. No roster at all      → SCHEDULED, no prompt. Every branch that
+   *                              predates the timetable, and every new one on
+   *                              its first day. If this broke, shipping the
+   *                              feature would lock every existing shop out.
+   *   2. Rostered              → SCHEDULED, no reason needed. The normal day.
+   *   3. Someone else rostered → COVER, and a reason is REQUIRED but never a
+   *                              refusal. A branch that cannot open because the
+   *                              roster is stale is the worse failure.
+   */
+
+  it("treats a branch with NO roster as scheduled, exactly as before", async () => {
+    const { shop, actor } = await fixture({ role: "STAFF" });
+
+    // Nobody is rostered here at all. This must behave as it did pre-§4.14.1.
+    const record = await track(
+      clockIn(actor, shop.id, await photo(), { locationDenied: false })
+    );
+
+    expect(record.scheduleSource).toBe("SCHEDULED");
+  });
+
+  it("records SCHEDULED with no reason when the roster names you", async () => {
+    const { shop, shift, actor, user } = await fixture({ role: "STAFF" });
+
+    await prisma.scheduleAssignment.create({
+      data: {
+        userId: user.id,
+        shopId: shop.id,
+        shiftId: shift.id,
+        daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+        effectiveFrom: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    });
+
+    const record = await track(
+      clockIn(actor, shop.id, await photo(), {
+        shiftId: shift.id,
+        locationDenied: false,
+      })
+    );
+
+    expect(record.scheduleSource).toBe("SCHEDULED");
+  });
+
+  it("REFUSES without a reason when someone else holds the roster", async () => {
+    const { shop, shift, actor } = await fixture({ role: "STAFF" });
+    const colleague = await fixture({ role: "STAFF" });
+
+    // Budi is rostered at THIS shop; the actor is not.
+    await prisma.userShop.create({
+      data: { userId: colleague.user.id, shopId: shop.id, role: "STAFF" },
+    });
+    await prisma.scheduleAssignment.create({
+      data: {
+        userId: colleague.user.id,
+        shopId: shop.id,
+        shiftId: shift.id,
+        daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+        effectiveFrom: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    });
+
+    await expect(
+      clockIn(actor, shop.id, await photo(), {
+        shiftId: shift.id,
+        locationDenied: false,
+      })
+    ).rejects.toThrow(/not scheduled/i);
+  });
+
+  it("ALLOWS the same clock-in once a reason is given, flagged COVER", async () => {
+    const { shop, shift, actor } = await fixture({ role: "STAFF" });
+    const colleague = await fixture({ role: "STAFF" });
+
+    await prisma.userShop.create({
+      data: { userId: colleague.user.id, shopId: shop.id, role: "STAFF" },
+    });
+    await prisma.scheduleAssignment.create({
+      data: {
+        userId: colleague.user.id,
+        shopId: shop.id,
+        shiftId: shift.id,
+        daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+        effectiveFrom: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    });
+
+    // The point of the whole design: covering is allowed, not blocked. Both
+    // branches of the gate are proven — D-34's rule.
+    const record = await track(
+      clockIn(actor, shop.id, await photo(), {
+        shiftId: shift.id,
+        coverReason: "Covering for Budi, he is sick",
+        locationDenied: false,
+      })
+    );
+
+    expect(record.scheduleSource).toBe("COVER");
+
+    const stored = await prisma.attendance.findUnique({
+      where: { id: record.id },
+      select: { coverReason: true, scheduleSource: true },
+    });
+    expect(stored?.coverReason).toBe("Covering for Budi, he is sick");
+  });
+
+  it("never stores a cover reason on a SCHEDULED row", async () => {
+    const { shop, actor } = await fixture({ role: "STAFF" });
+
+    // No roster here, so this is SCHEDULED — but a reason was sent anyway.
+    // Keeping it would fill the cover report with noise.
+    const record = await track(
+      clockIn(actor, shop.id, await photo(), {
+        coverReason: "sent by mistake",
+        locationDenied: false,
+      })
+    );
+
+    const stored = await prisma.attendance.findUnique({
+      where: { id: record.id },
+      select: { coverReason: true, scheduleSource: true },
+    });
+    expect(stored?.scheduleSource).toBe("SCHEDULED");
+    expect(stored?.coverReason).toBeNull();
+  });
+});
+
+describe("§4.14.2 — leave silences the clock-in prompt (D-140)", () => {
+  it("does not prompt someone on leave, even with a live schedule", async () => {
+    const { shop, shift, actor, user } = await fixture({ role: "STAFF" });
+
+    await prisma.scheduleAssignment.create({
+      data: {
+        userId: user.id,
+        shopId: shop.id,
+        shiftId: shift.id,
+        daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+        effectiveFrom: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    });
+
+    // Rostered → prompted. Establish the baseline, or the assertion below
+    // proves nothing (a false could just mean the roster never worked).
+    const before = await attendanceStatus({
+      ...actor,
+      workSession: { shopId: shop.id },
+    } as unknown as Actor);
+    expect(before.prompt).toBe(true);
+
+    await prisma.scheduleLeave.create({
+      data: {
+        userId: user.id,
+        startDate: new Date("2026-03-10T00:00:00.000Z"),
+        endDate: new Date("2026-03-12T00:00:00.000Z"),
+        reason: "Annual leave",
+      },
+    });
+
+    // BUSINESS_DATE is 2026-03-11, inside the leave.
+    const after = await attendanceStatus({
+      ...actor,
+      workSession: { shopId: shop.id },
+    } as unknown as Actor);
+    expect(after.prompt).toBe(false);
+    expect(after.scheduledToday).toBe(false);
+  });
+
+  it("still lets someone on leave clock in WITH a reason", async () => {
+    const { shop, shift, actor, user } = await fixture({ role: "STAFF" });
+    const colleague = await fixture({ role: "STAFF" });
+
+    // A roster exists here (somebody else is on it), so the cover gate is live.
+    await prisma.userShop.create({
+      data: { userId: colleague.user.id, shopId: shop.id, role: "STAFF" },
+    });
+    await prisma.scheduleAssignment.create({
+      data: {
+        userId: colleague.user.id,
+        shopId: shop.id,
+        shiftId: shift.id,
+        daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+        effectiveFrom: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    });
+    await prisma.scheduleLeave.create({
+      data: {
+        userId: user.id,
+        startDate: new Date("2026-03-10T00:00:00.000Z"),
+        endDate: new Date("2026-03-12T00:00:00.000Z"),
+        reason: "Annual leave",
+      },
+    });
+
+    // Leave suppresses the PROMPT; it must never block the RECORD. Somebody
+    // who comes in to cover during their holiday still has to be recordable.
+    const record = await track(
+      clockIn(actor, shop.id, await photo(), {
+        shiftId: shift.id,
+        coverReason: "Came in to cover for a sick colleague",
+        locationDenied: false,
+      })
+    );
+    expect(record.scheduleSource).toBe("COVER");
+  });
+});
+
+describe("§4.14.1 — the Settings clock-in route (D-141)", () => {
+  /**
+   * The banner only fires when the roster expects someone, which is right —
+   * and leaves a covering staff member with no route to the clock-in screen.
+   * The Settings row is that route, and it reads `attendanceStatus`, so these
+   * pin the three states it renders from.
+   */
+  it("reports not-scheduled and not-clocked-in for a covering staff member", async () => {
+    const { shop, actor } = await fixture({ role: "STAFF" });
+    const colleague = await fixture({ role: "STAFF" });
+
+    // Somebody else holds the roster here, so this person is off it.
+    await prisma.userShop.create({
+      data: { userId: colleague.user.id, shopId: shop.id, role: "STAFF" },
+    });
+    await prisma.scheduleAssignment.create({
+      data: {
+        userId: colleague.user.id,
+        shopId: shop.id,
+        shiftId: colleague.shift.id,
+        daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+        effectiveFrom: new Date("2026-03-01T00:00:00.000Z"),
+      },
+    });
+
+    const status = await attendanceStatus({
+      ...actor,
+      workSession: { shopId: shop.id },
+    } as unknown as Actor);
+
+    // No banner (that is the point), but the row must still offer the route.
+    expect(status.prompt).toBe(false);
+    expect(status.scheduledToday).toBe(false);
+    expect(status.clockedIn).toBe(false);
+  });
+
+  it("reports clockedIn with the time once they have covered", async () => {
+    const { shop, actor } = await fixture({ role: "STAFF" });
+
+    await track(clockIn(actor, shop.id, await photo(), { locationDenied: false }));
+
+    const status = await attendanceStatus({
+      ...actor,
+      workSession: { shopId: shop.id },
+    } as unknown as Actor);
+
+    // Drives the row saying "Clocked in at HH:MM" rather than offering a
+    // clock-in to somebody who already has.
+    expect(status.clockedIn).toBe(true);
+    expect(status.record?.clockInAt).toBeTruthy();
+    expect(status.prompt).toBe(false);
   });
 });

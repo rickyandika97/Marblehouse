@@ -36,6 +36,7 @@ import {
   deleteAttendancePhoto,
   storeAttendancePhoto,
 } from "@/server/services/attendance-photo";
+import { myScheduleToday, resolveDay } from "@/server/services/schedule";
 
 /**
  * Coordinates arrive as strings so a `Decimal` column never round-trips
@@ -44,6 +45,13 @@ import {
  */
 export const clockInSchema = z.object({
   shiftId: z.string().min(1).optional(),
+  /**
+   * Why this person is clocking in for a shift they are not rostered for
+   * (§4.14.1). The service REQUIRES it when the schedule does not place them
+   * on the chosen shift — see `clockIn`. It is optional at the schema because
+   * the scheduled case, which is the common one, must not carry it.
+   */
+  coverReason: z.string().trim().min(3).max(200).optional(),
   latitude: z.coerce.number().min(-90).max(90).optional(),
   longitude: z.coerce.number().min(-180).max(180).optional(),
   accuracyM: z.coerce.number().int().nonnegative().max(100_000).optional(),
@@ -111,9 +119,38 @@ export async function attendanceStatus(actor: Actor) {
     },
   });
 
+  /**
+   * Is this person on today's roster (§4.14.1)?
+   *
+   * This is what makes the banner stop nagging people on their day off. Before
+   * the timetable existed the banner showed for every non-owner every day,
+   * including a staff member's Sunday, which trained everyone to ignore it.
+   *
+   * Resolved only when there is a work session to resolve against, and only
+   * when it could change the answer — an owner never sees the banner and a
+   * person who already clocked in has satisfied it either way.
+   */
+  let scheduledToday = false;
+  let slots: Awaited<ReturnType<typeof myScheduleToday>>["slots"] = [];
+
+  if (!actor.isOwner && actor.workSession) {
+    const mine = await myScheduleToday(actor, actor.workSession.shopId);
+    scheduledToday = mine.scheduled;
+    slots = mine.slots;
+  }
+
   return {
     // §4.13: required for STAFF and MANAGER, optional for OWNER.
     required: !actor.isOwner,
+    /**
+     * Whether to PROMPT. §4.13 made the banner unconditional for every
+     * non-owner; §4.14.1 narrows it to people the roster actually expects
+     * today. Someone unscheduled can still clock in — they just have to go
+     * looking for it, and give a reason (D-136).
+     */
+    prompt: !actor.isOwner && scheduledToday && record === null,
+    scheduledToday,
+    slots,
     clockedIn: record !== null,
     businessDate: actor.businessDate.toISOString().slice(0, 10),
     record: record
@@ -285,6 +322,61 @@ export async function clockIn(
     }
   }
 
+  /**
+   * Scheduled or covering (§4.14.1)?
+   *
+   * The timetable decides which, and the answer is recorded rather than
+   * inferred later: an attendance row alone cannot say whether someone was
+   * rostered that day, because the roster may have changed since.
+   *
+   * **Being unscheduled never blocks the clock-in.** A staff member covering at
+   * short notice must be able to start work; §4.14.1 requires a REASON from
+   * them, not permission from a manager. Blocking would mean a branch cannot
+   * open because nobody updated the roster.
+   */
+  const todaysSlots = await resolveDay(actor, shopId, actor.businessDate);
+  const scheduledHere = todaysSlots.some(
+    (slot) =>
+      slot.userId === actor.userId &&
+      // With no shift chosen, being rostered for ANY shift today counts as
+      // scheduled — the person is expected at this branch today either way.
+      (shift ? slot.shiftId === shift.id : true)
+  );
+
+  /**
+   * **A branch with no timetable at all behaves exactly as it did before this
+   * feature existed.**
+   *
+   * This is deliberate and it is the most important line in the gate. Every
+   * shop that predates §4.14.1 has an empty roster, and so does every newly
+   * opened branch on its first day. If an empty roster meant "nobody is
+   * scheduled", the reason prompt would fire for every staff member at every
+   * such branch — turning a planning aid into an obstacle to opening the shop,
+   * and training everyone to type "n/a" into it, which destroys the signal the
+   * field exists to carry.
+   *
+   * So the roster only gates once it exists. `hasRoster` asks whether ANYONE is
+   * rostered here today, not whether this person is.
+   */
+  const hasRoster = todaysSlots.length > 0;
+
+  if (hasRoster && !scheduledHere && !input.coverReason) {
+    throw new AppError(
+      "VALIDATION_FAILED",
+      "You are not scheduled for this shift today. Say who you are covering for to continue.",
+      { fields: { coverReason: "Required when you are not on today's roster." } }
+    );
+  }
+
+  /**
+   * `SCHEDULED` covers both "the roster names you" and "there is no roster
+   * here" — the latter is the pre-§4.14.1 status quo and must not be reported
+   * as cover, or the owner's cover report fills with rows from branches that
+   * simply have not been rostered yet.
+   */
+  const scheduleSource: "SCHEDULED" | "COVER" =
+    scheduledHere || !hasRoster ? "SCHEDULED" : "COVER";
+
   let isLate = false;
   let lateMinutes = 0;
   let shiftStartAtCapture: Date | null = null;
@@ -337,6 +429,11 @@ export async function clockIn(
           status: isLate ? "LATE" : "PRESENT",
           isLate,
           lateMinutes,
+          scheduleSource,
+          // Only meaningful on a COVER row. A scheduled arrival that happened
+          // to send one must not carry it, or the "who was covering?" report
+          // fills with noise.
+          coverReason: scheduleSource === "COVER" ? (input.coverReason ?? null) : null,
           photoPath: stored.relativePath,
           latitude: locationDenied
             ? null
@@ -354,6 +451,7 @@ export async function clockIn(
           lateMinutes: true,
           status: true,
           locationDenied: true,
+          scheduleSource: true,
         },
       });
 
@@ -368,6 +466,7 @@ export async function clockIn(
             isLate: created.isLate,
             lateMinutes: created.lateMinutes,
             locationDenied: created.locationDenied,
+            scheduleSource: created.scheduleSource,
           },
           ipAddress: meta.ipAddress ?? null,
         },
@@ -384,6 +483,7 @@ export async function clockIn(
       lateMinutes: record.lateMinutes,
       status: record.status,
       locationDenied: record.locationDenied,
+      scheduleSource: record.scheduleSource,
       photoUrl: `/api/attendance/${record.id}/photo`,
     };
   } catch (error) {

@@ -3,12 +3,22 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Loader2, Store, TriangleAlert } from "lucide-react";
+import { Loader2, Pencil, Store, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
 
 export interface ShopRow {
@@ -39,10 +49,18 @@ export interface ShopRow {
  * (BUILD-LOG D-101). That makes the follow-up steps the owner's, so the list
  * has to make the emptiness impossible to miss rather than leaving them to
  * discover it when a staff member cannot ring up a sale.
+ *
+ * Create and edit are both modals (D-127) rather than an inline card or a
+ * separate route — this list is what the owner should keep seeing while they
+ * work, matching the Expenses screen's "Record expense" / edit-row pattern.
  */
 export function ShopAdmin({ initialShops }: { initialShops: ShopRow[] }) {
   const router = useRouter();
-  const [open, setOpen] = useState(initialShops.length === 0);
+
+  // HQ is never deactivatable (`updateShop` refuses it, D-101/§4.12), so it
+  // always belongs on Active regardless of this split.
+  const activeShops = initialShops.filter((s) => s.isActive);
+  const archivedShops = initialShops.filter((s) => !s.isActive);
 
   return (
     <div className="space-y-6">
@@ -50,36 +68,55 @@ export function ShopAdmin({ initialShops }: { initialShops: ShopRow[] }) {
         <p className="text-sm text-muted-foreground">
           Adding one here does not move any existing records.
         </p>
-        {!open && (
-          <Button onClick={() => setOpen(true)}>
-            <Store className="size-4" />
-            New shop
-          </Button>
-        )}
+        <CreateShopDialog onCreated={() => router.refresh()} />
       </div>
 
-      {open && (
-        <CreateShopCard
-          onCancel={() => setOpen(false)}
-          onCreated={() => {
-            setOpen(false);
-            router.refresh();
-          }}
-        />
-      )}
+      <Tabs defaultValue="active">
+        <TabsList>
+          <TabsTrigger value="active">
+            Active
+            {activeShops.length > 0 && (
+              <span className="text-muted-foreground">{activeShops.length}</span>
+            )}
+          </TabsTrigger>
+          <TabsTrigger value="archived">
+            Archived
+            {archivedShops.length > 0 && (
+              <span className="text-muted-foreground">{archivedShops.length}</span>
+            )}
+          </TabsTrigger>
+        </TabsList>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Existing shops</CardTitle>
-        </CardHeader>
-        <CardContent className="p-0">
-          <ul className="divide-y">
-            {initialShops.map((shop) => (
-              <ShopListItem key={shop.id} shop={shop} />
-            ))}
-          </ul>
-        </CardContent>
-      </Card>
+        <TabsContent value="active">
+          <Card>
+            <CardContent className="p-0">
+              <ul className="divide-y">
+                {activeShops.map((shop) => (
+                  <ShopListItem key={shop.id} shop={shop} />
+                ))}
+              </ul>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="archived">
+          <Card>
+            <CardContent className="p-0">
+              {archivedShops.length === 0 ? (
+                <p className="px-6 py-4 text-sm text-muted-foreground">
+                  No deactivated shops.
+                </p>
+              ) : (
+                <ul className="divide-y">
+                  {archivedShops.map((shop) => (
+                    <ShopListItem key={shop.id} shop={shop} />
+                  ))}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
@@ -118,11 +155,8 @@ function ShopListItem({ shop }: { shop: ShopRow }) {
       <span className="min-w-0 flex-1">
         <span className="block truncate font-medium">
           {shop.name}
-          {!shop.isActive && (
-            <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-xs font-normal text-muted-foreground">
-              Deactivated
-            </span>
-          )}
+          {/* No "Deactivated" badge here — which tab the row is in (D-132)
+              already says that. */}
           {shop.isHqPseudoShop && (
             <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-xs font-normal text-muted-foreground">
               Expenses only
@@ -130,7 +164,10 @@ function ShopListItem({ shop }: { shop: ShopRow }) {
           )}
         </span>
         <span className="block truncate text-sm text-muted-foreground">
-          {shop.code} · {shop.timezone} · {shop.lateGraceMin} min grace
+          {shop.code} · {shop.timezone}
+          {/* HQ has no shifts and nobody clocks in there, so a lateness
+              grace is meaningless on this row (owner request, 2026-08-20). */}
+          {!shop.isHqPseudoShop && ` · ${shop.lateGraceMin} min grace`}
         </span>
 
         {/*
@@ -203,6 +240,12 @@ function ShopListItem({ shop }: { shop: ShopRow }) {
             )}
           </Link>
           <Link
+            href={`/settings/shops/${shop.id}/roster`}
+            className={buttonVariants({ variant: "outline", size: "sm" })}
+          >
+            Roster
+          </Link>
+          <Link
             href={`/settings/shops/${shop.id}/staff`}
             className={buttonVariants({ variant: "outline", size: "sm" })}
           >
@@ -211,6 +254,7 @@ function ShopListItem({ shop }: { shop: ShopRow }) {
               <span className="text-muted-foreground">{shop.staffCount}</span>
             )}
           </Link>
+          <EditShopDialog shop={shop} />
           <Button
             variant="outline"
             size="sm"
@@ -226,24 +270,28 @@ function ShopListItem({ shop }: { shop: ShopRow }) {
   );
 }
 
-function CreateShopCard({
-  onCreated,
-  onCancel,
-}: {
-  onCreated: () => void;
-  onCancel: () => void;
-}) {
+function CreateShopDialog({ onCreated }: { onCreated: () => void }) {
+  const [open, setOpen] = useState(false);
   const [code, setCode] = useState("");
   const [name, setName] = useState("");
   const [address, setAddress] = useState("");
   const [phone, setPhone] = useState("");
   const [lateGraceMin, setLateGraceMin] = useState("5");
-  const [allowCustomAmount, setAllowCustomAmount] = useState(false);
   const [allowDirectTransfer, setAllowDirectTransfer] = useState(false);
-  const [requireClockOutPhoto, setRequireClockOutPhoto] = useState(false);
   const [fields, setFields] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+
+  function reset() {
+    setCode("");
+    setName("");
+    setAddress("");
+    setPhone("");
+    setLateGraceMin("5");
+    setAllowDirectTransfer(false);
+    setFields({});
+    setError(null);
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -265,9 +313,10 @@ function CreateShopCard({
           // Sent as a number: the schema is `z.number().int()`, and a string
           // would fail validation rather than being coerced.
           lateGraceMin: Number(lateGraceMin),
-          allowCustomAmount,
           allowDirectTransfer,
-          requireClockOutPhoto,
+          // Every branch requires a clock-out photo; not a user-facing
+          // option (owner request, 2026-08-20).
+          requireClockOutPhoto: true,
         }),
       });
 
@@ -280,23 +329,44 @@ function CreateShopCard({
         return;
       }
 
-      toast.success(
-        `${body.name} created. Add its sale prices next.`,
-      );
+      toast.success(`${body.name} created. Add its sale prices next.`);
+      setOpen(false);
+      reset();
       onCreated();
     } catch {
       setError("Cannot reach the server. Check the internet connection.");
+    } finally {
       setPending(false);
     }
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>New shop</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <form onSubmit={submit} className="space-y-5">
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) reset();
+      }}
+    >
+      <DialogTrigger
+        render={
+          <Button>
+            <Store className="size-4" />
+            New shop
+          </Button>
+        }
+      />
+
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>New shop</DialogTitle>
+          <DialogDescription>
+            Starts empty — add sale prices and shifts, and assign staff, once
+            it exists. It cannot take a sale until it has at least one preset.
+          </DialogDescription>
+        </DialogHeader>
+
+        <form id="create-shop-form" onSubmit={submit} className="space-y-5">
           <div className="space-y-2">
             <Label htmlFor="shop-name">Name</Label>
             <Input
@@ -306,6 +376,7 @@ function CreateShopCard({
               onChange={(e) => setName(e.target.value)}
               required
               disabled={pending}
+              autoFocus
             />
             <FieldError message={fields.name} />
           </div>
@@ -375,12 +446,222 @@ function CreateShopCard({
             <legend className="mb-2 text-sm font-medium">Options</legend>
             <div className="grid gap-2">
               <Toggle
-                checked={allowCustomAmount}
-                onChange={setAllowCustomAmount}
+                checked={allowDirectTransfer}
+                onChange={setAllowDirectTransfer}
                 disabled={pending}
-                title="Allow custom sale amounts"
-                help="Lets staff type any amount instead of only picking a preset."
+                title="Allow direct marble transfers"
+                help="Lets customers move marbles between each other at this branch."
               />
+            </div>
+          </fieldset>
+
+          {error && (
+            <p
+              role="alert"
+              className="rounded-lg bg-destructive/10 px-4 py-3 text-sm font-medium text-destructive"
+            >
+              {error}
+            </p>
+          )}
+        </form>
+
+        <DialogFooter className="gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setOpen(false)}
+            disabled={pending}
+          >
+            Cancel
+          </Button>
+          <Button type="submit" form="create-shop-form" disabled={pending}>
+            {pending && <Loader2 className="size-4 animate-spin" />}
+            Create shop
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * Settings → Shops → *this shop* → Edit, as a modal (D-127). Replaces the
+ * D-126 `/settings/shops/[id]/edit` route with the same fields, following the
+ * same exclusions: `code` is shown disabled (immutable, D-3), and
+ * `allowCustomAmount`/`timezone` stay off this form entirely (D-125).
+ * `isActive` is deliberately still the list's own Deactivate/Reopen button,
+ * not duplicated here — that button already carries the last-branch and
+ * HQ-cannot-deactivate refusal messages.
+ */
+function EditShopDialog({ shop }: { shop: ShopRow }) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState(shop.name);
+  const [address, setAddress] = useState(shop.address ?? "");
+  const [phone, setPhone] = useState(shop.phone ?? "");
+  const [lateGraceMin, setLateGraceMin] = useState(String(shop.lateGraceMin));
+  const [allowDirectTransfer, setAllowDirectTransfer] = useState(
+    shop.allowDirectTransfer,
+  );
+  const [requireClockOutPhoto, setRequireClockOutPhoto] = useState(
+    shop.requireClockOutPhoto,
+  );
+  const [fields, setFields] = useState<Record<string, string>>({});
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+
+  // Seeded from the row each time the dialog opens, so cancelling and
+  // reopening never shows a stale half-edit (matches edit-expense.tsx).
+  function reset() {
+    setName(shop.name);
+    setAddress(shop.address ?? "");
+    setPhone(shop.phone ?? "");
+    setLateGraceMin(String(shop.lateGraceMin));
+    setAllowDirectTransfer(shop.allowDirectTransfer);
+    setRequireClockOutPhoto(shop.requireClockOutPhoto);
+    setFields({});
+    setError(null);
+  }
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (pending) return;
+
+    setPending(true);
+    setError(null);
+    setFields({});
+
+    try {
+      const res = await fetch(`/api/shops/${shop.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name,
+          address: address.trim() || null,
+          phone: phone.trim() || null,
+          lateGraceMin: Number(lateGraceMin),
+          allowDirectTransfer,
+          requireClockOutPhoto,
+        }),
+      });
+
+      const body = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        setFields(body?.error?.details?.fields ?? {});
+        setError(body?.error?.message ?? "Could not save these changes.");
+        setPending(false);
+        return;
+      }
+
+      toast.success(`${body.name} updated.`);
+      setOpen(false);
+      router.refresh();
+    } catch {
+      setError("Cannot reach the server. Check the internet connection.");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (!next) reset();
+      }}
+    >
+      <DialogTrigger
+        render={
+          <Button variant="outline" size="sm">
+            <Pencil className="size-4" />
+            Edit
+          </Button>
+        }
+      />
+
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Edit shop</DialogTitle>
+          <DialogDescription>
+            {shop.name} · {shop.code}
+          </DialogDescription>
+        </DialogHeader>
+
+        <form id={`edit-shop-form-${shop.id}`} onSubmit={submit} className="space-y-5">
+          <div className="space-y-2">
+            <Label htmlFor={`edit-shop-name-${shop.id}`}>Name</Label>
+            <Input
+              id={`edit-shop-name-${shop.id}`}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+              disabled={pending}
+              autoFocus
+            />
+            <FieldError message={fields.name} />
+          </div>
+
+          <div className="space-y-2">
+            <Label>Code</Label>
+            <Input value={shop.code} disabled readOnly />
+            <p className="text-xs text-muted-foreground">
+              Cannot be changed — it is already used on exports, the audit log
+              and in conversation. Rename the shop instead.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor={`edit-shop-address-${shop.id}`}>
+              Address (optional)
+            </Label>
+            <Input
+              id={`edit-shop-address-${shop.id}`}
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+              disabled={pending}
+            />
+            <FieldError message={fields.address} />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor={`edit-shop-phone-${shop.id}`}>
+              Phone (optional)
+            </Label>
+            <Input
+              id={`edit-shop-phone-${shop.id}`}
+              value={phone}
+              inputMode="tel"
+              onChange={(e) => setPhone(e.target.value)}
+              disabled={pending}
+            />
+            <FieldError message={fields.phone} />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor={`edit-shop-grace-${shop.id}`}>
+              Late grace (minutes)
+            </Label>
+            <Input
+              id={`edit-shop-grace-${shop.id}`}
+              value={lateGraceMin}
+              inputMode="numeric"
+              onChange={(e) =>
+                setLateGraceMin(e.target.value.replace(/[^0-9]/g, ""))
+              }
+              required
+              disabled={pending}
+            />
+            <p className="text-xs text-muted-foreground">
+              How late a staff member may clock in before it counts as late.
+            </p>
+            <FieldError message={fields.lateGraceMin} />
+          </div>
+
+          <fieldset className="space-y-2">
+            <legend className="mb-2 text-sm font-medium">Options</legend>
+            <div className="grid gap-2">
               <Toggle
                 checked={allowDirectTransfer}
                 onChange={setAllowDirectTransfer}
@@ -398,17 +679,6 @@ function CreateShopCard({
             </div>
           </fieldset>
 
-          {/*
-            Says plainly what the owner is about to get. The empty start is the
-            decision (D-101); a branch that quietly cannot sell would be the
-            defect it produces if nobody is told.
-          */}
-          <p className="rounded-lg bg-muted px-4 py-3 text-sm text-muted-foreground">
-            The new shop starts empty. After creating it, add its sale presets
-            and shifts, and assign staff from Settings → Users. It cannot take a
-            sale until it has at least one preset.
-          </p>
-
           {error && (
             <p
               role="alert"
@@ -417,25 +687,24 @@ function CreateShopCard({
               {error}
             </p>
           )}
-
-          <div className="flex gap-3">
-            <Button type="submit" size="lg" className="flex-1" disabled={pending}>
-              {pending && <Loader2 className="animate-spin" />}
-              Create shop
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="lg"
-              onClick={onCancel}
-              disabled={pending}
-            >
-              Cancel
-            </Button>
-          </div>
         </form>
-      </CardContent>
-    </Card>
+
+        <DialogFooter className="gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setOpen(false)}
+            disabled={pending}
+          >
+            Cancel
+          </Button>
+          <Button type="submit" form={`edit-shop-form-${shop.id}`} disabled={pending}>
+            {pending && <Loader2 className="size-4 animate-spin" />}
+            Save changes
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

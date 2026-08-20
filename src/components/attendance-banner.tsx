@@ -24,12 +24,22 @@ import { AlertTriangle } from "lucide-react";
  * Status comes from the server (`/api/attendance/status`), never from local
  * state: whether someone has clocked in is a fact about the database, and a
  * client that decided for itself would let a page refresh hide the banner.
+ *
+ * **§4.14.1 narrowed WHEN it appears.** It used to show for every non-owner
+ * every day, including a staff member's day off — which taught everyone to
+ * ignore it, the one thing a non-dismissible banner cannot survive. Now the
+ * server decides via `prompt`, which is true only when the roster actually
+ * expects this person at this branch today.
+ *
+ * Someone unscheduled can still clock in (covering a colleague); they reach it
+ * from the Attendance screen and give a reason. The banner staying quiet is not
+ * a permission — see `schedule.ts`.
  */
 export function AttendanceBanner() {
   const pathname = usePathname();
   const [state, setState] = useState<{
-    required: boolean;
-    clockedIn: boolean;
+    prompt: boolean;
+    slots: { shiftName: string; startTime: string; wouldBeLate: boolean }[];
   } | null>(null);
 
   useEffect(() => {
@@ -39,7 +49,7 @@ export function AttendanceBanner() {
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (!cancelled && data) {
-          setState({ required: data.required, clockedIn: data.clockedIn });
+          setState({ prompt: data.prompt ?? false, slots: data.slots ?? [] });
         }
       })
       .catch(() => undefined);
@@ -55,8 +65,10 @@ export function AttendanceBanner() {
   // page load and then vanishes is worse than one that appears a moment late.
   if (!state) return null;
 
-  // OWNER is optional (§4.13), and a satisfied requirement shows nothing.
-  if (!state.required || state.clockedIn) return null;
+  // The server has already weighed role, roster and whether they clocked in.
+  // Deliberately ONE flag rather than three conditions re-derived here — the
+  // rule lives in `attendanceStatus`, and a second copy would drift.
+  if (!state.prompt) return null;
 
   // Already on the clock-in screen: the banner would be pointing at itself.
   if (pathname.startsWith("/attendance/clock-in")) return null;
@@ -68,8 +80,27 @@ export function AttendanceBanner() {
     >
       <AlertTriangle className="size-5 shrink-0" aria-hidden />
       <span className="text-sm font-semibold">
-        You have not clocked in today. Tap here to clock in.
+        {shiftLabel(state.slots)} Tap here to clock in.
       </span>
     </Link>
   );
+}
+
+/**
+ * Name the shift they are expected on, when there is exactly one.
+ *
+ * "Your 08:00 Morning shift" is a materially better prompt than "you have not
+ * clocked in": it tells someone working two branches WHICH one this is about.
+ * With a split shift the specific time would be ambiguous, so it falls back.
+ */
+function shiftLabel(
+  slots: { shiftName: string; startTime: string; wouldBeLate: boolean }[]
+): string {
+  const first = slots[0];
+  if (slots.length !== 1 || !first) {
+    return "You have not clocked in today.";
+  }
+  return first.wouldBeLate
+    ? `Your ${first.shiftName} shift started at ${first.startTime}.`
+    : `You are on the ${first.shiftName} shift (${first.startTime}).`;
 }

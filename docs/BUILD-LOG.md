@@ -4568,6 +4568,996 @@ CLAUDE.md gate 3. The stale test that used to assert "the schema strips
 honours an explicit past date, refuses a future one. Full suite (407 tests),
 `typecheck`, `lint` and `docker compose build` all pass.
 
+### D-125 · New-shop form drops "allow custom sale amounts" and the clock-out photo toggle
+
+**Owner request, 20 Aug 2026.** Two changes to `CreateShopCard` in
+`shop-admin.tsx`, Settings → Shops:
+
+- **"Allow custom sale amounts" removed from the form.** The owner does not
+  want this option offered at branch creation. The `allowCustomAmount` field
+  and its `Decisions already made` row (a sale records money only) are
+  untouched — the form simply no longer sends it, so it keeps its schema
+  default of `false` on every new shop. It is still reachable via
+  `PATCH /api/shops/:id` if a future request needs it back; there is no UI
+  writer for that path (see the "Shop admin has no edit form" debt below).
+- **Clock-out photo is now always on, not a toggle.** Every shop should
+  require it, so `requireClockOutPhoto`'s Zod default in
+  `src/server/services/shops.ts` flipped from `false` to `true`, and the
+  create form now sends `requireClockOutPhoto: true` unconditionally instead
+  of exposing a checkbox. `shops.test.ts`'s defaults test was updated to
+  match. This is a default-and-hide, not a removal of the field or a
+  hardcoded constant elsewhere — `PATCH /api/shops/:id` can still set it to
+  `false` for a branch that genuinely needs an exception, again only via the
+  API today.
+
+Both toggles' underlying schema fields, DB columns and PATCH support are
+unchanged; only what the *create* form offers and defaults to changed. `Toggle`
+the component is still used for "Allow direct marble transfers," the one
+option left in that fieldset.
+
+Verified: `npm run typecheck`, `npm run lint`, and `npm test -- shops` (42/42)
+all pass after the change.
+
+### D-126 · Shop edit form — closes the "no edit UI" debt from D-101
+
+**Owner request, 20 Aug 2026,** immediately after D-125: once the create
+form's toggles were being pruned, the owner asked whether name, address,
+phone, late grace, and the toggles could be changed on an *existing* branch —
+they had assumed this already existed. It didn't: `getShop`/`updateShop` and
+`PATCH /api/shops/:id` have existed since Phase 6/D-101, fully tested, with no
+UI caller. Closes the "Shop admin has no edit form" debt.
+
+**New route:** `/settings/shops/[id]/edit` (`page.tsx` + `edit-shop-form.tsx`),
+alongside the existing `presets`/`shifts`/`staff` per-shop screens — same
+`requireOwnerPage` guard as `presets` (real 403, not a redirect, per D-64/D-33
+precedent already established on that screen). Linked from a new "Edit" button
+on the shop list in `shop-admin.tsx`, between Staff and Deactivate.
+
+**Fields exposed, confirmed with the owner before building:** name, address,
+phone, late grace, allow direct marble transfers, require clock-out photo.
+**Deliberately excluded**, matching D-125 and D-3:
+
+- **`code`** — shown, disabled, with the same immutability explanation as the
+  create form's help text. Never sent in the PATCH body.
+- **`allowCustomAmount`** — owner does not want this option surfaced anywhere
+  right now (D-125). Still reachable only via the raw API.
+- **`timezone`** — not offered on the create form either; adding it only to
+  edit would make edit the odd one out for no requested reason. Still
+  reachable only via the raw API.
+- **`isActive`** — deliberately left on the existing Deactivate/Reopen button
+  in the shop list rather than duplicated here, since that button already
+  carries the last-branch and HQ-cannot-deactivate refusal messages
+  (`updateShop`'s guards) and a second call site for the same state risks
+  drifting from those messages.
+
+**Verified for real**, against the running dev server (owner already
+authenticated in the connected browser session): opened Edit for the seeded
+`Branch 1`, changed late grace 5 → 10 and checked "Require a clock-out photo,"
+saved, confirmed the success toast and the updated grace on the list ("10 min
+grace"), then reopened Edit and reverted both fields back to their original
+values (5, unchecked) and saved again — the list shows "5 min grace" as before
+this session. No stray test data left behind; this exercised a real
+`PATCH /api/shops/:id` round trip end to end, not just the form rendering.
+
+`npm run typecheck`, `npm run lint`, and the full suite (407/407) all pass —
+no service or schema change was needed, only the new page and form.
+
+### D-127 · Create/Edit shop become modals, superseding D-126's route
+
+**Owner request, 20 Aug 2026,** minutes after D-126 shipped: the owner
+expected "New shop" to already be a popup, matching the Expenses screen's
+"Record expense" / edit-row modal pattern (`add-expense.tsx`/
+`edit-expense.tsx`, part of the Phase 11 batch). It wasn't — create was an
+inline card that replaced the page content, and the brand-new edit screen
+from D-126 was a full route.
+
+**What changed, entirely in `shop-admin.tsx`:**
+
+- `CreateShopCard` → `CreateShopDialog`. Same fields and validation as before;
+  wrapped in `Dialog`/`DialogTrigger`/`DialogContent` from
+  `components/ui/dialog.tsx`, the same primitives the expense modals use. The
+  form's submit button lives in `DialogFooter`, outside the scrolling form
+  body, wired to the form via `form="create-shop-form"` rather than nesting a
+  button inside the footer's own markup — copies the expense dialogs' shape.
+- **New `EditShopDialog`**, one per row, replacing the D-126 route entirely.
+  `/settings/shops/[id]/edit` (`page.tsx` + `edit-shop-form.tsx`) is deleted —
+  its guard (`requireOwnerPage`) and fields (name, address, phone, late grace,
+  allow direct transfer, require clock-out photo; code shown disabled;
+  `allowCustomAmount`/`timezone`/`isActive` excluded, same reasoning as D-126)
+  moved into the dialog unchanged. Values reset from the shop row on every
+  open/close, matching `edit-expense.tsx`'s reset-on-open pattern, so a
+  cancelled edit never leaves stale state for the next open.
+- The shop list's "Edit" link is now a dialog trigger button (pencil icon)
+  instead of a `Link` to a route. "Prices," "Shifts" and "Staff" stay as
+  `Link`s to their own routes — those are whole per-shop admin screens with
+  their own state (preset lists, shift lists, staff assignment), not a single
+  form, so they don't fit the modal shape the way create/edit do.
+- The `initialShops.length === 0` auto-open-the-create-form behavior was
+  dropped rather than ported. It was already dead in practice — HQ is always
+  seeded (`prisma/seed.ts`), so `listShops` never actually returns zero rows —
+  and auto-popping a modal on page load (rather than an inline card appearing
+  in place) would be a worse first impression than simply leaving "New shop"
+  as a visible, obvious button.
+
+**Verified for real**, against the running dev server: opened "New shop,"
+confirmed the modal renders with backdrop and autofocus, cancelled. Opened
+Edit on `Branch 1`, toggled "Require a clock-out photo" on, saved, confirmed
+the toast and the change reflected in the list, reopened Edit to confirm the
+checkbox read back checked, then reverted it and saved again. Also found and
+deactivated a stray `test` shop left over from D-126's manual verification
+pass (soft-deleted via the existing Deactivate button, per the
+never-hard-delete invariant — not a new capability exercised here).
+
+`npm run typecheck` failed once on stale generated route types for the
+deleted `[id]/edit` page (`.next/types/...` referencing a module that no
+longer exists) — expected after deleting a route; cleared by removing `.next`
+and rebuilding, not a real type error. `npm run typecheck`, `npm run lint`,
+and the full suite (407/407) all pass on a clean rebuild. No service or schema
+change; the API surface (`getShop`/`updateShop`/`createShop`,
+`PATCH`/`POST /api/shops`) is unchanged from D-101/D-125/D-126.
+
+### D-128 · HQ sorts first on Settings → Shops, not last
+
+**Owner request, 20 Aug 2026.** After asking what "HQ / Unallocated ·
+Expenses only" meant, the owner asked to move it to the top of the list so it
+reads as clearly set apart from the trading branches, rather than risk being
+mistaken for one while scanning down.
+
+This reverses D-54's ordering choice on this one screen. D-54 sorted HQ last
+in `listShops()` on the reasoning that "the owner is nearly always here for a
+trading branch" — true for the sale/day-start pickers `selectableShops()`
+feeds, which D-54 left untouched and which still exclude HQ entirely. It was
+never true for the *admin* list on Settings → Shops, where HQ is a permanent
+fixture, not one item in a growing set of branches to scan past — putting it
+first is what keeps it from being confused with a real branch.
+
+**What changed:** `listShops()`'s `orderBy` in `src/server/services/shops.ts`
+— `{ isHqPseudoShop: "desc" }` now leads, before the existing
+`{ isActive: "desc" }` and `{ name: "asc" }`. `listShops` has exactly one
+caller, the Settings → Shops admin page, so this could not leak into any
+sale-facing picker. No test asserted the old order, so nothing needed
+updating — verified instead by reading the live page.
+
+**Verified for real:** reloaded Settings → Shops against the running dev
+server; HQ / Unallocated now renders as the first row, ahead of Branch 1, PIK,
+and the deactivated `test` shop. `npm run typecheck`, `npm run lint`, and the
+full suite (407/407) all pass — a pure ordering change, no schema or DTO
+change.
+
+### D-129 · HQ's row drops "N min grace" — nobody clocks in there
+
+**Owner request, 20 Aug 2026,** immediately after D-128: with HQ now sitting
+at the top of the list, the "5 min grace" on its subtitle line read as if
+lateness tracking applied there, which it never has — HQ has no shifts and
+`selectableShops()` (unchanged, D-54) already keeps it out of the clock-in
+picker entirely, so `lateGraceMin` is a stored default nobody can ever trigger
+for this row.
+
+**What changed:** in `shop-admin.tsx`'s `ShopListItem`, the subtitle line
+(`{code} · {timezone} · {grace} min grace`) now appends the grace clause only
+when `!shop.isHqPseudoShop`. HQ's row reads "HQ · Asia/Jakarta"; every trading
+branch is unchanged. The underlying `lateGraceMin` column, its default, and
+the Edit dialog are untouched — this is display-only, and Edit was already
+excluded from HQ's row entirely (it lives inside the existing
+`!shop.isHqPseudoShop` action-row guard, so HQ has never shown Edit,
+Deactivate, Prices, Shifts or Staff).
+
+**Verified for real:** reloaded Settings → Shops against the running dev
+server — HQ's row shows no grace text while Branch 1, PIK and the deactivated
+`test` shop all still show "5 min grace". `npm run typecheck` and
+`npm run lint` pass; full suite (407/407) unaffected (no service/schema
+change, and no test asserted the old subtitle string).
+
+### D-130 · Shop Staff screen sorts managers before staff, alphabetical within each
+
+**Owner request, 20 Aug 2026.** Settings → Shops → *shop* → Staff's "Works
+here" list previously rendered in `listShopStaff`'s own order — active
+accounts before deactivated, alphabetical by display name within that, with
+no awareness of role. The owner wants managers grouped above staff on this
+screen, alphabetical within each group.
+
+**Why this sorts client-side, in `StaffAdmin` (`staff-admin.tsx`), not in
+`listShopStaff`:** D-122 made role per-shop (`UserShop.role`), and
+`listShopStaff` queries every non-owner user once, independent of which shop
+each row belongs to, splitting into `assigned`/`available` afterward. Sorting
+by "role at shop X" server-side would mean re-scoping that whole query per
+call, for a screen that already computes `roleHere(u)` per row for the role
+`<Select>`. Reusing that same helper as the sort key keeps the "role is
+per-shop" rule in exactly one place rather than duplicating it into a second,
+shop-scoped Prisma query.
+
+**What changed:** a new `assignedSorted` in `StaffAdmin`, computed once per
+render from `initialAssigned` — `[...initialAssigned].sort(...)`, manager
+before staff by `roleHere`, then `displayName.localeCompare` — replaces
+`initialAssigned` in the "Works here" `.map`. The length checks that decide
+whether to show the "Works here" card / the empty state still read
+`initialAssigned.length`, since sorting never changes a list's length.
+
+**Trade-off recorded on purpose:** this is a full re-sort, so
+`listShopStaff`'s active-before-deactivated grouping does not survive it — a
+deactivated manager can now sort ahead of an active staff member. Their
+"Deactivated" badge still renders inline (unchanged), and nothing else on
+this screen visually separates active from deactivated rows, so this was not
+treated as a property worth preserving over what the owner asked for. If that
+turns out to matter, the fix is a three-way sort (active/deactivated, then
+role, then name) rather than reverting this change.
+
+**Verified for real:** reloaded Branch 1's Staff screen against the running
+dev server — `manager` (MANAGER) rendered above `Budi` (STAFF). Only two
+staff exist on that branch today, so this did not exercise multiple managers
+sorting alphabetically against each other; the grouping behavior itself
+(manager rows before staff rows) is what was confirmed live. `npm run
+typecheck`, `npm run lint`, and the full suite (407/407) all pass — no
+service or schema change, `listShopStaff` untouched.
+
+### D-131 · Sale price "Label" dropped from Add/Edit — it never showed a distinct value anyway
+
+**Owner request, 20 Aug 2026.** Settings → Shops → *shop* → Sale prices asked
+for a Label alongside Amount on both Add and Edit. The owner asked why they
+were separate, since the label is always the same as the amount in practice.
+
+Checked before changing anything: the sale screen (`sale-form.tsx`) that
+staff actually use only ever renders `formatMoney(preset.amount)` on the
+preset buttons — `label` was never shown there, distinctly or otherwise. The
+"seed the standard prices" flow already auto-generates
+`` label: `Rp ${amount.toLocaleString("id-ID")}` `` server-side (`shops.ts`),
+and the old `AddPresetCard` already defaulted the label input to the
+formatted amount and let the owner type over it — so a label that diverged
+from the amount was already an edge case nobody used on purpose, not a
+feature anyone reached for.
+
+**Scope, decided with the owner up front:** UI-only. `SalePreset.label`
+(`prisma/schema.prisma`, `"A preset is an amount and a label. NOTHING
+ELSE."` — that comment is about not adding `marbleCount`, §4.1/PRD line 194,
+not about keeping label editable) stays a real, NOT NULL column. It is still
+read by the sale DTO (`preset.label` on a `Sale` row) and the report filter
+chips (`report-filters.tsx`). Dropping the column would touch a migration,
+those two call sites, and every historical sale's stored label — out of
+scope for what was asked, and unnecessary since the value it now always holds
+*is* the formatted amount.
+
+**What changed, entirely in `preset-admin.tsx`:**
+
+- `AddPresetCard` — removed the `label` state and the "Label (optional)"
+  input. The POST body now sends `label: formatMoney(amount)` unconditionally
+  instead of the old `effectiveLabel` (typed-label-or-formatted-amount)
+  fallback.
+- `EditPresetForm` — same: removed the "Label" input and its `label`
+  state; the PATCH body sends `label: formatMoney(amount)`.
+- The "On the sale screen" and "Retired" list rows previously printed
+  `{formatMoney(amount)}` as the headline and `{label} · used by N sales` as
+  the subtitle underneath — always-identical text twice per row once label
+  can no longer diverge. Rows now show only the use-count line
+  (`used by N sales` / `kept for N past sales`), and only when `useCount > 0`
+  — an unused preset's row is just its amount, nothing else.
+- Toasts that read `${preset.label}` / `${body.label}` (add/edit/delete
+  success messages) are untouched — they now always read as the formatted
+  amount, e.g. "Deleted Rp 50.000", which was already the common case.
+
+**Existing presets are not migrated.** A preset created before today with a
+hand-typed label that diverged from its amount keeps that stored value in the
+database and in `Sale.preset.label` on any past sale — it simply cannot be
+set to anything but the formatted amount going forward, and the admin list no
+longer displays the stored label at all (so a stale one is invisible there,
+not wrong-looking). Editing a preset's amount now also re-derives its label
+to match, closing the gap the next time each price is touched.
+
+**Verified for real**, against the running dev server: opened Sale prices
+for Branch 1, confirmed both Edit and Add a price show only "Amount
+(rupiah)" — no Label field. Added a real preset (75000), saw the
+"Added Rp 75.000" toast (proving the derived label round-tripped through
+`POST /api/shops/:id/presets` correctly), then deleted it to leave the branch
+at its original five prices. `npm run typecheck`, `npm run lint`, and the
+full suite (407/407) all pass — `createPreset`/`updatePreset` and their Zod
+schemas are unchanged; `label` is still required input to those functions,
+just always supplied as `formatMoney(amount)` by both callers now.
+
+### D-132 · Settings → Shops splits into Active / Archived tabs
+
+**Owner request, 20 Aug 2026.** The shop list mixed deactivated branches into
+the same list as active ones — a deactivated `test` shop sat right below PIK
+with only a small "Deactivated" badge to tell them apart. The owner asked for
+two actual tabs so archived shops stop cluttering the active list, not the
+always-both-visible split Sale prices uses for "On the sale screen"/"Retired"
+(offered as the alternative and explicitly declined — the owner wants
+deactivated shops fully out of view until asked for).
+
+**New primitive: `src/components/ui/tabs.tsx`.** No Tabs component existed in
+this codebase before now — wraps `@base-ui/react/tabs` the same thin way
+`select.tsx` and `dialog.tsx` wrap their own base-ui primitives (`data-slot`
++ `cn()`, no local state of its own). One thing worth flagging for the next
+person styling a `TabsTrigger`: base-ui's active-tab data attribute is
+**`data-active`**, not `data-selected` — confirmed by reading
+`TabsTabDataAttributes.js` after the first version (styled against
+`data-selected`) silently did nothing, since that attribute is never
+rendered. `aria-selected` exists for accessibility but is not exposed as a
+data attribute for styling.
+
+**What changed in `shop-admin.tsx`:** `ShopAdmin` now splits
+`initialShops` into `activeShops`/`archivedShops` by `isActive` and renders
+two `TabsContent` panels instead of one "Existing shops" card. HQ is always
+`isActive: true` and `updateShop` refuses to ever deactivate it (§4.12), so
+it always lands on Active regardless of this split — no special-casing
+needed. The per-row "Deactivated" badge was removed from `ShopListItem`:
+which tab a row appears in already says that, and repeating it inside
+Archived (where every row is deactivated by definition) was pure noise —
+directly the kind of clutter this request was about.
+
+**Not touched:** `listShops`'s ordering (`{isHqPseudoShop: "desc"},
+{isActive: "desc"}, {name: "asc"}`, D-128/D-101) still runs the same query;
+the tab split is a client-side `.filter()` on the same `initialShops` array,
+not two separate fetches. The empty-branch warnings (no presets/shifts/staff)
+still key off `shop.isActive` internally and simply never fire for an
+Archived row, since every row there already has `isActive === false` — no
+dead code, just conditions that naturally never match in that tab.
+
+**Verified for real**, against the running dev server: Active tab showed HQ,
+Branch 1 and PIK (3) with the stray `test` shop moved to Archived (1) and no
+longer visible by default. Clicked into Archived, saw `test` alone with no
+redundant badge. Did a full Reopen → Deactivate round trip on it through the
+tabs (toasts "test reopened" / "test deactivated" both fired, counts and tab
+contents updated correctly after each `router.refresh()`), leaving the branch
+back at Active 3 / Archived 1, matching state before this change. `npm run
+typecheck`, `npm run lint`, and the full suite (407/407) all pass — no
+service, schema or API change; this is presentation only.
+
+### D-133 · Settings → Employees: HQ sorts first, and Staff is disabled for it
+
+**Owner request, 20 Aug 2026,** after asking what assigning someone to HQ
+actually does. Answer surfaced while investigating: **HQ was already
+assignable from Settings → Employees** — `employee-admin.tsx`'s
+`ShopAccessFields` lists every shop including HQ (`shop.isHqPseudoShop` was
+already read there, only for the "· expenses only" caption), and neither
+`setShopAssignment` nor `updateEmployee` has ever had an `isHqPseudoShop`
+guard. This was not a gap opened today; D-15's "the page passes every shop,
+not `selectableShops`" decision (Phase 9) already accounted for HQ
+assignment as a real, intended case. The Shops → Staff screen just never
+offered HQ as an option there (that screen answers "who works at this
+*branch*", D-107/D-130), which is why it read as unreachable until the owner
+found this second entry point.
+
+That investigation surfaced a real usability gap, though: **STAFF at HQ is a
+no-op.** `assertCanRecordAgainst` (`expenses.ts:378`) requires
+`role === "MANAGER"` for a non-owner on every shop including HQ, and HQ has
+no shifts and never appears in `selectableShops()` regardless of role — so a
+STAFF assignment to HQ grants nothing, but the old dropdown offered it anyway
+with no signal that it does nothing.
+
+**What changed, entirely in `employee-admin.tsx`'s `ShopAccessFields`:**
+
+- **HQ sorts first** in the shop-access checklist, same reasoning as D-128 on
+  Settings → Shops: it is not a branch, and should not blend into an
+  alphabetical/creation-order list of ones. Added as a `.sort()` after the
+  existing search-filter `.filter()`.
+- **`toggle()` now takes `isHqPseudoShop`** and forces the row's role to
+  `MANAGER` the instant HQ is checked, rather than leaving it on the shared
+  `STAFF` default (`emptyDraft`/`draftFromShopRoles` still default every
+  *other* shop to STAFF — HQ is the one exception, applied at check-time, not
+  by changing the shared default).
+- **The "Staff" `<SelectItem>` is `disabled` on HQ's row** (base-ui `Select`
+  supports per-item `disabled`; confirmed it still renders correctly as the
+  *displayed* value for an employee who already holds STAFF at HQ from before
+  this change — `disabled` blocks new selection, not display of the current
+  one). Kept visible-but-disabled rather than removed, so it still reads as
+  "this role exists, just not usable here" rather than looking like a bug.
+
+**Not changed:** the server. `setShopAssignment`/`updateEmployee` still
+accept STAFF at HQ if sent directly — this is UI guidance toward the only
+role that does anything there, not a new enforced rule, matching how D-131
+handled the sale-preset label (derive/guide in the UI, leave the permissive
+service alone unless the owner asks for the stronger version).
+
+**Verified for real**, against the running dev server: opened Edit on `Budi`
+(BR-1: Staff, PIK: Manager — no HQ assignment), confirmed HQ / Unallocated
+now renders as the first row above MKG and PIK. Checked HQ's checkbox — the
+role field switched to MANAGER immediately, and the Purchasing checkbox
+appeared as expected for a MANAGER row. Opened HQ's role dropdown and
+confirmed "Staff" renders greyed out/unselectable while "Manager" carries the
+checkmark. Cancelled without saving, confirmed Budi's row on the list was
+unchanged afterward — the check-then-cancel round trip touched no real data.
+`npm run typecheck`, `npm run lint`, and the full suite (407/407) all pass —
+`employees.ts`/`setShopAssignment`/`updateEmployee` untouched.
+
+### D-134 · "Can sign in" removed from the owner's Edit dialog
+
+**Owner request, 20 Aug 2026.** Editing the owner's own account showed a
+"Can sign in" checkbox — checked, and (via the pre-existing `isSelf` guard)
+disabled, same as it is for anyone editing their own row. But for the owner
+specifically that disabled state is not incidental: `updateEmployee`
+(`employees.ts:411`) refuses `isActive: false` on an owner row
+unconditionally whenever `otherOwners === 0`, and D-123 fixed the system at
+**exactly one owner** — so `otherOwners` is always `0` and the control could
+never be usable on this row, for anyone, ever. A checkbox that can never be
+unchecked is not a setting being shown; it was dead UI.
+
+**What changed:** in `employee-admin.tsx`'s edit form, the "Can sign in"
+`<label>`/`<Checkbox>` block is now wrapped in `{!employee.isOwner && (...)}`
+— omitted entirely for the owner row, not merely disabled. Every other
+account still gets it, including the existing `isSelf` disabled-with-
+explanation behavior for a non-owner editing themselves, which is left
+exactly as it was — that one IS a real, row-specific state (self-deactivation
+specifically is refused, not deactivation of that account by someone else),
+unlike the owner's case where no path to enabling it exists at all.
+
+**Left alone on purpose:** the owner's `isActive` React state still exists
+and is still sent in the PATCH body (`isActive: true`, unconditionally, since
+nothing can change it now for that row) — this was already true before this
+change, since the checkbox was disabled and never toggleable for the owner
+even in the old UI. Removing the checkbox did not change what gets sent to
+the server, only what is shown.
+
+**Verified for real**, against the running dev server: opened Edit on the
+Owner row — the dialog now shows only Full name, Phone, and the static
+"Owner" info box, no "Can sign in" anywhere. Opened Edit on Budi (a non-owner)
+immediately after — "Can sign in" still renders there, checked and editable,
+confirming the omission is owner-specific and did not regress the normal
+case. `npm run typecheck`, `npm run lint`, and the full suite (407/407) all
+pass — no service or schema change.
+
+### D-135 · Settings → Employees splits into Active / Deactivated tabs
+
+**Owner request, 20 Aug 2026,** the same request as D-132 but for the
+Employees list — a deactivated account mixed into "Existing accounts" with
+only a small "Deactivated" badge to tell it apart, cluttering the list the
+owner actually works from day to day.
+
+**What changed, entirely in `employee-admin.tsx`:** `EmployeeAdmin` now
+splits the search-filtered `filtered` array into `activeEmployees`/
+`deactivatedEmployees` by `isActive` and renders them as two `TabsContent`
+panels under the same `Tabs`/`TabsList`/`TabsTrigger` primitive D-132 built
+for Settings → Shops — no second Tabs component, this is its second caller.
+The owner is never deactivatable (D-134/D-123: exactly one owner), so it
+always lands on Active with no special-casing needed, same reasoning as
+HQ always landing on Active in D-132.
+
+The search bar stays above the tabs and filters both — searching for a name
+that happens to be deactivated still finds it, just under the Deactivated
+tab, rather than the search silently excluding deactivated accounts
+altogether. Each tab's empty state says which case it is
+("No active accounts match ..." vs "No deactivated accounts.") rather than
+sharing one generic empty message, since "no results" and "nothing deployed
+here" are different situations, especially with a search term active.
+
+**The per-row "Deactivated" badge was removed** from `EmployeeListItem`,
+same call as D-132 on the shop list: which tab a row is in already says
+that, and repeating it inside the Deactivated tab (where every row is
+deactivated by definition) is exactly the clutter this request was about.
+The `deactivationReason` line underneath (e.g. "Deactivated by owner") is
+untouched — that is *why*, not just *that*, and stays useful regardless of
+which tab shows the row.
+
+**Verified for real**, against the running dev server: confirmed Active
+showed 3 / Deactivated showed no count (all active) at first. Deactivated
+`manager` through its own Edit dialog (unchecked "Can sign in," saved) — saw
+the "manager can no longer sign in" toast, Active dropped to 2, Deactivated
+showed 1. Switched to the Deactivated tab and confirmed `manager` rendered
+alone with "Deactivated by owner" and no redundant badge. Reactivated
+through the same dialog ("Saved manager" toast), confirmed Active returned
+to 3 and the Deactivated tab (still selected) correctly showed its empty
+state — full round trip, no data left behind. `npm run typecheck`,
+`npm run lint`, and the full suite (407/407) all pass — no service, schema
+or API change; this is presentation only, matching D-132.
+
+---
+
+### D-136 · The staff timetable — attendance stops nagging people on their day off
+
+**Added 20 Aug 2026.** The attendance feature refined and joined to shifts, at
+the owner's request: *"each shop can have their own operating schedule... one
+employee can work at two or more branches... I want a timetable where I assign a
+staff at a shop and which shift, so when a staff logs in and they are on that
+assigned shift they can check in — if it's not their time they won't be greeted
+with a check-in notification (they can still check in for a substitute)."*
+
+### What was actually missing
+
+`Shift` (Phase 6) says when a **shop** is open. Nothing said which **person** is
+expected on it. At clock-in the user picked any shift at their current shop from
+a flat list, and the red banner showed for **every non-owner every day**,
+including a staff member's Sunday off. A non-dismissible banner that fires on a
+day someone is not working is a banner everyone learns to ignore — which is the
+one thing D-45's design (it does not block work) cannot survive.
+
+### The shape, and why two layers rather than one
+
+The owner chose **pattern + overrides** over either alternative.
+
+| Layer | What it is |
+|---|---|
+| `ScheduleAssignment` | The recurring pattern. "Budi, PIK Morning, Mon–Wed, from 1 Sep." One row, repeating until ended. |
+| `ScheduleOverride` | A single-date exception — `ADDED` or `REMOVED`, always with a reason. Leave, a swap, an extra body on a busy Saturday. |
+
+A per-date roster alone was rejected because somebody must fill in the grid every
+week or nobody is scheduled. A pattern alone cannot express "Budi is off next
+Tuesday" without lying about every Tuesday.
+
+**`resolveDay` composes the two at read time. Nothing stores a week.** That is
+the load-bearing decision here: an "edit this cell" control on the grid would
+have to guess whether you meant *this* Tuesday or *every* Tuesday, and guessing
+wrong silently rewrites a roster people have already planned around. The grid is
+therefore read-only, and exceptions are added from it where the date is
+unambiguous.
+
+### Decisions
+
+| Decision | Why |
+|---|---|
+| **An empty roster does not gate anything** | The most important line in the feature. Every shop predating §4.14.1 has no roster, and so does every new branch on day one. If "no roster" meant "nobody is scheduled", the cover prompt would fire for every staff member at every such branch — turning a planning aid into an obstacle to opening the shop, and training everyone to type "n/a" into the reason field, which destroys the signal it exists to carry. `hasRoster` asks whether ANYONE is rostered here today, not whether this person is. **This was found by the existing tests, not by review** — see below. |
+| **Unscheduled clock-in is allowed, with a reason** | The owner's substitute case. Being off-roster is *not* a permission failure: `assertShopAccess` still decides who may clock in at a branch, and the timetable only decides whether the app **greets** them. A branch that cannot open because nobody updated the roster is a far worse failure than an attendance row with an unexplained reason. Recorded as `scheduleSource = COVER` + `coverReason`. |
+| **`REMOVED` is keyed on (user, shift, date), not (user, date)** | Someone taken off the morning is still on the evening. A whole day's leave is deliberately two rows. Keying it per-day would silently wipe a person off a shift they are still expected to work — mutation-tested, because it is invisible until somebody does not turn up. |
+| **An assignment's days are INTERSECTED with its shift's, never unioned** | The shift is the shop's operating reality; the assignment only selects from within it. Otherwise the roster shows staff on days the branch is shut. Enforced at create **and** at edit (D-34: one branch passing says nothing about the other), and re-checked inside `resolveDay` so that dropping a day from a shift immediately stops rostering against it even for assignments created before the edit. |
+| **Ending an assignment sets `effectiveTo`; it is not deleted** | The reason is **evidentiary, not structural** — `Attendance` has NO foreign key to `ScheduleAssignment`, so deleting one breaks nothing and cascades nowhere. What is lost is the ability to answer "was Budi scheduled that Monday?" after the fact. An attendance row saying `SCHEDULED · 440 minutes late` only means something because a schedule put him on a 10:00 shift; delete it and the lateness figure survives with nothing behind it. That is a wage conversation, which §4.13's own preamble says to decide server-side precisely because it will be argued about. Ending also leaves a readable trace ("worked Mon–Wed until 20 Aug"), where deleting cannot be told apart from the arrangement never existing. One that never took effect *is* hard-deleted — nothing could have relied on it — so a mistyped future row does not clutter the roster forever, and the toast reports which of the two actually happened rather than guessing. |
+| **A person must hold a `UserShop` row before being rostered** | Otherwise the roster looks staffed and the person 403s on arrival — worse than an empty cell, because nobody goes looking for it. |
+| **Manager-or-owner, matching Shifts rather than Prices** | §3.4 delegates shift configuration to a manager at their own branch; rostering is the same class of decision. `assertCanManageSchedule` mirrors `assertCanManageShifts` exactly. STAFF are refused the page outright rather than shown it with the buttons hidden — D-106 records why that distinction is not cosmetic. |
+| **The banner reads ONE server flag, not three client conditions** | `attendanceStatus` now returns `prompt`, already weighing role, roster and whether they clocked in. The old banner re-derived `!required \|\| clockedIn` client-side; adding roster to that would have been a second copy of the rule, free to drift. It also now names the shift ("You are on the Morning shift (10:00)"), which matters for someone who works two branches. |
+| **The removal control uses `ReasonDialog`, not `window.prompt`** | The first draft of `roster-admin.tsx` used `window.prompt`. D-79 removed exactly that from three other sites; reintroducing it here would have re-opened a closed debt. Caught in self-review before commit. |
+
+### What was built
+
+| File | What it is |
+|---|---|
+| `prisma/schema.prisma` | `ScheduleAssignment`, `ScheduleOverride`, enums `ScheduleSource` / `ScheduleOverrideKind`; `Attendance.scheduleSource` + `coverReason`. |
+| `prisma/migrations/20260820093254_schedule_timetable/` | **New.** Two tables, two enums, two columns. Additive only — `scheduleSource` defaults to `SCHEDULED`, so every existing row keeps reading as a normal day. |
+| `src/server/services/schedule.ts` | **New.** The whole feature: assignments, overrides, and the `resolveDay` / `resolveWeek` / `myScheduleToday` resolvers. |
+| `src/server/services/attendance.ts` | `clockIn` decides SCHEDULED vs COVER; `attendanceStatus` gains `prompt`, `scheduledToday`, `slots`. |
+| `src/app/api/shops/[id]/schedule/route.ts` | **New.** GET (assignments / `?date=` / `?week=`), POST. |
+| `src/app/api/shops/[id]/schedule/overrides/route.ts` | **New.** POST a per-date exception. |
+| `src/app/api/schedule/assignments/[id]/route.ts` | **New.** PATCH, DELETE (ends or removes). |
+| `src/app/api/schedule/overrides/[id]/route.ts` | **New.** DELETE. |
+| `src/app/api/schedule/me/route.ts` | **New.** What the caller is rostered for today. |
+| `src/app/(app)/settings/shops/[id]/roster/{page,roster-admin}.tsx` | **New.** The week grid + recurring-pattern editor, manager-or-owner. |
+| `src/app/(app)/settings/shops/shop-admin.tsx` | A **Roster** button per branch, beside Shifts. |
+| `src/app/(app)/attendance/clock-in/{page,clock-in-flow}.tsx` | Three-way screen: rostered → your shift; off-roster → cover + reason; no roster → the old flat list, unchanged. |
+| `src/components/attendance-banner.tsx` | Reads `prompt`; names the shift. |
+| `src/server/services/__tests__/schedule.test.ts` | **New.** 31 tests. |
+| `src/server/services/__tests__/attendance.test.ts` | 5 new tests for the clock-in gate. |
+
+### The defect the tests caught, which review had not
+
+The first version of the clock-in gate had no `hasRoster` check — it simply asked
+whether *this person* was on today's roster. `npm test` went from green to
+**15 failures across the existing attendance suite**, every one of them a branch
+with no timetable being told it was not scheduled.
+
+That is the empty-roster case above, and it would have shipped as: *every
+existing branch demands a cover reason from every staff member, forever.* The
+fix was in the service, not the tests — **not one existing test was edited.**
+Worth recording because the tests were pre-existing and unrelated to this
+feature; the suite caught a design error rather than a typo.
+
+### How it was verified
+
+- `npm run typecheck`, `npm run lint` — clean.
+- `npm test` — **443 tests / 25 files** (was 405 / 24). 31 new in
+  `schedule.test.ts`, 5 new in `attendance.test.ts`.
+- **Eight mutation checks**, each confirmed red then reverted:
+  1. `REMOVED` wipes the whole day rather than one shift → caught.
+  2. `resolveDay` trusts the assignment's days without intersecting the shift's → caught.
+  3. The assignment ⊆ shift-days check dropped on create → caught.
+  4. `endAssignment` always hard-deletes → caught (2 tests).
+  5. The manager's shop confinement dropped → caught (2 tests).
+  6. The cover gate blocks instead of asking for a reason → caught.
+  7. An empty roster counts as "not scheduled" → caught (4 tests).
+  8. The cover reason is stored on SCHEDULED rows too → caught.
+- **`docker compose build` — PASSES.** First time it has been runnable in
+  several sessions (D-101/D-103/D-105 all had to skip it); the Docker daemon was
+  up on this machine. The Linux case-sensitivity gate is genuinely green.
+- **Rendered in a real browser session as OWNER**, which found a real problem:
+  `/attendance/clock-in` and the roster page both 500'd with
+  `Cannot read properties of undefined (reading 'findMany')`. **Not a code bug** —
+  the already-running dev server held a Prisma client generated before the
+  migration. A server started fresh returned 200 on every route. Worth recording
+  because the symptom looks exactly like a missing model.
+- **End-to-end against the real dev database**, using the seeded `budi` account:
+  rostered Mon–Wed morning at MKG → resolved present on a Monday, **absent on a
+  Sunday**; a `REMOVED` + `ADDED` pair swapped one Monday to the manager and
+  **left the following Monday untouched** (the invariant that matters most);
+  `GET /api/attendance/status` returned `prompt: false` for Budi on a Thursday
+  with a work session, and flipped to `prompt: true` with the shift named and
+  lateness computed the moment he was rostered for that date. All test rows
+  deleted afterwards; the tables are back to 0/0.
+
+### Known gaps, deliberately left
+
+- **No attendance reporting on `scheduleSource`.** The column and reason are
+  recorded and indexed, but no report groups by them yet — "who covered, and how
+  often" is a reporting question and belongs with the other §8.9 attendance
+  screens still outstanding.
+- **The roster grid is week-at-a-time with no drag.** The owner chose data +
+  clock-in gating first; a richer grid was explicitly deferred.
+- **No copy-last-week / bulk-fill.** Each recurring pattern is entered once, so
+  this matters much less than it would for a per-date roster, but it is the
+  obvious next convenience.
+- **`myScheduleToday` resolves the whole shop then filters to one person.** Correct
+  and fast at this size, but it is a wider query than it needs to be; if a branch
+  ever has a large roster, add a user-scoped resolver rather than filtering.
+
+---
+
+### D-137 · Editing a saved schedule — and "indefinite" made explicit
+
+**Added 20 Aug 2026.** Two owner questions the day D-136 shipped: *"we have from
+and until, what if I want it indefinitely — also can I edit a saved schedule for
+a certain employee?"*
+
+**The first was already built and badly labelled.** Leaving *Until* blank has
+always stored `effectiveTo: null` and repeated forever. But the field said only
+"(optional)", and the saved row rendered as "From 2026-09-01" with the sentence
+simply trailing off — which reads as missing data, not as a decision. Both now
+say so: the field reads "(leave blank to repeat indefinitely)" and the row reads
+"From 2026-09-01 · no end date".
+
+**The second was a real gap — the same shape as D-105 and D-107.**
+`updateAssignment`, `PATCH /api/schedule/assignments/:id` and two tests all
+shipped with D-136. Nothing in the UI called them. Only **End** was on screen,
+so a typo in someone's days meant ending the pattern and re-entering it, which
+needlessly splits one person's history into two rows.
+
+### Decisions
+
+| Decision | Why |
+|---|---|
+| **"No end date" is a checkbox, not a blank field** | The service distinguishes `effectiveTo: null` (clear it) from the key being absent (leave it alone). A blank input cannot express that difference: it would either be unable to clear an existing date, or would silently wipe one every time someone edited the days. The checkbox states the intent explicitly, and the form always sends the field rather than omitting it. |
+| **Edit changes days and dates only — never the employee or the shift** | Changing either would silently turn one person's history into another's: every past date the pattern governed would start resolving to a different name. Moving someone to a different shift is End + Add, which leaves the old dates answering correctly. The form says this in a line under the buttons rather than leaving the absence to be discovered. |
+| **The day buttons fall back to the assignment's own days if the shift is gone** | A retired shift is not in the picker list. Reading `shift?.daysOfWeek ?? assignment.daysOfWeek` keeps every button from blanking out on a row that still needs its dates corrected. |
+
+### How it was verified
+
+- `npm run typecheck`, `npm run lint` — clean.
+- `npm test` — **448 tests / 25 files** (was 443). Five new, covering the edit
+  path: days-only edit preserves the dates, explicit `null` clears the end date,
+  an omitted key keeps it, the start date can move, and a manager at another
+  branch is refused by assignment id.
+- **One mutation, confirmed red then reverted:** collapsing `undefined` and
+  `null` into one branch (`input.effectiveTo ? ... : existing.effectiveTo`) —
+  the classic partial-patch bug. Caught by the explicit-null test. This is the
+  single line the whole "indefinite" feature rests on.
+- **Live against the real dev database**, as OWNER through the running app:
+  created a pattern ending 2026-09-30, edited only its days → **end date
+  survived**; then ticked indefinite → `effectiveTo` became null. Test row
+  deleted afterwards; the owner's own three schedules were left untouched and
+  re-checked afterwards.
+
+### Note for the next session
+
+The **stale Prisma client** trap bit once here and will again. A `next dev`
+server started before a migration keeps the client it loaded at boot, so a new
+model reads as `undefined` and every page touching it 500s with
+`Cannot read properties of undefined (reading 'findMany')`. It looks exactly
+like a missing model or a broken import. `npm run typecheck` and `npm test` both
+pass, because they load a fresh client each run. **Restart the dev server after
+any migration that adds a model.**
+
+---
+
+### D-138 · A mixed-role user saw the manager dashboard at the branch they only staff
+
+**Owner-reported defect, 20 Aug 2026.** In the owner's words: *"budi is a
+manager at branch a but staff at branch B — for staff they shouldn't be able to
+see the dashboard, now budi can see everything."*
+
+Reproduced exactly. D-122 made role per-shop, but the guards that predate it
+still asked a **global** question, and nothing forced the answer to match the
+shop that was actually read:
+
+1. `requireManagerOrOwner[Page]()` asked "is this actor MANAGER at *any*
+   shop?" — true for Budi, because of branch A.
+2. `resolveScope()` then picked a shop **independently**: with no `shopId` it
+   falls back to the work-session shop, which on a day Budi works branch B is
+   **B**. `hasShopAccess` passed, because he *is* assigned to B — as STAFF.
+3. `managerDashboard()` built a full manager payload for B: revenue, payment
+   split, team lateness, liability.
+
+Neither check was wrong alone. **The composition was**: one function proved
+manager-ness at A, another resolved to B, and no code ever required the two to
+be the same shop. The explicit form leaked too — `?shopId=<B>` passed step 2's
+`hasShopAccess`, which answers "are you assigned?", never "in what role?".
+
+**The fix: make the role check take the shop as an argument, at the point the
+shop is known.** `resolveScope` gained an opt-in
+`{ requireManagerAt: true }`, which re-checks `shopRoles.get(shopId)?.role
+=== "MANAGER"` **on both branches** — explicit `shopId` and the implicit
+work-session fallback — through one shared `assertManagerAt` helper. One
+function called twice cannot drift the way two inline copies did (D-34's
+lesson, which this defect is another instance of).
+
+Opt-in rather than the default because staff-facing callers resolve scope
+legitimately (their own shift's sale list, their own attendance history).
+Applied to all 13 report functions, `attendanceReport`, and the dashboard.
+
+**`getDashboard` lost its up-front role gate entirely.** That is deliberate
+and is the structural half of the fix: an up-front check is *precisely* the
+thing that could disagree with the resolved shop. The only role gate on that
+path is now the one against the shop whose money is about to be read.
+
+**`listExpenses` had the same split-brain, plus a second leak.** Its gate was
+already correct for an explicit `shopId` but fell back to "manager somewhere"
+without one — and the query then scoped to `assignedShopIds`, which *includes*
+staff-only shops. So Budi's unscoped expense list showed branch B's spending
+**and its running total**. Now both the gate and the filter use the shops he
+actually manages.
+
+**UI, so the app doesn't merely 403 at him.** The bottom nav derived its role
+from "manager somewhere", so Budi got manager tabs on a day he works B —
+advertising screens the server now correctly refuses, which reads as a broken
+app rather than as a permission. `AppShell`'s prop is renamed
+`isManagerSomewhere` → `isManagerHere` and fed the role at **today's** shop;
+Settings does the same. The rename is the point: the old name described the
+bug.
+
+`requireManagerOrOwner[Page]` is kept, but redocumented as a **coarse
+pre-filter, never a permission** — it still usefully fails fast for a
+pure-STAFF account on screens with no shop in scope. Its docstring now says
+outright that every service behind it must re-check per shop.
+
+**Verified by breaking it first (CLAUDE.md gate 3).** The four new mixed-role
+dashboard tests in `reports.test.ts` were written against the unfixed code and
+watched fail — the two refusal cases returned a populated manager dashboard
+for "Report B", which is the defect itself. The expenses test was likewise
+confirmed red by stashing only `expenses.ts` (2 branches returned, not 1),
+then green with it restored. The two *allow* cases (Budi at branch A, where he
+really is manager) pass throughout, so the fix refuses the right shop rather
+than refusing everything. Full suite 453 tests, `typecheck`, `lint`,
+`next build` and `docker compose build` all pass.
+
+**Not changed, and worth knowing:** `roleAtShop`-based checks elsewhere
+(`sales.ts` `canVoid`, `attendance.ts:669`) were already correct — they take
+a shop. The pattern to copy is theirs.
+
+---
+
+### D-139 · End was irreversible and unlabelled — and it is not the tool for leave
+
+**Added 20 Aug 2026.** Owner report: *"when I click End on someone's shift does
+it work? I click, a pop up appears but nothing happens I guess — and if I end,
+can I restart it, let's say I click End because he is on leave?"*
+
+**End did work.** Verified against the owner's own data: it set `effectiveTo` to
+today and the row left the list. The "pop up" was the success toast. But the
+report is still correct as a usability finding, and it exposed two real defects.
+
+### Defect 1 — an ended row vanished, and vanishing looks like nothing happening
+
+`listAssignments` hides ended patterns by default (correct: they are history,
+not roster), and the roster page never passed `includeEnded`. So End made the
+row **disappear with no trace and no way back** — indistinguishable from a
+no-op, and unrecoverable without retyping the whole pattern.
+
+Worse, `endAssignment` sets `effectiveTo` to **today**, so a pattern ended today
+is *still live today* — the row correctly stays visible until tomorrow. The
+owner clicking End, seeing the row still there, and concluding "nothing
+happened" is the exactly reasonable reading of that.
+
+### Defect 2 — End is the wrong tool for leave, and nothing said so
+
+The owner's stated reason was *"because he is on leave"*. That is precisely what
+End must not be used for. Leave is a per-date override — the **✕** on the week
+grid — which changes one date and leaves the pattern running. Ending the pattern
+for a week's leave means the days after the return are unrostered until someone
+notices. The ✕ existed from D-136 and nothing pointed at it.
+
+### What was built
+
+| File | What it is |
+|---|---|
+| `src/server/services/schedule.ts` | **New** `restartAssignment`. `listAssignments` DTO gains `hasEnded`. |
+| `src/app/api/schedule/assignments/[id]/restart/route.ts` | **New.** POST. |
+| `src/app/(app)/settings/shops/[id]/roster/page.tsx` | Passes `includeEnded: true`. |
+| `src/app/(app)/settings/shops/[id]/roster/roster-admin.tsx` | End confirmation dialog; ended rows shown dashed-and-dimmed at the bottom with a **Restart** button in place of Edit/End. |
+
+### Decisions
+
+| Decision | Why |
+|---|---|
+| **The End confirmation leads with "is this for leave?"** | Not a mis-tap guard — a redirection. The amber block names the better tool (the ✕ on the grid) before the destructive button is reachable. A plain "are you sure?" would have confirmed the owner straight into the wrong operation. |
+| **`restart` is its own endpoint, not `PATCH { effectiveTo: null }`** | The PATCH already accepts that and means "edit a live pattern's end date". Restarting a closed one is a different act: only this path re-checks that the **shift is still active** and the **person still works here**. A pattern must not come back to life pointing at a retired shift or someone who has left. Both mutation-tested. |
+| **`hasEnded` is derived in the service, not the UI** | The boundary is inclusive — `effectiveTo < businessDate` — matching `resolveDay`'s `effectiveTo >= businessDate`. A pattern ending today still governs today. Computing it client-side would have been a second copy of a rule that is already subtle. |
+| **The gap is not backfilled on restart** | Ending on the 1st and restarting on the 20th leaves the days between unrostered, and that is correct: those days genuinely were not scheduled at the time. Restart cannot invent attendance expectations retroactively. Said plainly in the End dialog so the owner can weigh it. |
+| **Ended rows sort to the bottom, dashed and dimmed** | They are recoverable history, not live roster. Mixing them in would make the list lie about who works here. |
+
+### Follow-up the same hour — the fix was still wrong
+
+The owner ended a schedule and reported: *"i click end but cant see restart
+button."* Reproduced immediately against their own PIK row.
+
+**The first fix derived `hasEnded` as `effectiveTo < businessDate`** — the same
+inclusive rule `resolveDay` uses. That is right for *resolving a roster* and
+wrong for *offering a Restart button*, because `endAssignment` stamps
+`effectiveTo` with **today**. So a freshly-ended schedule read as still-live and
+showed Edit/End rather than Restart **for the rest of the day**. The owner
+clicked End, was told it ended, and had no way to undo it until tomorrow.
+
+Worse, this is exactly the mutation I had flagged as "initially GREEN" and then
+pinned with two tests — I pinned the wrong behaviour. The tests asserted
+`hasEnded === false` for a schedule ending today, which is precisely the bug,
+and they passed.
+
+**The two questions are now separate fields:**
+
+| Field | Means | Drives |
+|---|---|---|
+| `hasEnded` | The pattern is **closed** — it has an end date at all. | Whether Restart is offered. |
+| `stillCoversToday` | It is closed but today is still within it. | The label: "ends today" rather than "ended". |
+
+`resolveDay` is untouched and keeps the inclusive comparison, so somebody
+working the final day of their schedule is still correctly rostered for it.
+
+The lesson is not about the boundary. It is that a mutation surviving tells you
+an invariant is unproven, and writing a test that makes it fail is only useful
+if you have first checked **which behaviour is actually correct**. I converted a
+passing mutation into a pinned defect.
+
+### The mutation that PASSED, and what it cost
+
+`hasEnded` with `<=` instead of `<` — making a pattern that ends today read as
+already ended — **passed all 42 tests**. That is the boundary the whole
+"nothing happened" confusion turns on: get it wrong and the UI offers Restart
+for a schedule somebody is still working that day.
+
+Two tests were added specifically for it (ends today → not ended and still
+resolves; ended yesterday → ended and does not resolve), and the mutation now
+goes red. This is D-30's rule earning its place again: the suite was green and
+the invariant was unproven.
+
+### How it was verified
+
+- `npm run typecheck`, `npm run lint` — clean.
+- `npm test` — **463 tests / 25 files** (was 448). 15 new, including one that
+  reproduces the owner's exact sequence: create → `endAssignment` → assert
+  `hasEnded` is true and `restartAssignment` succeeds immediately.
+- **Three mutations**, each red then reverted: restart skipping the
+  retired-shift and deactivated-employee checks (2 tests red), and the
+  `hasEnded` boundary above (initially GREEN, then pinned WRONG — see
+  "Follow-up the same hour").
+- **Live against the owner's real data**, as OWNER through the running app: End →
+  hidden from the default list but present with `includeEnded`, `hasEnded:false`
+  while it still covers today; `effectiveTo` moved to yesterday to simulate the
+  rollover → `hasEnded:true` and gone from the default list; Restart → back to
+  `effectiveTo: null` and live. **All four of the owner's own schedules were
+  restored and re-checked afterwards** (BR-1: Budi Mon/Tue Morning, Budi Wed/Thu
+  Evening, manager all-week Morning; PIK: Budi Thu Morning).
+
+### Note
+
+While testing I queried the wrong shop id and read the empty result as a missing
+field before checking the database. The row was at PIK, not BR-1. Worth a line
+because the symptom — an endpoint returning a row without the new field — looks
+exactly like a stale build, which is the same misdiagnosis trap as D-137's
+stale Prisma client.
+
+---
+
+### D-140 · Dates out, Leave in — the roster simplified to what the owner actually asked for
+
+**Added 20 Aug 2026.** Four owner requests in one message, which together
+undo a chunk of D-136/137/139:
+
+> *1) i dont think we need from or until. 1.1) i want a remove button for when a
+> person is no longer working for us so it doesnt clutter the UI. 2) i want a
+> leave button (i set a certain date until a certain date, so that person doesnt
+> need to check in, leave is recorded too). 2.1) i dont think i need an end
+> button, let's just change it for leave instead.*
+
+They are right on every count, and the reason is worth recording: **D-136 built
+`effectiveFrom`/`effectiveTo` as one mechanism serving three different needs** —
+"when did this start", "this person has left", and "this person is away for a
+fortnight". Overloading them produced the confusion of D-139, where End looked
+like the tool for leave, and where "ended" and "still covers today" had to be
+told apart in the UI.
+
+Each need now has its own mechanism:
+
+| Need | Before | Now |
+|---|---|---|
+| When did this schedule start? | `effectiveFrom`, typed | `effectiveFrom`, **defaulted to today, never typed** |
+| This person has left | `effectiveTo` = today (End) | `removedAt` — **Remove**, a soft delete |
+| This person is away 1–14 Sep | Nothing (End was misused) | **`ScheduleLeave`** — a date range that ends by itself |
+
+### Decisions
+
+| Decision | Why |
+|---|---|
+| **`effectiveFrom` stays, but the form does not ask** | The owner does not want to type it; the system still needs it. Without a start date every pattern claims to have always been true, and "was Budi scheduled last Monday?" answers yes for dates before the row existed. Defaulting to today is what "add to the roster" already means. |
+| **`effectiveTo` is DELETED outright, not just hidden** | Keeping the column and not using it would leave two ways to say "this schedule has stopped" that could disagree — exactly the ambiguity D-139 spent a whole entry untangling. The migration drops it. |
+| **Remove is a soft delete** | The owner's words: *"hide it, i want the data to stay intact like all the record of late etc, i just dont want the clutter."* Both halves are load-bearing. `Attendance` has **no foreign key** to `ScheduleAssignment`, so a hard delete would break nothing structurally — what it destroys is the *evidence*: an attendance row reading `SCHEDULED, 440 minutes late` only means something while the schedule that put that person on a 10:00 shift can still be read. Manager's real record (382 minutes late) was used to check this. |
+| **Removed rows are collapsed behind a "Show N removed" toggle** | Visible enough that a mis-tap is recoverable, invisible enough that the clutter is genuinely gone. Putting them in the main list would defeat the button's whole purpose. |
+| **Leave is a RANGE, one row** | A fortnight is one record, not fourteen overrides the owner has to revoke individually. It ends by itself — nothing to remember to switch back on, which is the failure mode End had. |
+| **Leave is business-wide by default (`shopId` null)** | Somebody on holiday is away from the business, not from the branch whose roster you happen to be looking at. The per-branch case exists in the service but the form does not ask, because asking every time would be noise. |
+| **Leave is applied LAST in `resolveDay`, after overrides** | Approved leave beats an `ADDED` override. An override created before the leave was granted must not silently cancel it — to bring somebody in during leave you cancel the leave, which leaves a record, rather than layering an override, which would not. Mutation-tested by reordering the loops. |
+| **Leave suppresses the prompt; it never blocks a clock-in** | Owner's choice, and the same rule as §4.14.1's cover flow. Somebody on leave who comes in to cover a sick colleague must still be recordable — a branch that cannot record the person standing in it is the worse failure. The clock-in screen says "You are on leave until 2026-09-05" and offers the cover flow. |
+| **Edit is days-only now** | With dates gone there is nothing else on the row that is safe to change. Employee and shift stay fixed for D-137's reason: changing either rewrites whose history the past dates belong to. |
+
+### What was built
+
+| File | What it is |
+|---|---|
+| `prisma/migrations/20260820104432_schedule_leave_and_remove/` | **New.** Drops `effectiveTo`, adds `removedAt`/`removedById`, adds `ScheduleLeave`. |
+| `src/server/services/schedule.ts` | `endAssignment`/`restartAssignment` → `removeAssignment`/`restoreAssignment`. **New** `createLeave`, `cancelLeave`, `listLeave`, `leaveFor`. `resolveDay` excludes removed and applies leave. `createAssignment` defaults the start date. |
+| `src/app/api/schedule/assignments/[id]/{route,restore/route}.ts` | DELETE is now a soft remove; `/restart` → `/restore`. |
+| `src/app/api/schedule/leave/{route,[id]/route}.ts` | **New.** POST and DELETE. |
+| `src/app/(app)/settings/shops/[id]/roster/roster-admin.tsx` | Date fields gone; End → Remove with new confirmation copy; **new Leave section**; removed schedules behind a toggle. |
+| `src/app/(app)/attendance/clock-in/{page,clock-in-flow}.tsx` | Says *why* there is no shift when the reason is leave. |
+
+### How it was verified
+
+- `npm run typecheck`, `npm run lint` — clean.
+- `npm test` — **466 tests / 25 files** (was 463). The obsolete date-based blocks
+  were deleted rather than patched, and 15 new tests cover Remove and Leave.
+- **Four mutations**, each red then reverted:
+  1. Remove hard-deletes instead of soft — **5 tests red**, including the one
+     that exists purely for the owner's "keep the records" requirement.
+  2. Leave's `endDate` treated as exclusive (last day of holiday gets rostered)
+     — 4 tests red.
+  3. `resolveDay` ignores `removedAt` — removed people still rostered.
+  4. Leave applied before overrides instead of after — an override silently
+     beats approved leave.
+- **Live against the owner's real data**, as OWNER through the running app:
+  leave 26–28 Aug removed Budi from the 27th while leaving the manager rostered,
+  and Budi returned **automatically** on the 31st with nothing switched back on;
+  removing the manager's schedule hid it from the roster while the row stayed in
+  the database and their `382 minutes late` attendance record was untouched;
+  Restore put it back. All four of the owner's schedules and both attendance
+  rows verified intact afterwards, with no leftover test data.
+
+### Note
+
+The dev server needed restarting again after this migration (D-137's trap). The
+`ScheduleLeave` model does not exist in a Prisma client generated before it, and
+the failure looks exactly like a missing import.
+
+---
+
+### D-141 · A clock-in route in Settings, for covering an unrostered shift
+
+**Added 20 Aug 2026.** Owner request: *"for manager and staff, i want a check in
+button in settings (for when they check in outside their designated timetable —
+to cover someone's shift for example)."*
+
+**A pure wayfinding gap, and one D-136 created.** The cover flow itself already
+worked: `/attendance/clock-in` detects an off-roster user, demands a reason and
+records `scheduleSource = COVER`. What was missing was a way to REACH it.
+
+Before §4.14.1 the red banner showed for every non-owner every day, so the
+clock-in screen was always one tap away. Narrowing the banner to people the
+roster expects — the whole point of D-136 — silently removed the only route for
+everyone it no longer fires for. **The exact people who need it most had no
+door.** Same shape as D-105 and D-107: a complete, tested service reachable only
+by typing a URL.
+
+### Decisions
+
+| Decision | Why |
+|---|---|
+| **The row reads the REAL attendance status, not a static label** | It renders three different states: "You are scheduled today — record your arrival", "Covering a shift you are not rostered for? Clock in here", and — once done — "Attendance · Clocked in at 10:20 · 440 min late". A fixed "Clock in" label would offer the action to somebody who already has, and the commonest reason to open the row is "did that actually register?". |
+| **First in the list** | Above Shops. It is the only time-critical row in Settings; everything else is configuration somebody browses to. |
+| **Hidden for OWNER** | Attendance is optional for them (§4.13), so a permanent clock-in row in the owner's settings is noise. Managers and staff both see it, as asked — under D-122 a MANAGER at one branch may be STAFF at another, and both are required to clock in. |
+| **No new endpoint, no new screen** | The link points at the existing `/attendance/clock-in`, which already handles every case including the "already clocked in" state and the missing-work-session redirect. Building a second clock-in path would have been two places for the cover rules to drift. |
+
+### How it was verified
+
+- `npm run typecheck`, `npm run lint` — clean.
+- `npm test` — **468 tests / 25 files** (was 466). Two new, pinning the two
+  states the row renders from; the `clockedIn: false` mutation takes down three
+  tests including the new one.
+- **Rendered in a real browser session for all three roles**, which is the only
+  way this class of change can be checked:
+  - `budi` (STAFF, already clocked in) → *"Attendance · Clocked in at 10:20 ·
+    440 min late"*.
+  - `manager` (already clocked in) → same shape.
+  - A temporary `tmpcover` STAFF account, assigned to BR-1 but **not on the
+    roster** — the owner's actual scenario — got `prompt: false` (no banner, as
+    designed) **and** the Settings row reading *"Clock in · Covering a shift you
+    are not rostered for"*, which opened the cover flow with the "Who are you
+    covering for?" field. Account and all its rows deleted afterwards; only
+    `owner`, `manager` and `budi` remain.
+
+### Note
+
+Verifying this needed passwords for `budi` and `manager`, which had rotated past
+the seed. They are now all `VerifyRoster!2026` on this dev machine, along with
+`owner` — see the debts table. Reset them before this database is ever used for
+anything real.
+
 ---
 
 ## Known issues / debts
@@ -4584,7 +5574,7 @@ honours an explicit past date, refuses a future one. Full suite (407 tests),
 | ~~`PATCH /api/prizes/:id` does not accept `imagePath`~~ | **Not a debt — §7.4 reconciled in D-118.** Images live on `GET/POST/DELETE /api/prizes/:id/image`, matching the receipt route so a flaky upload cannot take a text edit down with it. The PRD's route table now lists all three and notes the `PATCH` exclusion. |
 | Prize images have no upload-time dimension floor | A 50x50 photo is accepted and stored at 50x50, then rendered into a 56px card — fine — but a 12x12 one would look like a smudge. `withoutEnlargement` is deliberate (upscaling only blurs), so the fix would be a minimum-size check at upload with a clear message, not silent enlargement. Not urgent; no real product shot is that small. |
 | Manager's "Reports" tab lands on one report | `app-shell.tsx:44` points MANAGER at `/reports/tickets-awarded` rather than `/reports`, so the nav's Reports tab opens a single owner-only report instead of the index. Cosmetic, and noticed while auditing unreferenced routes (D-119). Check what a manager should actually land on — `/reports` itself is role-aware. |
-| Shop admin has no edit form | D-101 shipped create, plus deactivate/reopen from the list. Changing a shop's name, address, phone, grace or toggles after creation is supported by `PATCH /api/shops/:id` and covered by tests, but has **no UI** — only the activate toggle is wired. An owner who mistypes a name must call the API. |
+| ~~Shop admin has no edit form~~ | **Fixed — D-126, converted to a modal in D-127.** Settings → Shops → Edit, per-row. |
 | ~~Presets have no owner screen~~ | **Fixed — D-103.** Settings → Shops → *shop* → Sale prices. Reported by the owner within a day of D-101 shipping. |
 | ~~Shifts have no owner screen~~ | **Fixed — D-105.** Settings → Shops → *shop* → Shifts, manager-or-owner. |
 | ~~Staff assignment is a separate journey~~ | **Fixed — D-107.** Settings → Shops → *shop* → Staff. It was not merely wayfinding: `PATCH /api/users/:id` had no UI caller at all. |
@@ -4599,6 +5589,16 @@ honours an explicit past date, refuses a future one. Full suite (407 tests),
 | ~~Red attendance banner~~ | **Built in Phase 6.** Not dismissible, and it does not block work (D-45). |
 | ~~Clock-out has no UI~~ | **Built — D-81.** A card on /attendance showing the shift's scheduled end time. Deliberately no second banner. |
 | Clock-out photo is not captured | `Shop.requireClockOutPhoto` and `Attendance.clockOutPhotoPath` both exist and the purge job already clears the file. Nothing writes it. §4.13 makes it optional and per-shop; build it with the clock-out button. |
+| ~~Red banner nags staff on their day off~~ | **Fixed — D-136.** The banner now reads one server flag (`prompt`) that is true only when the roster expects this person at this branch today. A branch with no roster keeps the old unconditional behaviour by design. |
+| Attendance has no reporting on cover vs scheduled | **D-136.** `Attendance.scheduleSource` and `coverReason` are recorded and indexed, but nothing reports on them. "Who covered, and how often" belongs with the other outstanding §8.9 attendance screens. |
+| Dev passwords are all the same string | **D-141.** `owner`, `manager` and `budi` on the dev database are all `VerifyRoster!2026`, set while verifying D-136 to D-141 in a real browser because the seeded passwords had rotated past `.env`. Harmless on a local dev box, and it finally closes the "nobody can log in as owner" debt that blocked D-120/D-122 verification — but reset them if this database is ever exposed. |
+| ~~Schedules need a from/until date~~ | **Removed — D-140.** The form no longer asks; `effectiveFrom` defaults to today and `effectiveTo` is dropped from the schema entirely. |
+| ~~No way to record leave~~ | **Built — D-140.** `ScheduleLeave`, a date range that suppresses the clock-in prompt and ends by itself. |
+| Leave has no reporting | **D-140.** Leave is recorded with a reason and is queryable, but nothing reports on it — "how much leave has Budi taken this year?" needs a screen. Belongs with the outstanding §8.9 attendance reports. |
+| Leave does not check for overlaps | **D-140.** Two overlapping leave records for the same person are accepted; `resolveDay` handles it correctly (either one suppresses the day), so this is untidy rather than wrong. Worth a warning on the form if it ever happens in practice. |
+| ~~Ending a schedule is unrecoverable~~ | **Fixed — D-139.** Ended patterns stay listed, dimmed, with a Restart button. Note the gap between end and restart stays unrostered by design. |
+| Editing a schedule cannot change the employee or the shift | **D-137, deliberate.** Both would rewrite whose history the past dates belong to. End + Add is the correct move and the form says so. If this ever becomes a common request, the honest implementation is "end the old row and create a new one" behind one button — not a mutation of the existing row. |
+| The roster grid is week-at-a-time, with no drag or bulk fill | **D-136, deliberate.** The owner chose data + clock-in gating first. Each recurring pattern is entered once, so this matters far less than it would for a per-date roster, but copy-last-week is the obvious next convenience. |
 | No attendance reporting surfaces | §8.9 also asks for a calendar heatmap, a ranked lateness table and a weekly trend chart. Those are reporting, and Phase 8 owns reports — the data (`isLate`, `lateMinutes`, `businessDate`) is all recorded and indexed for them. |
 | ~~No expense edit UI~~ | **Built — D-70.** Owner-only edit of category, amount and note, plus soft delete with a mandatory reason in a real dialog. |
 | No receipt upload UI | `POST /api/expenses/:id/receipt` exists, is permission-checked and is covered by tests; no screen calls it. §8.8 asks for an optional receipt photo on the add form. **Deferred by owner decision on 8 Aug 2026** — not needed yet. Service and storage are done (D-57), so this stays UI-only whenever it is wanted. |

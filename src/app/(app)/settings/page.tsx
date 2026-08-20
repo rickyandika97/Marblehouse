@@ -9,8 +9,10 @@ import {
   Settings2,
   Store,
   Users,
+  Clock,
 } from "lucide-react";
 import { requireActorPage } from "@/server/auth/page-guard";
+import { attendanceStatus } from "@/server/services/attendance";
 import { Card } from "@/components/ui/card";
 
 export const metadata = { title: "Settings · Marblehouse" };
@@ -22,11 +24,48 @@ export default async function SettingsPage() {
   // D-122: role is per-shop — "not staff-only" now means "owner, or manager
   // at at least one shop", matching how the bottom nav decides the same
   // thing (app-shell.tsx).
+  // D-138: the role that matters is the one at TODAY'S shop. "Manager at at
+  // least one shop" offered the manager settings to someone working a shift
+  // where they are only staff.
+  /**
+   * Whether they have clocked in today (§4.14.1, D-141).
+   *
+   * The red banner only appears when the ROSTER expects someone, which is
+   * exactly right — and leaves no route to clock-in for a person covering a
+   * shift they are not rostered for. This entry is that route. Reading the
+   * real status means the row can say what it will actually do rather than
+   * offering "clock in" to somebody who already has.
+   *
+   * OWNER is excluded: attendance is optional for them (§4.13), so a
+   * permanent clock-in row in their settings is noise.
+   */
+  const attendance = actor.isOwner ? null : await attendanceStatus(actor);
+
+  const todayShopId = actor.workSession?.shopId ?? actor.defaultShopId ?? null;
   const isStaffOnly =
     !actor.isOwner &&
-    ![...actor.shopRoles.values()].some((sr) => sr.role === "MANAGER");
+    (todayShopId === null ||
+      actor.shopRoles.get(todayShopId)?.role !== "MANAGER");
 
   const items = [
+    {
+      href: "/attendance/clock-in",
+      icon: Clock,
+      title: attendance?.clockedIn ? "Attendance" : "Clock in",
+      description: attendance?.clockedIn
+        ? // Naming the time makes the row informative rather than a dead end:
+          // the common reason to look is "did that actually register?".
+          `Clocked in at ${attendance.record?.clockInAt.slice(11, 16) ?? "—"}${
+            attendance.record?.isLate
+              ? ` · ${attendance.record.lateMinutes} min late`
+              : ""
+          }`
+        : attendance?.scheduledToday
+          ? "You are scheduled today — record your arrival"
+          : "Covering a shift you are not rostered for? Clock in here",
+      // Not the owner: attendance is optional for them (§4.13).
+      show: !actor.isOwner,
+    },
     {
       href: "/settings/shops",
       icon: Store,

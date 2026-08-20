@@ -69,11 +69,19 @@ export async function requireShopRole(
 }
 
 /**
- * OWNER, or MANAGER at ANY shop — deliberately weak, for the handful of
- * screens (reports index, dashboard dispatch) that need "is this person
- * privileged at all" before a later, real per-shop check narrows the data.
- * Never use this alone to gate an action on a specific shop — pair it with
- * `requireShopRole` or `assertShopAccess` once the shop is known.
+ * OWNER, or MANAGER at ANY shop — a COARSE PRE-FILTER, never a permission.
+ *
+ * **This does not authorise any particular shop's data (D-138).** Role is
+ * per-shop: a user who is MANAGER at branch A and STAFF at branch B passes
+ * this, and if the caller then resolves a shop independently it can resolve
+ * to B. That was a real defect — it rendered B's manager dashboard to
+ * someone who only staffs B.
+ *
+ * It survives only to fail fast for a pure-STAFF account on screens with no
+ * shop in scope yet. Every service behind it MUST re-check the role against
+ * the shop that actually resolves — `resolveScope(..., { requireManagerAt:
+ * true })` is how the report and dashboard paths do it. Never let this be the
+ * only role check between a request and a shop's money.
  */
 export async function requireManagerOrOwner(): Promise<Actor> {
   const actor = await requireSettledActor();

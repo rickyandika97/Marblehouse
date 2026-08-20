@@ -78,6 +78,12 @@ export default async function ExpensesPage({
   // The middle case matters: someone who filters by "Rent" across the business
   // expects every branch's rent, not just the branch they happen to be sitting
   // in. `listExpenses` still scopes a manager to their assignments in SQL.
+  //
+  // The same `shopId` also seeds the "record expense" modal's default
+  // selection: if the page is currently filtered to one shop, that's what the
+  // owner/manager almost certainly meant to book the next expense against.
+  // Falls back to the work-session shop when nothing's selected (`undefined`
+  // covers both "no filter at all" and "exploring across all shops").
   const explicitShop = sp.shopId;
   const exploring = Boolean(sp.from || sp.to || sp.categoryId);
   const shopId = explicitShop ?? (exploring ? undefined : session.shopId);
@@ -121,7 +127,7 @@ export default async function ExpensesPage({
             <ManageCategoriesDialog initialCategories={allCategories ?? []} />
           )}
           <AddExpense
-            currentShopId={session.shopId}
+            currentShopId={shopId ?? session.shopId}
             shops={shops.map((s) => ({ id: s.id, name: s.name }))}
             categories={categories}
             businessDate={businessDate}

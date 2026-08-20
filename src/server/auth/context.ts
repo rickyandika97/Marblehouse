@@ -219,7 +219,8 @@ export async function selectableShops(actor: Actor): Promise<Shop[]> {
  * start recording takings at. Widening it with an option would put one
  * `if` between HQ and the sale flow; a separate function cannot leak.
  *
- * HQ sorts last so the branches a manager actually works at come first.
+ * HQ sorts first — it's the default landing choice for a non-branch cost,
+ * and the branches a manager works at follow it alphabetically.
  */
 export async function expenseShops(actor: Actor): Promise<Shop[]> {
   return prisma.shop.findMany({
@@ -229,6 +230,6 @@ export async function expenseShops(actor: Actor): Promise<Shop[]> {
         ? {}
         : { userShops: { some: { userId: actor.userId } } }),
     },
-    orderBy: [{ isHqPseudoShop: "asc" }, { name: "asc" }],
+    orderBy: [{ isHqPseudoShop: "desc" }, { name: "asc" }],
   });
 }

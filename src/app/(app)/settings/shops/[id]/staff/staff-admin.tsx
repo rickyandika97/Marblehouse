@@ -89,6 +89,21 @@ export function StaffAdmin({
     return u.shopRoles.find((s) => s.shopId === shopId)?.role ?? "STAFF";
   }
 
+  // Managers before staff (owner request, 2026-08-20) — their role AT THIS
+  // SHOP, since D-122 made role per-shop, so this has to be sorted here
+  // rather than server-side without re-scoping the whole staff query — then
+  // alphabetical by display name within each group. This is a full re-sort,
+  // so `listShopStaff`'s active-before-deactivated ordering does not carry
+  // through; a deactivated manager can sort ahead of an active one. Their
+  // "Deactivated" badge is still shown inline, and nothing else on this
+  // screen groups by active/deactivated, so this was not treated as a
+  // property worth preserving.
+  const assignedSorted = [...initialAssigned].sort((a, b) => {
+    const roleDiff =
+      (roleHere(a) === "MANAGER" ? 0 : 1) - (roleHere(b) === "MANAGER" ? 0 : 1);
+    return roleDiff !== 0 ? roleDiff : a.displayName.localeCompare(b.displayName);
+  });
+
   return (
     <div className="space-y-6">
       {initialAssigned.length === 0 && (
@@ -118,7 +133,7 @@ export function StaffAdmin({
           </CardHeader>
           <CardContent className="p-0">
             <ul className="divide-y">
-              {initialAssigned.map((u) => (
+              {assignedSorted.map((u) => (
                 <li key={u.id} className="flex items-center gap-3 px-6 py-4">
                   <span className="min-w-0 flex-1">
                     <span className="block truncate font-medium">

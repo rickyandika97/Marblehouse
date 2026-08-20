@@ -26,15 +26,22 @@ export default async function AppLayout({
   const shopName =
     resolution.session?.shop.name ?? actor.workSession?.shop.name ?? null;
 
-  const isManagerSomewhere = [...actor.shopRoles.values()].some(
-    (sr) => sr.role === "MANAGER"
-  );
+  // The nav reflects the role AT TODAY'S SHOP, not "manager somewhere"
+  // (D-138). Someone who manages branch A but only staffs branch B must get
+  // the staff nav on a day they are working at B — showing them the manager
+  // tabs there advertises screens the server now (correctly) refuses, which
+  // reads as a broken app rather than as a permission.
+  const todayShopId =
+    resolution.session?.shopId ?? actor.workSession?.shopId ?? null;
+  const isManagerHere = todayShopId
+    ? actor.shopRoles.get(todayShopId)?.role === "MANAGER"
+    : false;
 
   return (
     <AppShell
       displayName={actor.displayName}
       isOwner={actor.isOwner}
-      isManagerSomewhere={isManagerSomewhere}
+      isManagerHere={isManagerHere}
       shopName={shopName}
     >
       {children}

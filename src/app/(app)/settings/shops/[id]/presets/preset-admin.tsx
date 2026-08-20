@@ -203,11 +203,12 @@ export function PresetAdmin({
                     <span className="block font-medium">
                       {formatMoney(p.amount)}
                     </span>
-                    <span className="block truncate text-sm">
-                      {p.label}
-                      {p.useCount > 0 &&
-                        ` · kept for ${p.useCount} past ${p.useCount === 1 ? "sale" : "sales"}`}
-                    </span>
+                    {p.useCount > 0 && (
+                      <span className="block truncate text-sm">
+                        kept for {p.useCount} past{" "}
+                        {p.useCount === 1 ? "sale" : "sales"}
+                      </span>
+                    )}
                   </span>
                   <Button
                     variant="outline"
@@ -263,11 +264,11 @@ function PresetItem({
     <li className="flex items-center gap-3 px-6 py-4">
       <span className="min-w-0 flex-1">
         <span className="block font-medium">{formatMoney(preset.amount)}</span>
-        <span className="block truncate text-sm text-muted-foreground">
-          {preset.label}
-          {preset.useCount > 0 &&
-            ` · used by ${preset.useCount} ${preset.useCount === 1 ? "sale" : "sales"}`}
-        </span>
+        {preset.useCount > 0 && (
+          <span className="block truncate text-sm text-muted-foreground">
+            used by {preset.useCount} {preset.useCount === 1 ? "sale" : "sales"}
+          </span>
+        )}
       </span>
 
       <div className="flex shrink-0 gap-2">
@@ -316,7 +317,6 @@ function EditPresetForm({
   onCancel: () => void;
   onSaved: () => void;
 }) {
-  const [label, setLabel] = useState(preset.label);
   const [amount, setAmount] = useState(preset.amount);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -334,7 +334,9 @@ function EditPresetForm({
       const res = await fetch(`/api/shops/${shopId}/presets/${preset.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ label, amount }),
+        // Label stays derived from the amount (D-131) — never a separate
+        // input here either.
+        body: JSON.stringify({ label: formatMoney(amount), amount }),
       });
       const body = await res.json().catch(() => null);
       if (!res.ok) {
@@ -357,17 +359,6 @@ function EditPresetForm({
   return (
     <form onSubmit={save} className="space-y-4">
       <div className="space-y-2">
-        <Label htmlFor={`label-${preset.id}`}>Label</Label>
-        <Input
-          id={`label-${preset.id}`}
-          value={label}
-          onChange={(e) => setLabel(e.target.value)}
-          required
-          disabled={pending}
-        />
-      </div>
-
-      <div className="space-y-2">
         <Label htmlFor={`amount-${preset.id}`}>Amount (rupiah)</Label>
         <Input
           id={`amount-${preset.id}`}
@@ -376,6 +367,7 @@ function EditPresetForm({
           onChange={(e) => setAmount(e.target.value.replace(/[^0-9]/g, ""))}
           required
           disabled={pending}
+          autoFocus
         />
         <p className="text-xs text-muted-foreground">
           {parseAmount(amount) ? formatMoney(amount) : "Digits only"}
@@ -424,13 +416,8 @@ function AddPresetCard({
   onCancel: () => void;
 }) {
   const [amount, setAmount] = useState("");
-  const [label, setLabel] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // The label is almost always just the formatted amount, so fill it in and
-  // let the owner override rather than making them type it twice.
-  const effectiveLabel = label.trim() || (parseAmount(amount) ? formatMoney(amount) : "");
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -442,7 +429,11 @@ function AddPresetCard({
       const res = await fetch(`/api/shops/${shopId}/presets`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ amount, label: effectiveLabel }),
+        // The server still stores a `label` column (SalePreset.label is
+        // NOT NULL, D-131) — always the formatted amount, since the sale
+        // screen only ever renders `formatMoney(preset.amount)` and never
+        // showed the label to staff distinctly in the first place.
+        body: JSON.stringify({ amount, label: formatMoney(amount) }),
       });
       const body = await res.json().catch(() => null);
       if (!res.ok) {
@@ -475,23 +466,10 @@ function AddPresetCard({
               onChange={(e) => setAmount(e.target.value.replace(/[^0-9]/g, ""))}
               required
               disabled={pending}
+              autoFocus
             />
             <p className="text-xs text-muted-foreground">
               {parseAmount(amount) ? formatMoney(amount) : "Digits only, no dots"}
-            </p>
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="new-label">Label (optional)</Label>
-            <Input
-              id="new-label"
-              value={label}
-              placeholder={effectiveLabel || "Rp 50.000"}
-              onChange={(e) => setLabel(e.target.value)}
-              disabled={pending}
-            />
-            <p className="text-xs text-muted-foreground">
-              What staff see on the button. Defaults to the amount.
             </p>
           </div>
 

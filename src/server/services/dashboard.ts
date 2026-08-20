@@ -121,20 +121,24 @@ export type Dashboard = OwnerDashboard | ManagerDashboard;
 
 // ───────────────────────────── ENTRY POINT ─────────────────────────────
 
+/**
+ * §3.4: staff see no money reporting beyond their own shift's sale list.
+ *
+ * **The check is against the shop that resolves, not the actor globally
+ * (D-138).** Role is per-shop, so "manager somewhere" is not a permission to
+ * view any particular shop's takings. A user who is MANAGER at one branch and
+ * STAFF at another previously passed the global gate and then had scope
+ * resolve to the branch they only staff, which handed them that branch's
+ * manager dashboard. `requireManagerAt` makes the two agree; there is no
+ * separate up-front role check here any more, because an up-front check is
+ * precisely what could disagree with the resolved shop.
+ */
 export async function getDashboard(
   actor: Actor,
   input: ReportRangeInput
 ): Promise<Dashboard> {
-  const isManagerSomewhere = [...actor.shopRoles.values()].some(
-    (sr) => sr.role === "MANAGER"
-  );
-  if (!actor.isOwner && !isManagerSomewhere) {
-    // §3.4: staff see no money reporting beyond their own shift's sale list.
-    throw forbidden("The dashboard is not available to staff accounts.");
-  }
-  return actor.isOwner
-    ? ownerDashboard(actor, input)
-    : managerDashboard(actor, input);
+  if (actor.isOwner) return ownerDashboard(actor, input);
+  return managerDashboard(actor, input);
 }
 
 // ───────────────────────────── OWNER ─────────────────────────────
@@ -292,7 +296,12 @@ async function managerDashboard(
   // §3.4: a manager views one shop at a time. `resolveScope` already collapses
   // an unscoped manager request to their work-session shop (the 8 Aug decision),
   // so this is always exactly one shop.
-  const scope = await resolveScope(actor, input);
+  //
+  // `requireManagerAt` is what refuses a STAFF account here — and equally a
+  // mixed-role user asking for the branch they only staff (D-138). It is the
+  // ONLY role gate on this path, deliberately: one check, against the shop
+  // whose money is about to be read.
+  const scope = await resolveScope(actor, input, { requireManagerAt: true });
   const shopId = scope.shopIds[0]!;
   const today = isoDate(actor.businessDate);
   const todayInput: ReportRangeInput = { shopId, from: today, to: today };

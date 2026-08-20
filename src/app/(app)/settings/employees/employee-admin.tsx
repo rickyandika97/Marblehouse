@@ -16,6 +16,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 type ShopRoleValue = "MANAGER" | "STAFF";
 
@@ -117,6 +125,11 @@ export function EmployeeAdmin({
     );
   }, [employees, search]);
 
+  // The owner is never deactivatable (D-134 — exactly one, D-123), so it
+  // always lands on Active regardless of this split.
+  const activeEmployees = filtered.filter((e) => e.isActive);
+  const deactivatedEmployees = filtered.filter((e) => !e.isActive);
+
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4">
@@ -126,25 +139,22 @@ export function EmployeeAdmin({
             Create accounts and set each shop&apos;s role and access.
           </p>
         </div>
-        {!open && (
-          <Button onClick={() => setOpen(true)}>
-            <UserPlus className="size-4" />
-            New employee
-          </Button>
-        )}
+        <Button onClick={() => setOpen(true)}>
+          <UserPlus className="size-4" />
+          New employee
+        </Button>
       </div>
 
-      {open && (
-        <CreateEmployeeCard
-          shops={shops}
-          onCancel={() => setOpen(false)}
-          onCreated={(e) => {
-            setEmployees((prev) => [...prev, e]);
-            setOpen(false);
-            router.refresh();
-          }}
-        />
-      )}
+      <CreateEmployeeDialog
+        open={open}
+        shops={shops}
+        onOpenChange={setOpen}
+        onCreated={(e) => {
+          setEmployees((prev) => [...prev, e]);
+          setOpen(false);
+          router.refresh();
+        }}
+      />
 
       <Card>
         <CardHeader className="space-y-3">
@@ -165,22 +175,76 @@ export function EmployeeAdmin({
               No accounts match &quot;{search}&quot;.
             </p>
           ) : (
-            <ul className="divide-y">
-              {filtered.map((e) => (
-                <EmployeeListItem
-                  key={e.id}
-                  employee={e}
-                  shops={shops}
-                  currentUserId={currentUserId}
-                  onChanged={(next) => {
-                    setEmployees((prev) =>
-                      prev.map((x) => (x.id === next.id ? next : x)),
-                    );
-                    router.refresh();
-                  }}
-                />
-              ))}
-            </ul>
+            <Tabs defaultValue="active" className="px-6 pb-2">
+              <TabsList>
+                <TabsTrigger value="active">
+                  Active
+                  {activeEmployees.length > 0 && (
+                    <span className="text-muted-foreground">
+                      {activeEmployees.length}
+                    </span>
+                  )}
+                </TabsTrigger>
+                <TabsTrigger value="deactivated">
+                  Deactivated
+                  {deactivatedEmployees.length > 0 && (
+                    <span className="text-muted-foreground">
+                      {deactivatedEmployees.length}
+                    </span>
+                  )}
+                </TabsTrigger>
+              </TabsList>
+
+              <TabsContent value="active" className="-mx-6">
+                {activeEmployees.length === 0 ? (
+                  <p className="px-6 py-4 text-sm text-muted-foreground">
+                    No active accounts match &quot;{search}&quot;.
+                  </p>
+                ) : (
+                  <ul className="divide-y">
+                    {activeEmployees.map((e) => (
+                      <EmployeeListItem
+                        key={e.id}
+                        employee={e}
+                        shops={shops}
+                        currentUserId={currentUserId}
+                        onChanged={(next) => {
+                          setEmployees((prev) =>
+                            prev.map((x) => (x.id === next.id ? next : x)),
+                          );
+                          router.refresh();
+                        }}
+                      />
+                    ))}
+                  </ul>
+                )}
+              </TabsContent>
+
+              <TabsContent value="deactivated" className="-mx-6">
+                {deactivatedEmployees.length === 0 ? (
+                  <p className="px-6 py-4 text-sm text-muted-foreground">
+                    No deactivated accounts.
+                  </p>
+                ) : (
+                  <ul className="divide-y">
+                    {deactivatedEmployees.map((e) => (
+                      <EmployeeListItem
+                        key={e.id}
+                        employee={e}
+                        shops={shops}
+                        currentUserId={currentUserId}
+                        onChanged={(next) => {
+                          setEmployees((prev) =>
+                            prev.map((x) => (x.id === next.id ? next : x)),
+                          );
+                          router.refresh();
+                        }}
+                      />
+                    ))}
+                  </ul>
+                )}
+              </TabsContent>
+            </Tabs>
           )}
         </CardContent>
       </Card>
@@ -229,11 +293,9 @@ function EmployeeListItem({
         <span className="min-w-0 flex-1">
           <span className="block truncate font-medium">
             {employee.displayName}
-            {!employee.isActive && (
-              <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-xs font-normal text-muted-foreground">
-                Deactivated
-              </span>
-            )}
+            {/* No "Deactivated" badge here — which tab the row is in
+                (D-135) already says that, same as D-132 on Settings →
+                Shops. */}
             {isSelf && (
               <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-xs font-normal text-muted-foreground">
                 You
@@ -270,20 +332,17 @@ function EmployeeListItem({
         </div>
       </div>
 
-      {panel === "edit" && (
-        <div className="mt-4">
-          <EditEmployeeForm
-            employee={employee}
-            shops={shops}
-            isSelf={isSelf}
-            onCancel={() => setPanel("none")}
-            onSaved={(e) => {
-              setPanel("none");
-              onChanged(e);
-            }}
-          />
-        </div>
-      )}
+      <EditEmployeeDialog
+        open={panel === "edit"}
+        employee={employee}
+        shops={shops}
+        isSelf={isSelf}
+        onOpenChange={(next) => setPanel(next ? "edit" : "none")}
+        onSaved={(e) => {
+          setPanel("none");
+          onChanged(e);
+        }}
+      />
 
       {panel === "password" && (
         <div className="mt-4">
@@ -319,19 +378,33 @@ function ShopAccessFields({
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return shops.filter(
-      (s) =>
-        (s.isActive || draft[s.id]?.checked) &&
-        (q === "" ||
-          s.name.toLowerCase().includes(q) ||
-          s.code.toLowerCase().includes(q))
-    );
+    return shops
+      .filter(
+        (s) =>
+          (s.isActive || draft[s.id]?.checked) &&
+          (q === "" ||
+            s.name.toLowerCase().includes(q) ||
+            s.code.toLowerCase().includes(q))
+      )
+      // HQ first (matches Settings → Shops, D-128) — it is not a branch and
+      // should not read as one buried in an alphabetical/creation-order list.
+      .sort((a, b) => (a.isHqPseudoShop === b.isHqPseudoShop ? 0 : a.isHqPseudoShop ? -1 : 1));
   }, [shops, search, draft]);
 
-  function toggle(shopId: string) {
+  function toggle(shopId: string, isHqPseudoShop: boolean) {
+    const wasChecked = draft[shopId]?.checked;
     setDraft({
       ...draft,
-      [shopId]: { ...draft[shopId]!, checked: !draft[shopId]?.checked },
+      [shopId]: {
+        ...draft[shopId]!,
+        checked: !wasChecked,
+        // STAFF is a no-op at HQ — it accepts no sales, has no shifts, and
+        // expense recording requires MANAGER (`assertCanRecordAgainst` in
+        // expenses.ts). Force MANAGER the moment HQ is checked rather than
+        // leaving it on the STAFF default and letting the owner discover
+        // that only after saving (owner request, 2026-08-20).
+        role: !wasChecked && isHqPseudoShop ? "MANAGER" : draft[shopId]!.role,
+      },
     });
   }
 
@@ -378,7 +451,7 @@ function ShopAccessFields({
             >
               <Checkbox
                 checked={row.checked}
-                onCheckedChange={() => toggle(shop.id)}
+                onCheckedChange={() => toggle(shop.id, shop.isHqPseudoShop)}
                 disabled={disabled}
               />
               <span className="min-w-0 flex-1">
@@ -413,7 +486,12 @@ function ShopAccessFields({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="STAFF">Staff</SelectItem>
+                  {/* Staff is a no-op at HQ (see `toggle` above) — disabled
+                      rather than omitted, so it is still visible as a role
+                      that exists, just not one HQ can use. */}
+                  <SelectItem value="STAFF" disabled={shop.isHqPseudoShop}>
+                    Staff
+                  </SelectItem>
                   <SelectItem value="MANAGER">Manager</SelectItem>
                 </SelectContent>
               </Select>
@@ -430,14 +508,16 @@ function ShopAccessFields({
   );
 }
 
-function CreateEmployeeCard({
+function CreateEmployeeDialog({
+  open,
   shops,
+  onOpenChange,
   onCreated,
-  onCancel,
 }: {
+  open: boolean;
   shops: ShopOption[];
+  onOpenChange: (open: boolean) => void;
   onCreated: (e: EmployeeRow) => void;
-  onCancel: () => void;
 }) {
   const [username, setUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -446,6 +526,20 @@ function CreateEmployeeCard({
   const [fields, setFields] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+
+  function reset() {
+    setUsername("");
+    setDisplayName("");
+    setPassword("");
+    setDraft(emptyDraft(shops));
+    setFields({});
+    setError(null);
+  }
+
+  function onCancel() {
+    onOpenChange(false);
+    reset();
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -478,6 +572,7 @@ function CreateEmployeeCard({
 
       toast.success(`${body.displayName} can now sign in as "${body.username}".`);
       onCreated(body as EmployeeRow);
+      reset();
     } catch {
       setError("Cannot reach the server. Check the internet connection.");
       setPending(false);
@@ -485,99 +580,106 @@ function CreateEmployeeCard({
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>New employee</CardTitle>
-      </CardHeader>
-      <CardContent>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        onOpenChange(next);
+        if (!next) reset();
+      }}
+    >
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>New employee</DialogTitle>
+        </DialogHeader>
         <form onSubmit={submit} className="space-y-5">
-          <div className="grid gap-5 sm:grid-cols-2">
+          <div className="max-h-[70vh] space-y-5 overflow-y-auto px-1">
+            <div className="grid gap-5 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="displayName">Full name</Label>
+                <Input
+                  id="displayName"
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  placeholder="e.g. Budi Santoso"
+                  required
+                  disabled={pending}
+                />
+                <FieldError message={fields.displayName} />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="username">Username</Label>
+                <Input
+                  id="username"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  placeholder="e.g. budi"
+                  required
+                  disabled={pending}
+                />
+                <FieldError message={fields.username} />
+              </div>
+            </div>
+            <p className="-mt-3 text-xs text-muted-foreground">
+              The username is what they type to sign in. It cannot be changed
+              later.
+            </p>
+
             <div className="space-y-2">
-              <Label htmlFor="displayName">Full name</Label>
+              <Label htmlFor="password">Initial password</Label>
               <Input
-                id="displayName"
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
-                placeholder="e.g. Budi Santoso"
+                id="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="min 8 characters"
                 required
                 disabled={pending}
               />
-              <FieldError message={fields.displayName} />
+              <p className="text-xs text-muted-foreground">
+                Tell it to them in person. They must change it when they first
+                sign in.
+              </p>
+              <FieldError message={fields.password} />
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="username">Username</Label>
-              <Input
-                id="username"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                autoCapitalize="none"
-                autoCorrect="off"
-                spellCheck={false}
-                placeholder="e.g. budi"
-                required
-                disabled={pending}
-              />
-              <FieldError message={fields.username} />
-            </div>
-          </div>
-          <p className="-mt-3 text-xs text-muted-foreground">
-            The username is what they type to sign in. It cannot be changed
-            later.
-          </p>
-
-          <div className="space-y-2">
-            <Label htmlFor="password">Initial password</Label>
-            <Input
-              id="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="min 8 characters"
-              required
+            <ShopAccessFields
+              shops={shops}
+              draft={draft}
+              setDraft={setDraft}
               disabled={pending}
             />
-            <p className="text-xs text-muted-foreground">
-              Tell it to them in person. They must change it when they first
-              sign in.
-            </p>
-            <FieldError message={fields.password} />
+            <FieldError message={fields.shopRoles} />
+
+            {error && (
+              <p
+                role="alert"
+                className="rounded-lg bg-destructive/10 px-4 py-3 text-sm font-medium text-destructive"
+              >
+                {error}
+              </p>
+            )}
           </div>
 
-          <ShopAccessFields
-            shops={shops}
-            draft={draft}
-            setDraft={setDraft}
-            disabled={pending}
-          />
-          <FieldError message={fields.shopRoles} />
-
-          {error && (
-            <p
-              role="alert"
-              className="rounded-lg bg-destructive/10 px-4 py-3 text-sm font-medium text-destructive"
-            >
-              {error}
-            </p>
-          )}
-
-          <div className="flex gap-3">
-            <Button type="submit" size="lg" className="flex-1" disabled={pending}>
-              {pending && <Loader2 className="animate-spin" />}
-              Create account
-            </Button>
+          <DialogFooter className="gap-2">
             <Button
               type="button"
-              variant="ghost"
-              size="lg"
+              variant="outline"
               onClick={onCancel}
               disabled={pending}
             >
               Cancel
             </Button>
-          </div>
+            <Button type="submit" disabled={pending}>
+              {pending && <Loader2 className="animate-spin" />}
+              Create account
+            </Button>
+          </DialogFooter>
         </form>
-      </CardContent>
-    </Card>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -602,18 +704,55 @@ function FieldError({ message }: { message?: string }) {
  *  - A manager or staff member needs at least one shop.
  *  - Purchasing is a manager-only permission, set per shop.
  */
+function EditEmployeeDialog({
+  open,
+  employee,
+  shops,
+  isSelf,
+  onOpenChange,
+  onSaved,
+}: {
+  open: boolean;
+  employee: EmployeeRow;
+  shops: ShopOption[];
+  isSelf: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSaved: (e: EmployeeRow) => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Edit {employee.displayName}</DialogTitle>
+        </DialogHeader>
+        {/* Remounted fresh each time the dialog opens, so its form state
+            never carries over from a previous open of the same employee. */}
+        {open && (
+          <EditEmployeeForm
+            employee={employee}
+            shops={shops}
+            isSelf={isSelf}
+            onCancel={() => onOpenChange(false)}
+            onSaved={onSaved}
+          />
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function EditEmployeeForm({
   employee,
   shops,
   isSelf,
-  onSaved,
   onCancel,
+  onSaved,
 }: {
   employee: EmployeeRow;
   shops: ShopOption[];
   isSelf: boolean;
-  onSaved: (e: EmployeeRow) => void;
   onCancel: () => void;
+  onSaved: (e: EmployeeRow) => void;
 }) {
   const [displayName, setDisplayName] = useState(employee.displayName);
   const [phone, setPhone] = useState(employee.phone ?? "");
@@ -677,7 +816,8 @@ function EditEmployeeForm({
   }
 
   return (
-    <form onSubmit={submit} className="space-y-5 rounded-xl border p-4">
+    <form onSubmit={submit} className="space-y-5">
+      <div className="max-h-[70vh] space-y-5 overflow-y-auto px-1">
       <div className="space-y-2">
         <Label htmlFor={`name-${employee.id}`}>Full name</Label>
         <Input
@@ -726,24 +866,35 @@ function EditEmployeeForm({
       )}
       <FieldError message={fields.shopRoles} />
 
-      <label className="flex min-h-14 cursor-pointer items-center gap-3 rounded-lg border p-4">
-        <Checkbox
-          checked={isActive}
-          onCheckedChange={(v) => setIsActive(v === true)}
-          // The server refuses self-deactivation and refuses removing the last
-          // active owner. Blocking the obvious one here keeps the other as the
-          // server's job.
-          disabled={pending || isSelf}
-        />
-        <span>
-          <span className="block font-medium">Can sign in</span>
-          <span className="block text-xs text-muted-foreground">
-            {isSelf
-              ? "You cannot deactivate your own account."
-              : "Turning this off signs them out everywhere immediately. Their past sales and attendance are kept."}
+      {/*
+        Omitted entirely for the owner, not just disabled — `updateEmployee`
+        refuses deactivating the owner unconditionally (there is exactly one,
+        D-123), so this control could never be usable on this row regardless
+        of who is viewing it. A checkbox nobody can ever uncheck is not a
+        setting, so it does not belong here at all (owner request,
+        2026-08-20) — unlike the `isSelf` case below, which is a REAL
+        row-specific state the control still needs to explain.
+      */}
+      {!employee.isOwner && (
+        <label className="flex min-h-14 cursor-pointer items-center gap-3 rounded-lg border p-4">
+          <Checkbox
+            checked={isActive}
+            onCheckedChange={(v) => setIsActive(v === true)}
+            // The server refuses self-deactivation and refuses removing the
+            // last active owner. Blocking the obvious one here keeps the
+            // other as the server's job.
+            disabled={pending || isSelf}
+          />
+          <span>
+            <span className="block font-medium">Can sign in</span>
+            <span className="block text-xs text-muted-foreground">
+              {isSelf
+                ? "You cannot deactivate your own account."
+                : "Turning this off signs them out everywhere immediately. Their past sales and attendance are kept."}
+            </span>
           </span>
-        </span>
-      </label>
+        </label>
+      )}
 
       {deactivating && (
         <div className="space-y-2">
@@ -769,16 +920,17 @@ function EditEmployeeForm({
           {error}
         </p>
       )}
+      </div>
 
-      <div className="flex gap-2">
+      <DialogFooter className="gap-2">
+        <Button type="button" variant="outline" onClick={onCancel} disabled={pending}>
+          Cancel
+        </Button>
         <Button type="submit" disabled={pending}>
           {pending && <Loader2 className="animate-spin" />}
           Save changes
         </Button>
-        <Button type="button" variant="ghost" onClick={onCancel} disabled={pending}>
-          Cancel
-        </Button>
-      </div>
+      </DialogFooter>
     </form>
   );
 }

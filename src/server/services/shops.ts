@@ -96,7 +96,7 @@ const shopFields = {
     .default(5),
   allowCustomAmount: z.boolean().default(false),
   allowDirectTransfer: z.boolean().default(false),
-  requireClockOutPhoto: z.boolean().default(false),
+  requireClockOutPhoto: z.boolean().default(true),
 };
 
 export const createShopSchema = z.object({
@@ -185,11 +185,12 @@ export async function listShops(actor: Actor): Promise<ShopDTO[]> {
 
   const shops = await prisma.shop.findMany({
     include: { _count: { select: { presets: true, shifts: true, userShops: true } } },
-    // Active branches first, HQ last within each group — the owner is nearly
-    // always here for a trading branch.
+    // HQ first and visually set apart (D-128) — it is not a trading branch,
+    // and the owner should never have to scan past it to tell which rows can
+    // take a sale. Active branches next, inactive ones last within that.
     orderBy: [
+      { isHqPseudoShop: "desc" },
       { isActive: "desc" },
-      { isHqPseudoShop: "asc" },
       { name: "asc" },
     ],
   });

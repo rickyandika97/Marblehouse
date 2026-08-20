@@ -75,19 +75,19 @@ const ROLE_LABEL: Record<ShellRole, string> = {
 export function AppShell({
   displayName,
   isOwner,
-  isManagerSomewhere,
+  isManagerHere,
   shopName,
   children,
 }: {
   displayName: string;
   isOwner: boolean;
-  isManagerSomewhere: boolean;
+  isManagerHere: boolean;
   shopName: string | null;
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
   const router = useRouter();
-  const role: ShellRole = isOwner ? "OWNER" : isManagerSomewhere ? "MANAGER" : "STAFF";
+  const role: ShellRole = isOwner ? "OWNER" : isManagerHere ? "MANAGER" : "STAFF";
   const tabs = TABS[role];
 
   async function signOut() {

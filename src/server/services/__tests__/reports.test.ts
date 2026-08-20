@@ -502,6 +502,54 @@ describe("cost gating (§7.5, §15)", () => {
       getDashboard(actorFor("STAFF", { userId: staffId }), {})
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
+
+  /**
+   * A user can be MANAGER at one shop and STAFF at another (D-122). The
+   * privilege check and the shop resolution are two separate steps, so these
+   * assert that they AGREE — a "manager somewhere" gate paired with a scope
+   * that resolves elsewhere is how a staff-only shop leaks a manager view.
+   *
+   * Both the implicit form (no shopId, resolved from the work session) and
+   * the explicit form (?shopId=) are tested: a permission that depends on
+   * whether a parameter is present is wrong on one branch until proven
+   * otherwise (D-34).
+   */
+  describe("mixed-role actor: MANAGER at shopA, STAFF at shopB (D-138)", () => {
+    const mixed = (workShopId: string | null) => {
+      const actor = actorFor("MANAGER", {
+        shopIds: [shopA],
+        workShopId,
+      });
+      // MANAGER at A, STAFF at B — the shape `actorFor` cannot build.
+      actor.shopRoles.set(shopB, { role: "STAFF", canEnterCost: false });
+      return actor;
+    };
+
+    it("refuses the dashboard for the shop where they are only STAFF", async () => {
+      await expect(
+        getDashboard(mixed(shopB), { shopId: shopB })
+      ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    });
+
+    it("refuses it implicitly when the work session is at the STAFF shop", async () => {
+      // No shopId: scope falls back to the work-session shop, which is the
+      // shop they only staff. Being a manager at shopA must not carry over.
+      await expect(getDashboard(mixed(shopB), {})).rejects.toMatchObject({
+        code: "FORBIDDEN",
+      });
+    });
+
+    it("still allows the dashboard for the shop where they ARE manager", async () => {
+      await expect(
+        getDashboard(mixed(shopA), { shopId: shopA })
+      ).resolves.toMatchObject({ role: "MANAGER", shopId: shopA });
+    });
+
+    it("scopes the manager dashboard to shopA when clocked in at shopA", async () => {
+      const result = await getDashboard(mixed(shopA), {});
+      expect(result).toMatchObject({ role: "MANAGER", shopId: shopA });
+    });
+  });
 });
 
 // ─────────────────────────── COST METRICS ───────────────────────────

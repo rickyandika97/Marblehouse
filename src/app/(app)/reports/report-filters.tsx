@@ -1,10 +1,10 @@
 "use client";
 
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useTransition } from "react";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { DateRangePicker } from "@/components/ui/date-range-picker";
 import { cn } from "@/lib/utils";
 
 /**
@@ -48,9 +48,6 @@ export function ReportFilters({
   const searchParams = useSearchParams();
   const [pending, startTransition] = useTransition();
 
-  const [draftFrom, setDraftFrom] = useState(from);
-  const [draftTo, setDraftTo] = useState(to);
-
   function apply(next: { from?: string; to?: string; shopId?: string | null }) {
     const params = new URLSearchParams(searchParams.toString());
     if (next.from) params.set("from", next.from);
@@ -75,11 +72,7 @@ export function ReportFilters({
             key={p.label}
             size="sm"
             variant={activePreset?.label === p.label ? "default" : "outline"}
-            onClick={() => {
-              setDraftFrom(p.from);
-              setDraftTo(p.to);
-              apply({ from: p.from, to: p.to });
-            }}
+            onClick={() => apply({ from: p.from, to: p.to })}
             disabled={pending}
           >
             {p.label}
@@ -89,44 +82,14 @@ export function ReportFilters({
 
       <div className="flex flex-wrap items-end gap-3">
         {/* ── Custom range ── */}
-        <div className="flex flex-wrap items-end gap-2">
-          <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
-            From
-            <Input
-              type="date"
-              value={draftFrom}
-              max={draftTo}
-              onChange={(e) => setDraftFrom(e.target.value)}
-              className="w-auto"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
-            To
-            <Input
-              type="date"
-              value={draftTo}
-              min={draftFrom}
-              onChange={(e) => setDraftTo(e.target.value)}
-              className="w-auto"
-            />
-          </label>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={
-              pending ||
-              draftFrom === "" ||
-              draftTo === "" ||
-              // The server rejects an inverted range with a 422; catching it
-              // here avoids a pointless round trip and a scary error screen.
-              draftFrom > draftTo ||
-              (draftFrom === from && draftTo === to)
-            }
-            onClick={() => apply({ from: draftFrom, to: draftTo })}
-          >
-            Apply
-          </Button>
-        </div>
+        <DateRangePicker
+          from={from}
+          to={to}
+          max={businessDate}
+          onChange={(nextFrom, nextTo) => {
+            if (nextFrom && nextTo) apply({ from: nextFrom, to: nextTo });
+          }}
+        />
 
         {/* ── Shop ── */}
         {shops.length > 0 && (

@@ -7,7 +7,7 @@ import {
 } from "@/server/services/ticket-reports";
 import { prisma } from "@/lib/prisma";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { DateRangeField } from "@/components/ui/date-range-field";
 import { formatMoney } from "@/lib/money";
 
 export const metadata = { title: "Tickets Awarded by Staff · Marblehouse" };
@@ -58,14 +58,18 @@ export default async function TicketAwardReportPage({
       </div>
 
       <form className="grid gap-3 rounded-xl border p-4 sm:grid-cols-4">
-        <label className="text-sm font-medium">
-          From
-          <Input className="mt-1" type="date" name="from" defaultValue={report.from} />
-        </label>
-        <label className="text-sm font-medium">
-          To
-          <Input className="mt-1" type="date" name="to" defaultValue={report.to} />
-        </label>
+        <div className="text-sm font-medium sm:col-span-2">
+          Date range
+          <div className="mt-1">
+            <DateRangeField
+              fromName="from"
+              toName="to"
+              defaultFrom={report.from}
+              defaultTo={report.to}
+              max={actor.businessDate.toISOString().slice(0, 10)}
+            />
+          </div>
+        </div>
         <label className="text-sm font-medium">
           Shop
           <select

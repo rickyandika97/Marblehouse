@@ -1,10 +1,10 @@
 "use client";
 
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useTransition } from "react";
 import { Loader2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { DateRangePicker } from "@/components/ui/date-range-picker";
 import { cn } from "@/lib/utils";
 
 /**
@@ -51,9 +51,6 @@ export function ExpenseFilters({
   const searchParams = useSearchParams();
   const [pending, startTransition] = useTransition();
 
-  const [draftFrom, setDraftFrom] = useState(from ?? "");
-  const [draftTo, setDraftTo] = useState(to ?? "");
-
   function apply(next: Record<string, string | null>) {
     const params = new URLSearchParams(searchParams.toString());
     for (const [key, value] of Object.entries(next)) {
@@ -82,11 +79,7 @@ export function ExpenseFilters({
             size="sm"
             variant={active?.label === p.label ? "default" : "outline"}
             disabled={pending}
-            onClick={() => {
-              setDraftFrom(p.from);
-              setDraftTo(p.to);
-              apply({ from: p.from, to: p.to });
-            }}
+            onClick={() => apply({ from: p.from, to: p.to })}
           >
             {p.label}
           </Button>
@@ -97,11 +90,7 @@ export function ExpenseFilters({
             size="sm"
             variant="ghost"
             disabled={pending}
-            onClick={() => {
-              setDraftFrom("");
-              setDraftTo("");
-              apply({ from: null, to: null, categoryId: null });
-            }}
+            onClick={() => apply({ from: null, to: null, categoryId: null })}
           >
             <X className="size-3.5" />
             Clear
@@ -114,38 +103,14 @@ export function ExpenseFilters({
       </div>
 
       <div className="flex flex-wrap items-end gap-2">
-        <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
-          From
-          <Input
-            type="date"
-            value={draftFrom}
-            max={draftTo || undefined}
-            onChange={(e) => setDraftFrom(e.target.value)}
-            className="w-auto"
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
-          To
-          <Input
-            type="date"
-            value={draftTo}
-            min={draftFrom || undefined}
-            onChange={(e) => setDraftTo(e.target.value)}
-            className="w-auto"
-          />
-        </label>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={
-            pending ||
-            (draftFrom === (from ?? "") && draftTo === (to ?? "")) ||
-            (draftFrom !== "" && draftTo !== "" && draftFrom > draftTo)
+        <DateRangePicker
+          from={from}
+          to={to}
+          max={businessDate}
+          onChange={(nextFrom, nextTo) =>
+            apply({ from: nextFrom || null, to: nextTo || null })
           }
-          onClick={() => apply({ from: draftFrom || null, to: draftTo || null })}
-        >
-          Apply
-        </Button>
+        />
 
         {shops.length > 1 && (
           <label className="ml-auto flex flex-col gap-1 text-xs font-medium text-muted-foreground">

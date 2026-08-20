@@ -6,6 +6,7 @@ import { Loader2, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { DatePicker } from "@/components/ui/date-picker";
 import {
   Dialog,
   DialogContent,
@@ -150,12 +151,12 @@ export function AddExpense({
             <label htmlFor="expense-date" className="text-sm font-medium">
               Date
             </label>
-            <Input
+            <DatePicker
               id="expense-date"
-              type="date"
               value={date}
               max={businessDate}
-              onChange={(e) => setDate(e.target.value)}
+              onChange={setDate}
+              className="w-full"
             />
           </div>
 

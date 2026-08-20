@@ -76,10 +76,25 @@ export interface ResolvedScope {
  *
  * A manager with no work session and no explicit shop is a real error rather
  * than a silent empty report, so it throws.
+ *
+ * **`requireManagerAt` (D-138).** Role is per-shop, so "is this person a
+ * manager?" and "which shop are we resolving?" are two separate questions,
+ * and a caller that asks only the first gets a shop the answer does not
+ * cover. That was the Budi defect: MANAGER at A and STAFF at B passed a
+ * "manager somewhere" gate, then resolved scope to B and rendered B's manager
+ * dashboard. Pass this flag from any caller whose gate was "manager
+ * somewhere" and the two can no longer disagree — the role is re-checked
+ * against the shop that actually resolved, on BOTH the explicit and the
+ * implicit branch.
+ *
+ * Opt-in rather than the default because staff-facing callers resolve scope
+ * legitimately without manager rights (their own shift's sale list, their own
+ * attendance history).
  */
 export async function resolveScope(
   actor: Actor,
-  input: ReportRangeInput
+  input: ReportRangeInput,
+  opts: { requireManagerAt?: boolean } = {}
 ): Promise<ResolvedScope> {
   const to = input.to ? parseDate(input.to) : actor.businessDate;
   const from = input.from ? parseDate(input.from) : addDays(to, -29);
@@ -106,6 +121,7 @@ export async function resolveScope(
     if (exists === 0) {
       throw new AppError("NOT_FOUND", "That shop does not exist.");
     }
+    assertManagerAt(actor, input.shopId, opts);
     return { shopIds: [input.shopId], isAllShops: false, from, to };
   }
 
@@ -125,7 +141,30 @@ export async function resolveScope(
   if (!hasShopAccess(actor, shopId)) {
     throw forbidden("You do not have access to that shop.");
   }
+  assertManagerAt(actor, shopId, opts);
   return { shopIds: [shopId], isAllShops: false, from, to };
+}
+
+/**
+ * Enforce MANAGER *at this specific shop* when the caller asked for it.
+ *
+ * Deliberately a shared helper called on both branches of `resolveScope`: the
+ * defect it closes existed because the explicit and implicit paths were
+ * checked differently, and one function called twice cannot drift the way two
+ * inline copies can (D-34, D-138).
+ */
+function assertManagerAt(
+  actor: Actor,
+  shopId: string,
+  opts: { requireManagerAt?: boolean }
+): void {
+  if (!opts.requireManagerAt) return;
+  if (actor.isOwner) return;
+  if (actor.shopRoles.get(shopId)?.role !== "MANAGER") {
+    // Same wording as the other role refusals — it must not reveal whether
+    // the shop exists or that they hold a different role there.
+    throw forbidden("Your role does not have access to this shop.");
+  }
 }
 
 /**
@@ -183,7 +222,7 @@ export async function salesSummary(
   actor: Actor,
   input: ReportRangeInput
 ): Promise<SalesSummary & { scope: ResolvedScope }> {
-  const scope = await resolveScope(actor, input);
+  const scope = await resolveScope(actor, input, { requireManagerAt: true });
   const where = completedSalesWhere(scope);
 
   const [agg, byMethod, distinctCustomers, walkIns] = await Promise.all([
@@ -232,7 +271,7 @@ export async function dailySales(
   actor: Actor,
   input: ReportRangeInput
 ): Promise<{ rows: DailySalesRow[]; scope: ResolvedScope }> {
-  const scope = await resolveScope(actor, input);
+  const scope = await resolveScope(actor, input, { requireManagerAt: true });
   const groups = await prisma.sale.groupBy({
     by: ["businessDate"],
     where: completedSalesWhere(scope),
@@ -263,7 +302,7 @@ export async function salesByShop(
   actor: Actor,
   input: ReportRangeInput
 ): Promise<{ rows: ShopSalesRow[]; scope: ResolvedScope }> {
-  const scope = await resolveScope(actor, input);
+  const scope = await resolveScope(actor, input, { requireManagerAt: true });
   const [groups, shops] = await Promise.all([
     prisma.sale.groupBy({
       by: ["shopId"],
@@ -304,7 +343,7 @@ export async function salesByStaff(
   actor: Actor,
   input: ReportRangeInput
 ): Promise<{ rows: StaffSalesRow[]; scope: ResolvedScope }> {
-  const scope = await resolveScope(actor, input);
+  const scope = await resolveScope(actor, input, { requireManagerAt: true });
   const groups = await prisma.sale.groupBy({
     by: ["recordedById"],
     where: completedSalesWhere(scope),
@@ -360,7 +399,7 @@ export async function liabilityReport(
   actor: Actor,
   input: ReportRangeInput
 ): Promise<LiabilityReport & { scope: ResolvedScope }> {
-  const scope = await resolveScope(actor, input);
+  const scope = await resolveScope(actor, input, { requireManagerAt: true });
 
   const [balances, awarded, redeemed] = await Promise.all([
     prisma.customer.aggregate({
@@ -498,7 +537,7 @@ export async function prizeExpenseReport(
   actor: Actor,
   input: ReportRangeInput
 ): Promise<PrizeExpenseReport & { scope: ResolvedScope }> {
-  const scope = await resolveScope(actor, input);
+  const scope = await resolveScope(actor, input, { requireManagerAt: true });
   assertCanSeeCost(actor, scope);
 
   const [prizeExpense, shrinkageExpense, rows] = await Promise.all([
@@ -597,7 +636,7 @@ export async function shrinkageReport(
   actor: Actor,
   input: ReportRangeInput
 ): Promise<ShrinkageReport & { scope: ResolvedScope }> {
-  const scope = await resolveScope(actor, input);
+  const scope = await resolveScope(actor, input, { requireManagerAt: true });
   assertCanSeeCost(actor, scope);
 
   const rows = await prisma.stockConsumption.findMany({
@@ -776,7 +815,7 @@ export async function prizeRedemptionReport(
   actor: Actor,
   input: ReportRangeInput
 ): Promise<PrizeRedemptionReport & { scope: ResolvedScope }> {
-  const scope = await resolveScope(actor, input);
+  const scope = await resolveScope(actor, input, { requireManagerAt: true });
   const withCost = canSeeCostForScope(actor, scope);
 
   const [redemptionCount, lines] = await Promise.all([
@@ -858,7 +897,7 @@ export async function stockValuation(
   actor: Actor,
   input: ReportRangeInput
 ): Promise<{ rows: StockValuationRow[]; total: string; scope: ResolvedScope }> {
-  const scope = await resolveScope(actor, input);
+  const scope = await resolveScope(actor, input, { requireManagerAt: true });
   assertCanSeeCost(actor, scope);
 
   // Valuation is a point-in-time figure about stock that exists NOW, so it
@@ -917,7 +956,7 @@ export async function profitReport(
   input: ReportRangeInput
 ): Promise<{ rows: ProfitRow[]; combined: ProfitRow; scope: ResolvedScope }> {
   assertOwner(actor);
-  const scope = await resolveScope(actor, input);
+  const scope = await resolveScope(actor, input, { requireManagerAt: true });
 
   const shops = await prisma.shop.findMany({
     where: { id: { in: scope.shopIds } },
@@ -1010,7 +1049,7 @@ export async function expenseReport(
   actor: Actor,
   input: ReportRangeInput
 ): Promise<{ rows: ExpenseReportRow[]; total: string; scope: ResolvedScope }> {
-  const scope = await resolveScope(actor, input);
+  const scope = await resolveScope(actor, input, { requireManagerAt: true });
   const groups = await prisma.expense.groupBy({
     by: ["categoryId"],
     where: {
@@ -1060,7 +1099,7 @@ export async function customerReport(
   input: ReportRangeInput & { limit?: number }
 ): Promise<{ rows: CustomerReportRow[]; scope: ResolvedScope }> {
   assertOwner(actor);
-  const scope = await resolveScope(actor, input);
+  const scope = await resolveScope(actor, input, { requireManagerAt: true });
   const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
 
   const groups = await prisma.sale.groupBy({
@@ -1147,13 +1186,12 @@ export async function attendanceReport(
   scope: ResolvedScope;
   totals: { records: number; lateCount: number; lateRate: string };
 }> {
-  const isManagerSomewhere = [...actor.shopRoles.values()].some(
-    (sr) => sr.role === "MANAGER"
-  );
-  if (!actor.isOwner && !isManagerSomewhere) {
-    throw forbidden("Only a manager or the owner can view team attendance.");
-  }
-  const scope = await resolveScope(actor, input);
+  // Team attendance is a manager view of a SHOP's staff, so the role that
+  // matters is the role at the shop that resolves — not "manager somewhere"
+  // (D-138). An actor's own history is a different service; this one is the
+  // whole team's, and a mixed-role user must not read the team at a branch
+  // where they are staff.
+  const scope = await resolveScope(actor, input, { requireManagerAt: true });
 
   const groups = await prisma.attendance.groupBy({
     by: ["userId"],
@@ -1234,7 +1272,7 @@ export async function lowStockReport(
   actor: Actor,
   input: ReportRangeInput
 ): Promise<{ rows: LowStockRow[]; scope: ResolvedScope }> {
-  const scope = await resolveScope(actor, input);
+  const scope = await resolveScope(actor, input, { requireManagerAt: true });
   return { rows: await lowStockRowsForScope(scope), scope };
 }
 

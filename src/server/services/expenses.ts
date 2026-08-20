@@ -34,7 +34,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { businessDateFor, formatBusinessDate } from "@/lib/business-date";
 import { writeAudit } from "@/server/audit";
-import { type Actor, assignedShopIds, roleAtShop } from "@/server/auth/context";
+import { type Actor, roleAtShop } from "@/server/auth/context";
 import { assertShopAccess } from "@/server/auth/guards";
 import { AppError, forbidden, notFound } from "@/server/errors";
 import { getBusinessDayStartHour } from "@/server/services/settings";
@@ -488,21 +488,38 @@ export async function listExpenses(
   actor: Actor,
   input: z.infer<typeof listExpensesSchema>,
 ): Promise<{ expenses: ExpenseDTO[]; total: string; nextCursor: string | null }> {
-  const canViewHere = input.shopId
-    ? actor.isOwner || actor.shopRoles.get(input.shopId)?.role === "MANAGER"
-    : actor.isOwner ||
-      [...actor.shopRoles.values()].some((sr) => sr.role === "MANAGER");
+  // Role is per-shop (D-122). With an explicit shop the check is against that
+  // shop; WITHOUT one it must fall back to the shop that would actually be
+  // read — the work-session shop — not to "manager somewhere" (D-138). The
+  // old fallback let a MANAGER-at-A / STAFF-at-B user list B's expenses by
+  // omitting the parameter, the D-34 bug class again.
+  const implicitShopId = actor.workSession?.shopId ?? actor.defaultShopId;
+  const shopInScope = input.shopId ?? implicitShopId;
+  const canViewHere =
+    actor.isOwner ||
+    (shopInScope !== null &&
+      shopInScope !== undefined &&
+      actor.shopRoles.get(shopInScope)?.role === "MANAGER");
   if (!canViewHere) {
     throw forbidden("Only managers and the owner can view expenses.");
   }
 
   if (input.shopId) assertShopAccess(actor, input.shopId);
 
+  // Unscoped, a non-owner sees the shops they MANAGE — not every shop they
+  // are assigned to (D-138). `assignedShopIds` includes shops where they are
+  // only STAFF, and expenses are a manager view, so widening to assignments
+  // would put a staff-only branch's spending in the list even though the gate
+  // above passed on a different shop.
+  const managedShopIds = [...actor.shopRoles.entries()]
+    .filter(([, sr]) => sr.role === "MANAGER")
+    .map(([shopId]) => shopId);
+
   const shopFilter: Prisma.ExpenseWhereInput = input.shopId
     ? { shopId: input.shopId }
     : actor.isOwner
       ? {}
-      : { shopId: { in: assignedShopIds(actor) } };
+      : { shopId: { in: managedShopIds } };
 
   const where: Prisma.ExpenseWhereInput = {
     ...shopFilter,

@@ -426,6 +426,46 @@ describe("permissions", () => {
     expect(total).toBe("111");
   });
 
+  it("hides a staff-only branch from a mixed-role manager's list (D-138)", async () => {
+    // MANAGER at one branch, STAFF at another. Expenses are a manager view,
+    // so the branch they only staff must not appear — not in the rows, and
+    // not in the total, which is the half that leaks quietly.
+    const managed = await makeShop(prisma, "Managed");
+    const staffed = await makeShop(prisma, "Staffed");
+    shopIds.push(managed.id, staffed.id);
+
+    const owner = await makeUser("OWNER", [managed.id, staffed.id]);
+    const budi = await makeUser("MANAGER", [managed.id]);
+    // Assign the second shop as STAFF — the shape `makeUser` cannot build.
+    await prisma.userShop.create({
+      data: { userId: budi.userId, shopId: staffed.id, role: "STAFF" },
+    });
+    budi.shopRoles.set(staffed.id, { role: "STAFF", canEnterCost: false });
+
+    const category = await makeCategory();
+    await createExpense(owner, {
+      shopId: managed.id,
+      categoryId: category.id,
+      amount: "111",
+    });
+    await createExpense(owner, {
+      shopId: staffed.id,
+      categoryId: category.id,
+      amount: "222",
+    });
+
+    // Unscoped: only the managed branch.
+    const { expenses, total } = await listExpenses(budi, {});
+    expect(expenses).toHaveLength(1);
+    expect(expenses[0]?.shop.id).toBe(managed.id);
+    expect(total).toBe("111");
+
+    // Explicitly asking for the staffed branch is refused outright.
+    await expect(
+      listExpenses(budi, { shopId: staffed.id })
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
   it("refuses a manager editing or deleting an expense", async () => {
     const shop = await makeShop(prisma, "Expense");
     shopIds.push(shop.id);

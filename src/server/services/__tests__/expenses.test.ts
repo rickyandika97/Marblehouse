@@ -299,6 +299,17 @@ describe("money", () => {
 // ────────────────────── businessDate (§4.2, D-18, D-124) ──────────────────────
 
 describe("businessDate", () => {
+  it("does not accept a client-supplied receipt path", () => {
+    const input = createExpenseSchema.parse({
+      shopId: "shop",
+      categoryId: "category",
+      amount: "1000",
+      receiptPath: "receipts/another-expense.jpg",
+    });
+
+    expect(input).not.toHaveProperty("receiptPath");
+  });
+
   it("defaults to today when the client sends nothing", async () => {
     const shop = await makeShop(prisma, "Expense");
     shopIds.push(shop.id);

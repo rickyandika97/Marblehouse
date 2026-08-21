@@ -100,8 +100,6 @@ export const createExpenseSchema = z.object({
     .regex(/^\d{1,12}(\.\d{1,2})?$/, "Enter an amount like 250000 or 250000.50")
     .refine((v) => Number(v) > 0, "The amount must be more than zero."),
   note: z.string().trim().max(500).optional(),
-  /** Relative path from `storeReceipt`; the client never invents one. */
-  receiptPath: z.string().trim().max(300).optional(),
   /**
    * D-124: a deliberate, narrow exception to "the client never sends
    * businessDate" (§4.2, CLAUDE.md rule 6). It backdates a receipt entered
@@ -464,7 +462,10 @@ export async function createExpense(
       userId: actor.userId,
       amount: toPositiveAmount(input.amount),
       note: input.note ?? null,
-      receiptPath: input.receiptPath ?? null,
+      // Receipts are stored and attached through the authenticated multipart
+      // route. Accepting a path here would let a caller point this expense at
+      // another document under the data root.
+      receiptPath: null,
       businessDate,
     },
     include: {

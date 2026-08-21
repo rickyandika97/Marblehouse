@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, Plus } from "lucide-react";
+import { Loader2, Paperclip, Plus, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -58,6 +58,8 @@ export function AddExpense({
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
   const [date, setDate] = useState(businessDate);
+  const [receipt, setReceipt] = useState<File | null>(null);
+  const [receiptInputKey, setReceiptInputKey] = useState(0);
   const [submitting, setSubmitting] = useState(false);
 
   const idempotencyKey = useRef(crypto.randomUUID());
@@ -68,6 +70,8 @@ export function AddExpense({
     setAmount("");
     setNote("");
     setDate(businessDate);
+    setReceipt(null);
+    setReceiptInputKey((key) => key + 1);
   }
 
   const canSubmit =
@@ -103,6 +107,25 @@ export function AddExpense({
       if (!response.ok) {
         toast.error(body?.error?.message ?? "Could not record that expense.");
         return;
+      }
+
+      if (receipt) {
+        const form = new FormData();
+        form.append("receipt", receipt);
+        const receiptResponse = await fetch(`/api/expenses/${body.id}/receipt`, {
+          method: "POST",
+          body: form,
+        });
+        const receiptBody = await receiptResponse.json().catch(() => null);
+
+        if (!receiptResponse.ok) {
+          // The expense is already safely recorded. Receipt upload is
+          // intentionally a follow-up so an image problem cannot lose money.
+          toast.error(
+            receiptBody?.error?.message ??
+              "Expense recorded, but the receipt could not upload.",
+          );
+        }
       }
 
       toast.success(`Recorded ${formatMoney(body.amount)}`);
@@ -237,6 +260,42 @@ export function AddExpense({
               value={note}
               onChange={(e) => setNote(e.target.value)}
             />
+          </div>
+
+          <div className="space-y-1">
+            <label htmlFor="expense-receipt" className="text-sm font-medium">
+              Receipt <span className="text-muted-foreground">(optional)</span>
+            </label>
+            <Input
+              key={receiptInputKey}
+              id="expense-receipt"
+              type="file"
+              accept="image/*"
+              onChange={(e) => setReceipt(e.target.files?.[0] ?? null)}
+            />
+            {receipt && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Paperclip className="size-4" />
+                <span className="min-w-0 flex-1 truncate">{receipt.name}</span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-8"
+                  aria-label="Remove selected receipt"
+                  onClick={() => {
+                    setReceipt(null);
+                    setReceiptInputKey((key) => key + 1);
+                  }}
+                >
+                  <X className="size-4" />
+                </Button>
+              </div>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Optional image, up to 12 MB. The expense will still be recorded
+              if the upload does not finish.
+            </p>
           </div>
         </div>
 

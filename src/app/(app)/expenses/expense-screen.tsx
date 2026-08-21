@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import { Receipt } from "lucide-react";
 import { formatMoney } from "@/lib/money";
 import { EditExpense } from "./edit-expense";
 
@@ -20,6 +21,7 @@ interface ExpenseRow {
   id: string;
   amount: string;
   note: string | null;
+  hasReceipt: boolean;
   businessDate: string;
   shop: { id: string; name: string };
   category: { id: string; name: string };
@@ -68,6 +70,17 @@ export function ExpenseScreen({
                     {e.businessDate} · {e.shop.name} · {e.recordedBy.displayName}
                     {e.note ? ` · ${e.note}` : ""}
                   </p>
+                  {e.hasReceipt && (
+                    <a
+                      href={`/api/expenses/${e.id}/receipt`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-1 inline-flex min-h-8 items-center gap-1 text-sm font-medium text-primary hover:underline"
+                    >
+                      <Receipt className="size-4" />
+                      View receipt
+                    </a>
+                  )}
                 </div>
                 <p className="shrink-0 font-semibold tabular-nums">
                   {formatMoney(e.amount)}

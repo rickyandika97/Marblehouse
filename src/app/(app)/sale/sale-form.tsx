@@ -43,6 +43,8 @@ export interface RecentSale {
   status: "COMPLETED" | "VOIDED";
   occurredAt: string;
   customer: { id: string; name: string } | null;
+  /** The authenticated staff member who recorded the sale. */
+  recordedBy: { id: string; displayName: string };
 }
 
 export interface Summary {
@@ -372,8 +374,8 @@ function TodayStrip({
                 {formatMoney(sale.amount)}
               </span>
               <span>{sale.paymentMethod === "CASH" ? "Cash" : "Card"}</span>
-              <span className="truncate">
-                {sale.customer?.name ?? "Walk-in"}
+              <span className="min-w-0 flex-1 truncate">
+                {sale.customer?.name ?? "Walk-in"} · by {sale.recordedBy.displayName}
               </span>
               <span className="ml-auto shrink-0 tabular-nums">
                 {new Date(sale.occurredAt).toLocaleTimeString("id-ID", {

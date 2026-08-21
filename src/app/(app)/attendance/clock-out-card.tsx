@@ -20,7 +20,9 @@ import {
  *
  * `POST /api/attendance/clock-out` has existed and been tested since Phase 6
  * with nothing calling it, so a shift could be started but never finished and
- * looked unfinished on the team screen. This is the caller.
+ * looked unfinished on the team screen. This is the caller. It deliberately
+ * lists every open record, not just today's: a forgotten clock-out must remain
+ * actionable after the business date changes.
  *
  * **It lives on /attendance and nowhere else, and there is deliberately no
  * second banner.** §4.13 specifies exactly one banner — the red clock-in one —
@@ -31,18 +33,18 @@ import {
  * can see at a glance whether they are leaving early or late without being
  * chased about it.
  *
- * The note is **optional** — `clockOutSchema` makes it optional and this must
- * not invent a requirement the server does not have. That is the opposite of
- * the reason dialogs in `components/reason-dialog.tsx`, where a void or a
- * cancel genuinely requires one, which is why this does not reuse that
- * component: its whole shape is "you may not confirm until the reason is long
- * enough", and here you always may.
+ * The note is optional for an ordinary clock-out. Once a record has remained
+ * open for twelve hours past its scheduled end, the API requires both a reason
+ * and an explicitly confirmed time, because recording "now" would invent a
+ * fictitious shift length.
  */
 interface ClockOutState {
   openRecords: {
     id: string;
+    businessDate: string;
     clockInAt: string;
     shopName: string;
+    requiresReasonAndTimeConfirmation: boolean;
     shift: { id: string; name: string; endTime: string } | null;
   }[];
 }
@@ -62,11 +64,26 @@ function timeLabel(iso: string): string {
   });
 }
 
+function dateTimeLabel(iso: string): string {
+  return new Date(iso).toLocaleString("id-ID", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function toDateTimeLocal(instant: Date): string {
+  const offset = instant.getTimezoneOffset() * 60_000;
+  return new Date(instant.getTime() - offset).toISOString().slice(0, 16);
+}
+
 export function ClockOutCard() {
   const router = useRouter();
   const [state, setState] = useState<ClockOutState | null>(null);
   const [record, setRecord] = useState<ClockOutState["openRecords"][number] | null>(null);
   const [note, setNote] = useState("");
+  const [confirmedClockOutAt, setConfirmedClockOutAt] = useState("");
   const [submitting, setSubmitting] = useState(false);
   // Ticks the elapsed label. Held in state rather than read at render time so
   // the number does not sit frozen at whatever it was when the page loaded.
@@ -104,6 +121,9 @@ export function ClockOutCard() {
         body: JSON.stringify({
           attendanceId: record.id,
           ...(note.trim() === "" ? {} : { note: note.trim() }),
+          ...(record.requiresReasonAndTimeConfirmation && confirmedClockOutAt
+            ? { clockOutAt: new Date(confirmedClockOutAt).toISOString() }
+            : {}),
         }),
       });
       const body = await response.json().catch(() => null);
@@ -123,6 +143,7 @@ export function ClockOutCard() {
       window.dispatchEvent(new Event("attendance-changed"));
       setRecord(null);
       setNote("");
+      setConfirmedClockOutAt("");
       setState((s) =>
         s
           ? { ...s, openRecords: s.openRecords.filter((row) => row.id !== record.id) }
@@ -142,18 +163,34 @@ export function ClockOutCard() {
 
   return (
     <>
-      {state.openRecords.map((openRecord) => (
-        <section key={openRecord.id} className="flex flex-wrap items-center gap-3 rounded-xl border bg-muted/30 p-4">
+      {state.openRecords.map((openRecord, index) => (
+        <section
+          key={openRecord.id}
+          id={index === 0 ? "clock-out" : undefined}
+          className="flex flex-wrap items-center gap-3 rounded-xl border bg-muted/30 p-4"
+        >
           <div className="min-w-0 flex-1">
             <p className="font-semibold">
-              Clocked in {timeLabel(openRecord.clockInAt)} · {openRecord.shopName}
+              Clocked in {dateTimeLabel(openRecord.clockInAt)} · {openRecord.shopName}
             </p>
             <p className="text-sm text-muted-foreground">
               On shift for {elapsedLabel(openRecord.clockInAt, now)}
               {openRecord.shift && ` · ${openRecord.shift.name} ends ${openRecord.shift.endTime}`}
             </p>
+            {openRecord.requiresReasonAndTimeConfirmation && (
+              <p className="mt-1 text-sm font-medium text-amber-700">
+                Overdue clock-out — reason and actual finish time required.
+              </p>
+            )}
           </div>
-          <Button size="lg" variant="outline" onClick={() => setRecord(openRecord)}>
+          <Button
+            size="lg"
+            variant="outline"
+            onClick={() => {
+              setRecord(openRecord);
+              setConfirmedClockOutAt(toDateTimeLocal(new Date()));
+            }}
+          >
             <LogOut className="size-4" />
             Clock out
           </Button>
@@ -166,6 +203,7 @@ export function ClockOutCard() {
           if (!next) {
             setRecord(null);
             setNote("");
+            setConfirmedClockOutAt("");
           }
         }}
       >
@@ -203,10 +241,31 @@ export function ClockOutCard() {
               }}
             />
             <p className="text-xs text-muted-foreground">
-              Leave it blank if there is nothing to say. Your clock-out time is
-              recorded either way.
+              {record?.requiresReasonAndTimeConfirmation
+                ? "Required because this record has been open for more than 12 hours after its scheduled end."
+                : "Leave it blank if there is nothing to say. Your clock-out time is recorded either way."}
             </p>
           </div>
+
+          {record?.requiresReasonAndTimeConfirmation && (
+            <div className="space-y-1">
+              <label htmlFor="confirmed-clock-out-at" className="text-sm font-medium">
+                Actual clock-out time
+              </label>
+              <Input
+                id="confirmed-clock-out-at"
+                type="datetime-local"
+                value={confirmedClockOutAt}
+                onChange={(e) => setConfirmedClockOutAt(e.target.value)}
+                min={toDateTimeLocal(new Date(record.clockInAt))}
+                max={toDateTimeLocal(new Date())}
+                required
+              />
+              <p className="text-xs text-muted-foreground">
+                Confirm when you actually finished this shift.
+              </p>
+            </div>
+          )}
 
           <DialogFooter className="gap-2">
             <Button
@@ -216,9 +275,16 @@ export function ClockOutCard() {
             >
               Cancel
             </Button>
-            <Button onClick={clockOut} disabled={submitting}>
+            <Button
+              onClick={clockOut}
+              disabled={
+                submitting ||
+                (record?.requiresReasonAndTimeConfirmation === true &&
+                  (note.trim().length < 3 || confirmedClockOutAt === ""))
+              }
+            >
               {submitting && <Loader2 className="size-4 animate-spin" />}
-              Clock out
+              {record?.requiresReasonAndTimeConfirmation ? "Confirm clock out" : "Clock out"}
             </Button>
           </DialogFooter>
         </DialogContent>

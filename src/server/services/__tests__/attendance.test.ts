@@ -532,6 +532,46 @@ describe("clock-out", () => {
     expect(rows.find((row) => row.id === first.id)?.clockOutAt).not.toBeNull();
     expect(rows.find((row) => row.id === second.id)?.clockOutAt).toBeNull();
   });
+
+  it("keeps a forgotten prior-day clock-out actionable and requires a reason and time", async () => {
+    const { shop, user, shift, actor } = await fixture();
+    const forgotten = await prisma.attendance.create({
+      data: {
+        userId: user.id,
+        shopId: shop.id,
+        shiftId: shift.id,
+        businessDate: new Date("2026-03-10T00:00:00.000Z"),
+        // 09:00 Asia/Jakarta on the preceding business day.
+        clockInAt: new Date("2026-03-10T02:00:00.000Z"),
+        shiftStartAtCapture: new Date(Date.UTC(1970, 0, 1, 9, 0, 0)),
+        shiftEndAtCapture: new Date(Date.UTC(1970, 0, 1, 17, 0, 0)),
+      },
+    });
+    attendanceIds.push(forgotten.id);
+
+    const status = await attendanceStatus(actor, new Date("2026-03-11T11:00:00.000Z"));
+    expect(status.openRecords).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: forgotten.id,
+          businessDate: "2026-03-10",
+          requiresReasonAndTimeConfirmation: true,
+        }),
+      ])
+    );
+
+    await expect(clockOut(actor, { attendanceId: forgotten.id })).rejects.toThrow(/why/i);
+    await expect(
+      clockOut(actor, { attendanceId: forgotten.id, note: "Forgot to clock out" })
+    ).rejects.toThrow(/actual clock-out time/i);
+
+    const closed = await clockOut(actor, {
+      attendanceId: forgotten.id,
+      note: "Forgot to clock out after closing",
+      clockOutAt: "2026-03-10T11:20:00.000Z",
+    });
+    expect(closed.clockOutAt).toBe("2026-03-10T11:20:00.000Z");
+  });
 });
 
 describe("read scoping (§3.4)", () => {

@@ -66,6 +66,8 @@ export const clockOutSchema = z.object({
   /** The particular shift to close when a person has multiple open records. */
   attendanceId: z.string().min(1).optional(),
   note: z.string().trim().max(500).optional(),
+  /** Required only for a long-overdue record, and always sent as an ISO instant. */
+  clockOutAt: z.string().datetime({ offset: true }).optional(),
 });
 
 export const listAttendanceSchema = z.object({
@@ -215,10 +217,11 @@ function hasShiftEnded(
  * an owner never sees a red banner they cannot dismiss.
  */
 export async function attendanceStatus(actor: Actor, now = new Date()) {
-  const records = await prisma.attendance.findMany({
-    where: { userId: actor.userId, businessDate: actor.businessDate },
-    orderBy: { clockInAt: "desc" },
-    select: {
+  const [records, allOpenRecords] = await Promise.all([
+    prisma.attendance.findMany({
+      where: { userId: actor.userId, businessDate: actor.businessDate },
+      orderBy: { clockInAt: "desc" },
+      select: {
       id: true,
       clockInAt: true,
       clockOutAt: true,
@@ -227,14 +230,30 @@ export async function attendanceStatus(actor: Actor, now = new Date()) {
       status: true,
       shopId: true,
       shop: { select: { name: true, timezone: true } },
-      // endTime drives the clock-out card's "scheduled to X" line. There is no
-      // *end*-time snapshot on Attendance the way there is for the start
-      // (`shiftStartAtCapture`), so this is read live: it is shown as context
-      // for a decision being made now, and is never stored or used to judge a
-      // past record. Editing a shift must not rewrite history (§4.14).
+      // The current end time drives today's clock-out reminder. Payroll and
+      // overdue-clock-out checks use Attendance's captured end time instead.
       shift: { select: { id: true, name: true, startTime: true, endTime: true } },
-    },
-  });
+      },
+    }),
+    // A forgotten clock-out remains an open attendance record even after the
+    // business date rolls over. Fetch it separately from today's prompt state
+    // so staff can correct it instead of being stranded with a dead record.
+    prisma.attendance.findMany({
+      where: { userId: actor.userId, clockOutAt: null },
+      orderBy: { clockInAt: "desc" },
+      select: {
+        id: true,
+        businessDate: true,
+        clockInAt: true,
+        clockOutAt: true,
+        shiftStartAtCapture: true,
+        shiftEndAtCapture: true,
+        shopId: true,
+        shop: { select: { name: true, timezone: true } },
+        shift: { select: { id: true, name: true, startTime: true, endTime: true } },
+      },
+    }),
+  ]);
 
   // The banner and clock-in screen are about the currently selected branch.
   // An earlier PIK attendance must not suppress an MKG evening arrival, while
@@ -333,13 +352,14 @@ export async function attendanceStatus(actor: Actor, now = new Date()) {
             : null,
         }
       : null,
-    openRecords: records
-      .filter((row) => row.clockOutAt === null)
+    openRecords: allOpenRecords
       .map((row) => ({
         id: row.id,
+        businessDate: row.businessDate.toISOString().slice(0, 10),
         clockInAt: row.clockInAt.toISOString(),
         shopId: row.shopId,
         shopName: row.shop.name,
+        requiresReasonAndTimeConfirmation: requiresLateClockOutConfirmation(row, now),
         shift: row.shift
           ? {
               id: row.shift.id,
@@ -689,32 +709,95 @@ export async function clockIn(
 /** Clock out (§4.13). Lateness reporting is clock-in only in v1. */
 export async function clockOut(
   actor: Actor,
-  input: z.infer<typeof clockOutSchema>
+  input: z.infer<typeof clockOutSchema>,
+  meta: { ipAddress?: string | null } = {}
 ) {
   const record = await prisma.attendance.findFirst({
     where: {
       userId: actor.userId,
-      businessDate: actor.businessDate,
+      clockOutAt: null,
       ...(input.attendanceId ? { id: input.attendanceId } : {}),
     },
     orderBy: { clockInAt: "desc" },
-    select: { id: true, clockOutAt: true, shopId: true },
+    select: {
+      id: true,
+      clockInAt: true,
+      clockOutAt: true,
+      businessDate: true,
+      shopId: true,
+      shiftStartAtCapture: true,
+      shiftEndAtCapture: true,
+      shop: { select: { timezone: true } },
+      shift: { select: { startTime: true, endTime: true } },
+    },
   });
 
   if (!record) {
+    const previous = await prisma.attendance.findFirst({
+      where: {
+        userId: actor.userId,
+        ...(input.attendanceId ? { id: input.attendanceId } : {}),
+      },
+      orderBy: { clockInAt: "desc" },
+      select: { clockOutAt: true },
+    });
+    if (previous?.clockOutAt) {
+      throw new AppError("CONFLICT", "You have already clocked out of that shift.");
+    }
     throw new AppError(
       "VALIDATION_FAILED",
-      "You have not clocked in today, so there is nothing to clock out of."
+      "You have not clocked in, so there is nothing to clock out of."
     );
   }
-  if (record.clockOutAt) {
-    throw new AppError("CONFLICT", "You have already clocked out today.");
+
+  const now = new Date();
+  const requiresConfirmation = requiresLateClockOutConfirmation(record, now);
+  if (requiresConfirmation && (!input.note || input.note.trim().length < 3)) {
+    throw new AppError(
+      "VALIDATION_FAILED",
+      "Tell us why this clock-out is more than 12 hours overdue."
+    );
+  }
+  if (requiresConfirmation && !input.clockOutAt) {
+    throw new AppError(
+      "VALIDATION_FAILED",
+      "Confirm the actual clock-out time for this overdue shift."
+    );
   }
 
-  const updated = await prisma.attendance.update({
-    where: { id: record.id },
-    data: { clockOutAt: new Date(), note: input.note ?? undefined },
-    select: { id: true, clockInAt: true, clockOutAt: true },
+  // A normal clock-out always uses the server clock. The supplied timestamp is
+  // accepted only when a forgotten shift needs an explicit correction.
+  const clockOutAt = requiresConfirmation && input.clockOutAt
+    ? new Date(input.clockOutAt)
+    : now;
+  if (clockOutAt.getTime() < record.clockInAt.getTime()) {
+    throw new AppError("VALIDATION_FAILED", "Clock-out cannot be before clock-in.");
+  }
+  if (clockOutAt.getTime() > now.getTime() + 60_000) {
+    throw new AppError("VALIDATION_FAILED", "Clock-out time cannot be in the future.");
+  }
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const closed = await tx.attendance.update({
+      where: { id: record.id },
+      data: { clockOutAt, note: input.note ?? undefined },
+      select: { id: true, clockInAt: true, clockOutAt: true },
+    });
+    await writeAudit(
+      actor,
+      {
+        entity: "Attendance",
+        entityId: closed.id,
+        action: "ATTENDANCE_CLOCK_OUT",
+        shopId: record.shopId,
+        before: { clockOutAt: null },
+        after: { clockOutAt: closed.clockOutAt?.toISOString() ?? null },
+        reason: requiresConfirmation ? input.note ?? null : null,
+        ipAddress: meta.ipAddress ?? null,
+      },
+      tx
+    );
+    return closed;
   });
 
   return {
@@ -1021,22 +1104,8 @@ export function attendanceWorkSummary(row: AttendanceWorkRow): {
     0,
     Math.floor((row.clockOutAt.getTime() - row.clockInAt.getTime()) / 60_000)
   );
-  const start = row.shiftStartAtCapture ?? row.shift?.startTime ?? null;
-  const end = row.shiftEndAtCapture ?? row.shift?.endTime ?? null;
-  if (!start || !end) return { workedMinutes, overtimeMinutes: null };
-
-  const startMin = shiftTimeToMinutes(start);
-  const endMin = shiftTimeToMinutes(end);
-  const date = new Date(row.businessDate);
-  if (endMin < startMin) date.setUTCDate(date.getUTCDate() + 1);
-  const scheduledEnd = localWallClockToUtc(
-    date.getUTCFullYear(),
-    date.getUTCMonth() + 1,
-    date.getUTCDate(),
-    Math.floor(endMin / 60),
-    endMin % 60,
-    row.shop.timezone
-  );
+  const scheduledEnd = scheduledEndAt(row);
+  if (!scheduledEnd) return { workedMinutes, overtimeMinutes: null };
 
   return {
     workedMinutes,
@@ -1045,6 +1114,46 @@ export function attendanceWorkSummary(row: AttendanceWorkRow): {
       Math.floor((row.clockOutAt.getTime() - scheduledEnd.getTime()) / 60_000)
     ),
   };
+}
+
+/** The historical scheduled end, as an instant in the branch's timezone. */
+function scheduledEndAt(row: AttendanceWorkRow): Date | null {
+  const start = row.shiftStartAtCapture ?? row.shift?.startTime ?? null;
+  const end = row.shiftEndAtCapture ?? row.shift?.endTime ?? null;
+  if (!start || !end) return null;
+
+  const startMin = shiftTimeToMinutes(start);
+  const endMin = shiftTimeToMinutes(end);
+  const date = new Date(row.businessDate);
+  if (endMin < startMin) date.setUTCDate(date.getUTCDate() + 1);
+  return localWallClockToUtc(
+    date.getUTCFullYear(),
+    date.getUTCMonth() + 1,
+    date.getUTCDate(),
+    Math.floor(endMin / 60),
+    endMin % 60,
+    row.shop.timezone
+  );
+}
+
+/**
+ * Past this threshold, a server-time clock-out would create a fictitious work
+ * day. Require the employee to explain it and confirm the actual ending time.
+ * No-shift arrivals have no scheduled end, so their equivalent guard is twelve
+ * hours after clock-in.
+ */
+export function requiresLateClockOutConfirmation(
+  row: AttendanceWorkRow,
+  now = new Date()
+): boolean {
+  const scheduledEnd = scheduledEndAt(row);
+  const threshold = (scheduledEnd ?? row.clockInAt).getTime() + 12 * 60 * 60 * 1000;
+  // The second condition prevents a stale/misconfigured business date from
+  // turning a just-created record into an overdue correction.
+  return (
+    now.getTime() >= threshold &&
+    now.getTime() - row.clockInAt.getTime() >= 12 * 60 * 60 * 1000
+  );
 }
 
 function toAttendanceDTO(row: {

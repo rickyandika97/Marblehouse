@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { MapPinOff, Loader2 } from "lucide-react";
+import { MapPinOff, Loader2, LogIn } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ReasonDialog } from "@/components/reason-dialog";
@@ -104,14 +104,29 @@ export function AttendanceList({
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-bold tracking-tight">Attendance</h1>
-        {canSeeTeam && (
+        <div className="flex flex-wrap items-center gap-2">
           <Link
-            href="/attendance?view=report"
+            href="/attendance/clock-in"
+            className="inline-flex min-h-11 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-muted"
+          >
+            <LogIn className="size-4" />
+            Clock in
+          </Link>
+          <Link
+            href="#clock-out"
             className="inline-flex min-h-11 items-center rounded-md border px-3 text-sm font-medium hover:bg-muted"
           >
-            Attendance & lateness
+            Clock out
           </Link>
-        )}
+          {canSeeTeam && (
+            <Link
+              href="/attendance?view=report"
+              className="inline-flex min-h-11 items-center rounded-md border px-3 text-sm font-medium hover:bg-muted"
+            >
+              Attendance & lateness
+            </Link>
+          )}
+        </div>
       </div>
 
       {/* Renders nothing unless the viewer is clocked in and not yet out. */}

@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { requireActorPage } from "@/server/auth/page-guard";
+import { selectableShops } from "@/server/auth/context";
 import { resolveWorkSession } from "@/server/services/work-session";
 import { AppShell } from "@/components/app-shell";
 
@@ -20,7 +21,10 @@ export default async function AppLayout({
   const actor = await requireActorPage();
 
   // No shop declared for today → the picker, before anything can be recorded.
-  const resolution = await resolveWorkSession(actor);
+  const [resolution, shops] = await Promise.all([
+    resolveWorkSession(actor),
+    selectableShops(actor),
+  ]);
   if (resolution.needsPicker) redirect("/select-shop");
 
   const shopName =
@@ -43,6 +47,12 @@ export default async function AppLayout({
       isOwner={actor.isOwner}
       isManagerHere={isManagerHere}
       shopName={shopName}
+      shopId={todayShopId}
+      shops={shops.map((shop) => ({
+        id: shop.id,
+        code: shop.code,
+        name: shop.name,
+      }))}
     >
       {children}
     </AppShell>

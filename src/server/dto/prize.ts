@@ -19,7 +19,7 @@
  * contradicts itself on this, and "owner" is wrong because a Purchasing manager
  * passes the same gate.
  */
-import type { PrizeItem, PrizeBatch } from "@prisma/client";
+import type { Prisma, PrizeItem, PrizeBatch } from "@prisma/client";
 
 // ─────────────────────────── CATALOG + ON-HAND ───────────────────────────
 
@@ -158,5 +158,96 @@ export function toBatchCostDTO(b: PrizeBatch): BatchCostDTO {
     unitCogs: b.unitCogs.toString(),
     remainingValue: b.unitCogs.times(b.qtyRemaining).toString(),
     needsCosting: b.needsCosting,
+  };
+}
+
+// ───────────────────────────── CONSUMPTION ─────────────────────────────
+
+/**
+ * Where one batch's units WENT (§4.11) — the drill-down behind a lot in the
+ * inventory screen.
+ *
+ * The same two-builder discipline as the batch pair above, for the same
+ * reason: a plain manager legitimately needs to see that eleven units left and
+ * who took them, and must never see what they cost. `unitCogsAtConsumption` is
+ * the single most sensitive number in the schema — it IS prize expense — so
+ * the restricted source type below does not carry it and cannot.
+ */
+
+/** What drew the units down, resolved to something a human can read. */
+export interface ConsumptionRef {
+  /** The movement type, for iconography and grouping. */
+  type: string;
+  /**
+   * A resolved human label — "Ayu Lestari", "Cabang Kemang", "Stock count".
+   * Null when the ref no longer resolves (a deleted customer, say); the UI
+   * falls back to the type alone rather than printing a raw id.
+   */
+  label: string | null;
+}
+
+/** One draw-down of one batch. No money. Every role that can see the lot. */
+export interface ConsumptionDTO {
+  id: string;
+  batchId: string;
+  qty: number;
+  /** The business date the movement was booked to, not the wall clock. */
+  businessDate: string;
+  occurredAt: string;
+  ref: ConsumptionRef;
+  /** Who did it. Null for a system-generated movement. */
+  staffName: string | null;
+  /** The movement's free-text reason, where one was required (§4.11). */
+  reason: string | null;
+}
+
+/** Additive cost view. Only ever built behind `canSeeCostForShop`. */
+export interface ConsumptionCostDTO extends ConsumptionDTO {
+  /** As recorded AT THE MOMENT OF CONSUMPTION. Never a recomputed average. */
+  unitCogs: string;
+  /** qty × unitCogs. */
+  lineValue: string;
+}
+
+/**
+ * The narrowed input the restricted builder accepts.
+ *
+ * There is no `unitCogsAtConsumption` on this type. Passing a costed row here
+ * is a type error rather than a code review question — the point of the split.
+ */
+export interface ConsumptionRestrictedSource {
+  id: string;
+  batchId: string;
+  qty: number;
+  businessDate: Date;
+  occurredAt: Date;
+  ref: ConsumptionRef;
+  staffName: string | null;
+  reason: string | null;
+}
+
+export function toConsumptionRestrictedDTO(
+  source: ConsumptionRestrictedSource
+): ConsumptionDTO {
+  return {
+    id: source.id,
+    batchId: source.batchId,
+    qty: source.qty,
+    businessDate: source.businessDate.toISOString(),
+    occurredAt: source.occurredAt.toISOString(),
+    ref: source.ref,
+    staffName: source.staffName,
+    reason: source.reason,
+  };
+}
+
+export function toConsumptionCostDTO(
+  source: ConsumptionRestrictedSource & { unitCogs: Prisma.Decimal }
+): ConsumptionCostDTO {
+  return {
+    ...toConsumptionRestrictedDTO(source),
+    // Money as a string, never a JSON number (D-13).
+    unitCogs: source.unitCogs.toString(),
+    lineValue: source.unitCogs.times(source.qty).toString(),
   };
 }

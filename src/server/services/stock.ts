@@ -27,7 +27,10 @@ import { backfillBatchCost, consumeFifo, onHand } from "@/server/services/invent
 import {
   toBatchCostDTO,
   toBatchRestrictedDTO,
+  toConsumptionCostDTO,
+  toConsumptionRestrictedDTO,
   type BatchDTO,
+  type ConsumptionDTO,
 } from "@/server/dto/prize";
 
 const MAX_QTY = 1_000_000;
@@ -403,4 +406,225 @@ export async function adjustStock(
     shopId: input.shopId,
     onHand: await onHand(tx, input.shopId, input.prizeItemId),
   };
+}
+
+// ─────────────────── INVENTORY DRILL-DOWN READS (D-156) ───────────────────
+
+export const listBatchesForItemSchema = z.object({
+  shopId: z.string().min(1),
+  prizeItemId: z.string().min(1),
+});
+
+export const listBatchConsumptionSchema = z.object({
+  batchId: z.string().min(1),
+});
+
+export type ListBatchesForItemInput = z.infer<typeof listBatchesForItemSchema>;
+export type ListBatchConsumptionInput = z.infer<
+  typeof listBatchConsumptionSchema
+>;
+
+/** A lot's history is long-tailed; nobody scrolls past this in a drawer. */
+const CONSUMPTION_PAGE = 200;
+
+/**
+ * Every lot of one prize at one shop, in FIFO order (D-156).
+ *
+ * Deliberately NOT `listBatches`. That one is the costed endpoint §7.4 gates
+ * behind Purchasing, and it stays that way. But a plain manager running a
+ * branch legitimately needs to see that four boxes arrived and two are empty —
+ * refusing them the quantities as well as the costs is what made the batch
+ * list unreachable from the UI for everyone but the owner.
+ *
+ * So the GATE HERE IS ON SHAPE, NOT ACCESS: a manager who fails
+ * `canSeeCostForShop` gets `BatchDTO[]` built by the restricted builder, which
+ * cannot read `unitCogs`. `includeEmpty` is always on — a drained lot is the
+ * interesting one when you are asking where the stock went.
+ */
+export async function listBatchesForItem(
+  actor: Actor,
+  input: ListBatchesForItemInput
+): Promise<BatchDTO[]> {
+  assertShopAccess(actor, input.shopId);
+
+  const batches = await prisma.prizeBatch.findMany({
+    where: {
+      shopId: input.shopId,
+      prizeItemId: input.prizeItemId,
+      isVoid: false,
+    },
+    // The FIFO order itself (§4.10) — receivedAt, NOT createdAt, so a lot
+    // transferred in from another branch sits in its original position.
+    orderBy: [{ receivedAt: "asc" }, { id: "asc" }],
+    take: 200,
+  });
+
+  if (!canSeeCostForShop(actor, input.shopId)) {
+    return batches.map(toBatchRestrictedDTO);
+  }
+  return batches.map(toBatchCostDTO);
+}
+
+/**
+ * Where one lot's units went (D-156) — the consumption drill-down.
+ *
+ * Access is checked against the BATCH'S OWN SHOP, which has to be read first:
+ * the caller supplies only a batch id, so there is no shop to authorise
+ * against until we have the row. Passing another branch's batch id is a 403,
+ * not an empty list — an empty list would tell a manager the lot exists.
+ *
+ * Cost is gated on shape exactly as above. A plain manager sees who took what
+ * and when; `unitCogsAtConsumption` never reaches them.
+ */
+export async function listBatchConsumption(
+  actor: Actor,
+  input: ListBatchConsumptionInput
+): Promise<ConsumptionDTO[]> {
+  const batch = await prisma.prizeBatch.findUnique({
+    where: { id: input.batchId },
+    select: { id: true, shopId: true },
+  });
+  if (!batch) throw notFound("That batch no longer exists.");
+
+  assertShopAccess(actor, batch.shopId);
+
+  const rows = await prisma.stockConsumption.findMany({
+    where: { batchId: batch.id },
+    orderBy: [{ createdAt: "desc" }],
+    take: CONSUMPTION_PAGE,
+    select: {
+      id: true,
+      qty: true,
+      unitCogsAtConsumption: true,
+      movement: {
+        select: {
+          type: true,
+          refType: true,
+          refId: true,
+          reason: true,
+          businessDate: true,
+          occurredAt: true,
+          // `StockMovement.userId` is a bare scalar with no relation on it, so
+          // the name is resolved in the same batched pass as the refs below
+          // rather than by a join that does not exist.
+          userId: true,
+        },
+      },
+    },
+  });
+
+  const [labels, staff] = await Promise.all([
+    resolveConsumptionLabels(rows.map((r) => r.movement)),
+    resolveStaffNames(rows.map((r) => r.movement.userId)),
+  ]);
+
+  const sources = rows.map((r) => ({
+    id: r.id,
+    batchId: batch.id,
+    qty: r.qty,
+    businessDate: r.movement.businessDate,
+    occurredAt: r.movement.occurredAt,
+    ref: {
+      type: r.movement.type,
+      label: labels.get(refKey(r.movement.refType, r.movement.refId)) ?? null,
+    },
+    staffName: r.movement.userId
+      ? (staff.get(r.movement.userId) ?? null)
+      : null,
+    reason: r.movement.reason,
+  }));
+
+  if (!canSeeCostForShop(actor, batch.shopId)) {
+    return sources.map(toConsumptionRestrictedDTO);
+  }
+  return sources.map((s, i) =>
+    toConsumptionCostDTO({
+      ...s,
+      // `sources` is built by mapping `rows`, so the index always lands.
+      unitCogs: rows[i]!.unitCogsAtConsumption,
+    })
+  );
+}
+
+/** Staff display names for a set of movement `userId`s, in one query. */
+async function resolveStaffNames(
+  userIds: Array<string | null>
+): Promise<Map<string, string>> {
+  const ids = [...new Set(userIds.filter((id): id is string => !!id))];
+  if (ids.length === 0) return new Map();
+
+  const users = await prisma.user.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, displayName: true },
+  });
+  return new Map(users.map((u) => [u.id, u.displayName]));
+}
+
+function refKey(refType: string | null, refId: string | null): string {
+  return `${refType ?? ""}:${refId ?? ""}`;
+}
+
+/**
+ * Turn `refType`/`refId` pairs into names a human can read.
+ *
+ * ONE GROUPED QUERY PER REF TYPE, never a lookup per row: a popular prize's
+ * lot is drained by hundreds of separate redemptions, and a per-row join would
+ * make opening the drawer an N+1 against the busiest table in the schema.
+ *
+ * A ref that no longer resolves yields no entry, and the DTO's label falls
+ * back to null — the UI then shows the movement type alone. That is the right
+ * outcome for a deleted customer, and it means this function never throws and
+ * never blocks the history from rendering.
+ */
+async function resolveConsumptionLabels(
+  movements: Array<{ refType: string | null; refId: string | null }>
+): Promise<Map<string, string>> {
+  const byType = new Map<string, Set<string>>();
+  for (const m of movements) {
+    if (!m.refType || !m.refId) continue;
+    let set = byType.get(m.refType);
+    if (!set) byType.set(m.refType, (set = new Set()));
+    set.add(m.refId);
+  }
+
+  const out = new Map<string, string>();
+  const ids = (t: string) => [...(byType.get(t) ?? [])];
+
+  const [redemptions, transfers, opnames] = await Promise.all([
+    ids("Redemption").length
+      ? prisma.redemption.findMany({
+          where: { id: { in: ids("Redemption") } },
+          select: { id: true, customer: { select: { name: true } } },
+        })
+      : [],
+    ids("PrizeTransfer").length
+      ? prisma.prizeTransfer.findMany({
+          where: { id: { in: ids("PrizeTransfer") } },
+          select: { id: true, toShop: { select: { name: true } } },
+        })
+      : [],
+    ids("OpnameSession").length
+      ? prisma.opnameSession.findMany({
+          where: { id: { in: ids("OpnameSession") } },
+          select: { id: true, businessDate: true },
+        })
+      : [],
+  ]);
+
+  for (const r of redemptions) {
+    out.set(refKey("Redemption", r.id), r.customer.name);
+  }
+  for (const t of transfers) {
+    // Named for the DESTINATION: on a batch drill-down you are always looking
+    // at the sending shop's stock, so "to Kemang" is the useful half.
+    out.set(refKey("PrizeTransfer", t.id), `To ${t.toShop.name}`);
+  }
+  for (const o of opnames) {
+    out.set(
+      refKey("OpnameSession", o.id),
+      `Stock count ${o.businessDate.toISOString().slice(0, 10)}`
+    );
+  }
+
+  return out;
 }

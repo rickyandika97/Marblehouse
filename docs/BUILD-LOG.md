@@ -6144,3 +6144,271 @@ report and its export cannot disagree.
 
 **Verified:** focused cover-filter assertion plus `npm run typecheck`, `npm run
 lint`, and `npm test` (`487/487`).
+
+### D-156 · Prizes and Stock merged into one inventory screen, with FIFO batch visibility
+
+**Owner request, 21 Aug 2026.** Combine the two prize screens into a single
+inventory view modelled on the flow of the owner's own BisMan desktop
+Inventory page, and give branch transfers a real UI.
+
+#### The problem this solved
+
+`/stock` and `/settings/prizes` were **two renderings of one `listPrizes`
+call**. `/stock` filtered to `shopConfig.isActive` and showed a quantity;
+`/settings/prizes` showed the catalog row. `/stock` then carried a third
+overlapping view — the Catalog tab from D-117 — for the carry toggle.
+
+Worse, **nothing in the UI had ever called `listBatches`.** The FIFO lots that
+the on-hand number is made of, and the cost basis underneath them, were
+invisible to every role including the owner. A branch losing stock could watch
+the total fall with no way to ask where it went. The batch API had shipped in
+Phase 4 and sat unreachable for six phases.
+
+#### What was built
+
+One table at `/stock` over the **whole catalog**, with a "Carried here / Whole
+catalog" filter replacing the old tab split, client-side search, category
+filter and sortable columns. Per-item detail moved into the row's drawer:
+
+- **Batches** — every lot in FIFO order (`receivedAt ASC, id ASC`), drained
+  ones included, next-to-draw marked.
+- **Consumption detail** — expanding a used lot shows where its units went:
+  date, what drew them, staff member, quantity, and value behind the gate.
+  Lazy-loaded on expand.
+- **This branch** — the `ShopPrizeConfig` controls from the old Catalog tab.
+- **Catalog** — name, category, ticket cost, retire, folded in from
+  `prize-admin.tsx`, keeping its warning that a reprice hits every branch.
+
+Three new reads. **No schema change and no migration** — the data model
+already supported all of it:
+
+| Function | File | Notes |
+|---|---|---|
+| `listBatchesForItem` | `services/stock.ts` | Lots for one item at one shop |
+| `listBatchConsumption` | `services/stock.ts` | Where a lot's units went |
+| `previewTransferPlan` | `services/transfers.ts` | FIFO dry run, writes nothing |
+
+Routes: `GET /api/stock/batches/by-item`,
+`GET /api/stock/batches/[id]/consumption`, `POST /api/transfers/preview`.
+DTOs: `ConsumptionDTO` / `ConsumptionCostDTO` in `dto/prize.ts`.
+Components: `inventory-table.tsx`, `item-drawer.tsx`, `transfer-cart.tsx`,
+`add-prize.tsx`, `adjust-stock.tsx` (extracted).
+
+#### Decisions a later reader would otherwise misread as bugs
+
+**`listBatchesForItem` is NOT a relaxation of `listBatches`.** The original
+still 403s any manager without Purchasing, and stays that way. The new one
+gates on **shape** instead: a plain manager gets `BatchDTO[]` from the
+restricted builder — quantities and provenance, no money. The old all-or-
+nothing gate was why the batch list was unreachable from the UI for anyone but
+the owner; refusing a branch manager the *quantities* along with the costs was
+never the intent of §7.4.
+
+**Transfers keep automatic FIFO lot selection.** The preview shows which lots
+will be drawn but the sender cannot choose them. A lot picker was considered
+and rejected: it would let staff cherry-pick cheap lots and quietly invert the
+cost basis at both branches. Visibility, not choice.
+
+**The preview is a forecast, not a reservation.** It takes no idempotency key
+because it writes nothing, and stock can move between previewing and sending.
+Dispatch re-runs FIFO for real inside a transaction; `INSUFFICIENT_STOCK`
+there is the authoritative answer. `short` on a preview line only warns early.
+
+**Ref labels are resolved in one grouped query per `refType`**, never per row.
+A popular prize's lot is drained by hundreds of separate redemptions, and a
+per-row lookup would make opening the drawer an N+1 against the busiest table
+in the schema. An unresolvable ref yields a null label and the UI falls back to
+the movement type — right for a deleted customer, and it means the resolver
+never throws.
+
+**Staff names are resolved the same batched way** because
+`StockMovement.userId` is a bare scalar with **no relation on it**. Adding one
+would have been a schema change for a display string; the batched lookup is
+not a workaround for a missing join, it is the alternative to introducing one.
+
+**`AdjustStockButton` moved into the drawer.** It lived on the On hand tab, and
+when that merged into the table it was the one control with nowhere to go —
+`POST /api/stock/adjust` would have become UI-unreachable a second time
+(cf. D-119). It is §4.16's instrument for "a customer dropped one teddy bear",
+which an opname is the wrong tool for.
+
+**Transfers became multi-line.** `dispatchTransferSchema` had always accepted
+up to 100 lines; only the UI was one-item-at-a-time, so one physical box of
+five prize types became five records the receiving branch confirmed
+separately.
+
+**Add-prize and the photo field had to be REBUILT, not just moved.** Deleting
+`prize-admin.tsx` took `AddPrizeCard` and `ImageField` with it, and the first
+pass of this change did not replace them — leaving `POST /api/prizes` and both
+image routes with no UI caller at all. That is precisely the D-116 defect
+(a catalog only SQL could add to, and a Receive `<select>` a fresh branch could
+never populate) reintroduced by the merge. Caught while auditing the plan
+against the built code, before the phase closed. `AddPrizeButton`
+(`add-prize.tsx`) now sits in the table toolbar and `ImageField` was restored
+into the drawer's Catalog section. **The lesson for the next merge: deleting a
+screen means inventorying every endpoint it was the only caller of.**
+
+**`/settings/prizes` redirects rather than being deleted** — the old path is in
+the owner's muscle memory and possibly a bookmark. Its Settings row is gone
+and `prize-admin.tsx` was deleted; 227 lines of dead `CatalogPanel` /
+`CatalogRow` were removed from `stock-tabs.tsx`.
+
+#### Verified
+
+`npm run typecheck`, `npm run lint`, `npm test` (**503/503**, 27 files — 13 new
+in `inventory-drilldown.test.ts` plus 3 in `cost-visibility.test.ts`), and
+`npm run build`.
+
+**Four deliberate mutations, each confirmed caught before reverting** (the
+gate-3 rule):
+
+1. Leak batch cost to a plain manager → caught
+2. Leak consumption cost → caught
+3. Drop the shop-access check on a batch id → caught
+4. Flip the preview to LIFO → caught by the test pinning the preview against
+   `consumeFifo`
+
+**On-device HTTP verification at MKG** with seeded multi-lot fixtures, as OWNER
+and as `dewa` (plain MANAGER, `canEnterCost = false`):
+
+- FIFO split proved correct against SQL: 45 redeemed drained lot 1 (40) then
+  took 5 from lot 2, 3 more damaged from lot 2 → 22 remaining.
+- Valuation reconciled exactly — footer `Rp 2.598.000`, Die-cast Car
+  `Rp 323.000` = 22×6500 + 25×7200.
+- Consumption detail resolved refs to real names ("Ibu Sari", staff "DEWA
+  MKG") and carried the damage reason.
+- Preview correctly drained the older lot's remaining 22 before the newer 8,
+  and left `qtyRemaining` untouched.
+- **The plain manager's rendered HTML contained zero cost strings** —
+  `stockValuation`, `unitCogs`, `remainingValue` and every seeded figure all
+  absent from the full payload including the serialized RSC data, with the
+  Stock value column and footer not rendered at all.
+- STAFF correctly gets the 403 page; `/settings/prizes` returns 307 → `/stock`.
+- `POST /api/prizes` verified through the restored Add prize form: creates,
+  and 409s a duplicate SKU.
+
+**The `VD-` fixtures were left in the dev database on purpose** (owner's call,
+21 Aug 2026) so the screen has something to exercise: five prizes at MKG —
+`VD-TEDDY`, `VD-CAR`, `VD-BALL`, `VD-PUZZ`, `VD-KEY` — three lots each at
+rising costs (5000 / 6500 / 7200), with genuine consumption booked through
+`consumeFifo`, one customer ("Ibu Sari"), and one damage movement carrying a
+reason. `VD-CAR` is the interesting one: its history spans two lots. These are
+**not** seed data — `npm run db:reset` drops them, and re-creating them means
+re-running a fixture script.
+
+**`docker compose build` passed**, including a `--no-cache` rebuild so the
+Linux compile was real rather than a cached layer: **47/47 pages generated, no
+module-resolution errors**, which is the macOS-vs-Linux case-sensitivity check
+that gate exists for. All three new routes appear in the container's build
+output (`/api/stock/batches/by-item`,
+`/api/stock/batches/[id]/consumption`, `/api/transfers/preview`); `/stock` is
+15.7 kB and `/settings/prizes` is a 338 B redirect stub.
+
+The build emits one warning — `CompressionStream` unsupported in the Edge
+Runtime, from `jose` via `better-auth`. **Pre-existing and not applicable**:
+nothing here runs on the edge runtime, which CLAUDE.md forbids outright.
+
+
+### D-157 · The item drawer was stuck at 384px — `sm:max-w-sm` beat a plain `max-w-3xl`
+
+**Owner-reported, 21 Aug 2026**, from the screen itself: the batch rows in the
+inventory drawer rendered on top of each other — the batch code broken across
+three lines mid-token, the "Next to draw" badge overlapping the received date,
+the quantity column colliding with the cost. The owner also saw a neater layout
+flash for one frame before it collapsed.
+
+**One root cause, not two.** `ui/dialog.tsx` sets `sm:max-w-sm` on the base
+`DialogContent`, and `item-drawer.tsx` passed `max-w-3xl`. Those are different
+keys to `tailwind-merge` — one responsive, one not — so **it does not dedupe
+them and both survive**:
+
+```
+cn(base, "max-w-3xl")     → ['sm:max-w-sm', 'max-w-3xl']   ← both kept
+cn(base, "sm:max-w-3xl")  → ['max-w-[calc(100%-2rem)]', 'sm:max-w-3xl']
+```
+
+Above the 640px breakpoint the `sm:` rule wins, so the drawer was **384px wide
+no matter what it asked for**, and the batch row's four columns had nowhere to
+go. The "flash" was the same bug, not a second one: the drawer looks fine while
+it still says *Loading batches…*, and only collapses once content that needs
+width arrives.
+
+**The fix is to match the variant, not to raise specificity.** A width override
+on this `DialogContent` must be a `sm:` variant. Every other dialog in the
+codebase already did this (`sm:max-w-lg`, `sm:max-w-md`); the two written in
+D-156 were the only ones that did not, which is why they were the only ones
+broken. The batch row also got `basis-48` and `break-words` on its identity
+block — `min-w-0` alone still let the browser break an unbroken batch code
+mid-word — plus `shrink-0` on the quantity and action cells.
+
+**Known, deliberately untouched:** `sale/customer-picker.tsx` has the same
+latent `max-w-md` and is therefore also capped at `sm`. It is pre-existing and
+outside this change, and a narrower customer picker is harmless where a
+crushed batch table is not. Fix it when that screen is next opened — but know
+that a plain `max-w-*` on a `DialogContent` in this codebase does nothing.
+
+**Verified:** the merge resolution above was run through the project's own
+`cn()` to confirm both the defect and the fix, plus `npm run typecheck`,
+`npm run lint` and `npm test` (`503/503`).
+
+
+### D-158 · D-96's option B, built — streaming without losing the status code
+
+**Owner-reported, 21 Aug 2026:** "it takes almost 0.5 sec to input my click when
+navigating between tabs, and I'm on an M4 Max, so it can't be performance."
+
+**The instinct was right and the first answer was wrong.** The obvious fix —
+add `loading.tsx` for the nav destinations — was proposed and then withdrawn on
+reading D-96. It is the exact change D-96 removed.
+
+**D-96 still reproduces on current code.** Verified in both directions before
+building anything, because D-95 was wrong from reasoning alone and the lesson
+is to reproduce first: a staff request to `/stock` returns **403**; adding a
+`loading.tsx` to that segment makes it **200**; removing it restores **403**.
+Since `requireManagerOrOwnerPage()` can `forbidden()`, and *every* page calls a
+guard that can, the naive fix would have degraded the permission status on the
+whole app, not one screen.
+
+**So option B was built instead** — deferred in D-96 as "after the pilot", and
+it is now well past that. The rule is ordering, not machinery:
+
+    1. guard          → may forbidden()
+    2. resolveScope() → may forbidden() / notFound(); cheap, no aggregates
+    3. ONLY THEN <Suspense> around the expensive work
+
+Both throws happen before anything suspends, so the status is settled when the
+shell flushes. `resolveScope` is the right validator because it already does
+permission AND existence (R-4: an owner's typo must 404, not render a calm
+report of zeroes) and costs one access check plus one lookup.
+
+Applied to `/dashboard`, the only nav page slow enough to be worth it —
+`getDashboard` runs nine aggregates in parallel. **`components/skeleton.tsx`
+finally has a caller**, which is what D-96 kept it alive for.
+
+**Verified — the full D-96 matrix, unchanged while streaming:**
+
+| Request | Status |
+|---|---|
+| owner, no shopId | 200 |
+| owner, ghost shopId | **404** |
+| owner, real shopId | 200 |
+| manager, another branch | **403** |
+| staff, any | **403** |
+
+Streaming confirmed rather than assumed: the skeleton appears in the payload,
+and TTFB is 86ms against 124ms total — the shell flushes before the aggregates
+land.
+
+**The 0.5s itself was mostly dev mode, not the app.** Warmed, every nav page
+serves in 60–130ms. The dev log shows the real cost: `/sale` **460ms** and
+`/_error` **512ms** to *compile* on first visit. That is on-demand compilation
+and does not exist in the production image. Told the owner this rather than
+letting a dev-mode artefact drive further optimisation.
+
+**Not done, deliberately:** the other 39 `force-dynamic` pages were left alone.
+They are already fast, `force-dynamic` also disables Link prefetch, and
+relaxing it on a page showing a live marble balance would be a correctness bug,
+not a speed win. Revisit only with a page that is measurably slow in
+production.
+
+**Verified:** `npm run typecheck`, `npm run lint`, `npm test` (`503/503`).

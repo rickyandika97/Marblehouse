@@ -29,7 +29,11 @@ import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { writeAudit } from "@/server/audit";
-import { type Actor, assignedShopIds } from "@/server/auth/context";
+import {
+  type Actor,
+  assignedShopIds,
+  canSeeCostForShop,
+} from "@/server/auth/context";
 import { assertShopAccess } from "@/server/auth/guards";
 import { AppError, forbidden, notFound } from "@/server/errors";
 import { consumeFifo, restoreConsumption } from "@/server/services/inventory";
@@ -599,4 +603,141 @@ export async function inTransitTo(
     );
   }
   return totals;
+}
+
+// ─────────────────────── TRANSFER PREVIEW (D-156) ───────────────────────
+
+export const previewTransferSchema = z.object({
+  fromShopId: z.string().min(1),
+  lines: z
+    .array(
+      z.object({
+        prizeItemId: z.string().min(1),
+        qty: z.number().int().positive().max(MAX_QTY),
+      }),
+    )
+    .min(1)
+    .max(100),
+});
+
+export type PreviewTransferInput = z.infer<typeof previewTransferSchema>;
+
+export interface TransferPreviewLot {
+  batchId: string;
+  batchCode: string | null;
+  qty: number;
+  receivedAt: string;
+  supplier: string | null;
+  /** OWNER / Purchasing-at-this-shop only. Absent otherwise. */
+  unitCogs?: string;
+  /** qty × unitCogs. Absent when cost is not visible. */
+  lineValue?: string;
+  /** The lot was received without a price, so it draws at zero (§7.5). */
+  needsCosting?: boolean;
+}
+
+export interface TransferPreviewLine {
+  prizeItemId: string;
+  prizeName: string;
+  qty: number;
+  onHand: number;
+  /** True when the branch cannot cover the request — dispatch would 409. */
+  short: boolean;
+  lots: TransferPreviewLot[];
+}
+
+/**
+ * A DRY RUN of what dispatch would consume (D-156). Reads only — never writes,
+ * never decrements, takes no idempotency key.
+ *
+ * This exists so the sender can SEE which lots are about to leave before
+ * committing, which is the whole point of surfacing batches in the inventory
+ * screen. It deliberately does NOT let them choose: FIFO order is the
+ * invariant, and a picker would let staff cherry-pick cheap lots and quietly
+ * invert the cost basis.
+ *
+ * **The selection here must mirror `consumeFifo` exactly** — same filter
+ * (`qtyRemaining > 0`, not void), same `receivedAt ASC, id ASC` order, same
+ * greedy fill. A preview that disagrees with the engine is worse than no
+ * preview, so `previews match what consumeFifo actually consumes` pins the two
+ * together in the test suite.
+ *
+ * A preview is a forecast, not a reservation: stock can move between the
+ * preview and the dispatch, and the dispatch re-runs FIFO for real under a
+ * transaction. `short` reports what we can see now so the UI can warn early;
+ * the authoritative refusal is still `InsufficientStockError` at dispatch.
+ */
+export async function previewTransferPlan(
+  actor: Actor,
+  input: PreviewTransferInput,
+): Promise<TransferPreviewLine[]> {
+  assertShopAccess(actor, input.fromShopId);
+
+  const showCost = canSeeCostForShop(actor, input.fromShopId);
+
+  const items = await prisma.prizeItem.findMany({
+    where: { id: { in: input.lines.map((l) => l.prizeItemId) } },
+    select: { id: true, name: true },
+  });
+  const nameById = new Map(items.map((i) => [i.id, i.name]));
+
+  const out: TransferPreviewLine[] = [];
+
+  for (const line of input.lines) {
+    const batches = await prisma.prizeBatch.findMany({
+      where: {
+        shopId: input.fromShopId,
+        prizeItemId: line.prizeItemId,
+        isVoid: false,
+        qtyRemaining: { gt: 0 },
+      },
+      orderBy: [{ receivedAt: "asc" }, { id: "asc" }],
+      select: {
+        id: true,
+        batchCode: true,
+        qtyRemaining: true,
+        unitCogs: true,
+        supplier: true,
+        receivedAt: true,
+        needsCosting: true,
+      },
+    });
+
+    const onHandNow = batches.reduce((sum, b) => sum + b.qtyRemaining, 0);
+
+    let outstanding = line.qty;
+    const lots: TransferPreviewLot[] = [];
+    for (const b of batches) {
+      if (outstanding === 0) break;
+      const take = Math.min(b.qtyRemaining, outstanding);
+      outstanding -= take;
+      lots.push({
+        batchId: b.id,
+        batchCode: b.batchCode,
+        qty: take,
+        receivedAt: b.receivedAt.toISOString(),
+        supplier: b.supplier,
+        // Cost is added only behind the gate. The restricted shape carries no
+        // money key at all rather than a nulled-out one.
+        ...(showCost
+          ? {
+              unitCogs: b.unitCogs.toString(),
+              lineValue: b.unitCogs.times(take).toString(),
+              needsCosting: b.needsCosting,
+            }
+          : {}),
+      });
+    }
+
+    out.push({
+      prizeItemId: line.prizeItemId,
+      prizeName: nameById.get(line.prizeItemId) ?? "Unknown item",
+      qty: line.qty,
+      onHand: onHandNow,
+      short: outstanding > 0,
+      lots,
+    });
+  }
+
+  return out;
 }

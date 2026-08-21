@@ -5,7 +5,6 @@ import {
   KeyRound,
   Receipt,
   ScrollText,
-  Gift,
   Settings2,
   Store,
   Users,
@@ -97,15 +96,7 @@ export default async function SettingsPage() {
       // Phase 10 folds the nav behind a "More" tab.
       show: !isStaffOnly,
     },
-    {
-      href: "/settings/prizes",
-      icon: Gift,
-      title: "Prizes",
-      description: "The prize catalog and ticket prices, shared by every branch",
-      // OWNER and MANAGER, matching what POST /api/prizes has always allowed.
-      // The catalog is global, so the screen warns before a reprice (D-116).
-      show: !isStaffOnly,
-    },
+
     {
       href: "/settings/backups",
       icon: DatabaseBackup,

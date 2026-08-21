@@ -16,6 +16,9 @@ import {
   toPrizeCostDTO,
   toBatchRestrictedDTO,
   toBatchCostDTO,
+  toConsumptionRestrictedDTO,
+  toConsumptionCostDTO,
+  type ConsumptionRestrictedSource,
 } from "../prize";
 
 /** §7.5's list, plus `valuation`. Matched case-insensitively. */
@@ -98,6 +101,49 @@ describe("restricted DTOs carry no cost", () => {
     const dto = toBatchRestrictedDTO(batch);
     expect(Object.keys(dto)).not.toContain("unitCogs");
     expect(Object.keys(dto)).not.toContain("needsCosting");
+  });
+});
+
+/** One draw-down of a lot — the D-156 drill-down's row. */
+const consumption: ConsumptionRestrictedSource = {
+  id: "cons_1",
+  batchId: "batch_1",
+  qty: 3,
+  businessDate: new Date("2026-01-15T00:00:00Z"),
+  occurredAt: new Date("2026-01-15T04:30:00Z"),
+  ref: { type: "REDEEM", label: "Ayu Lestari" },
+  staffName: "Siti",
+  reason: null,
+};
+
+describe("consumption DTOs (D-156)", () => {
+  test("a consumption DTO for a plain manager contains no cost string", () => {
+    const dto = toConsumptionRestrictedDTO(consumption);
+
+    assertNoCostStrings(dto, "toConsumptionRestrictedDTO");
+    // It still answers the question the drill-down exists to answer: how many
+    // units left, who took them, and what for.
+    expect(dto.qty).toBe(3);
+    expect(dto.staffName).toBe("Siti");
+    expect(dto.ref.label).toBe("Ayu Lestari");
+  });
+
+  test("the restricted consumption builder omits the cost keys entirely", () => {
+    const dto = toConsumptionRestrictedDTO(consumption);
+    expect(Object.keys(dto)).not.toContain("unitCogs");
+    expect(Object.keys(dto)).not.toContain("lineValue");
+  });
+
+  test("consumption cost DTO reports money as strings, never JSON numbers", () => {
+    const dto = toConsumptionCostDTO({
+      ...consumption,
+      unitCogs: new Prisma.Decimal("12345.67"),
+    });
+
+    expect(typeof dto.unitCogs).toBe("string");
+    expect(typeof dto.lineValue).toBe("string");
+    // 3 × 12345.67 = 37037.01 exactly; a float gives 37037.009999999995.
+    expect(dto.lineValue).toBe("37037.01");
   });
 });
 

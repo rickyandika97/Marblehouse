@@ -10,14 +10,13 @@ import {
   Settings,
   ShoppingCart,
   Clock,
-  ChevronDown,
-  Store,
   User,
   Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { AttendanceBanner } from "@/components/attendance-banner";
 import { ShopHandoffBanner } from "@/components/shop-handoff-banner";
+import { ShopSwitcher, type ShopSwitcherOption } from "@/components/shop-switcher";
 
 /**
  * Role-dependent bottom tab bar (§8.0).
@@ -48,7 +47,7 @@ const TABS: Record<ShellRole, { href: string; label: string; icon: typeof User }
     { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
     { href: "/sale", label: "Sales", icon: ShoppingCart },
     { href: "/customers", label: "Customers", icon: Users },
-    { href: "/stock", label: "Stock", icon: Package },
+    { href: "/stock", label: "Inventory", icon: Package },
     { href: "/reports", label: "Reports", icon: BarChart3 },
     { href: "/settings", label: "Settings", icon: Settings },
   ],
@@ -56,7 +55,7 @@ const TABS: Record<ShellRole, { href: string; label: string; icon: typeof User }
     { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
     { href: "/sale", label: "Sale", icon: ShoppingCart },
     { href: "/customers", label: "Customers", icon: Users },
-    { href: "/stock", label: "Stock", icon: Package },
+    { href: "/stock", label: "Inventory", icon: Package },
     { href: "/attendance", label: "Attendance", icon: Clock },
     { href: "/settings", label: "Settings", icon: Settings },
   ],
@@ -79,12 +78,16 @@ export function AppShell({
   isOwner,
   isManagerHere,
   shopName,
+  shopId,
+  shops,
   children,
 }: {
   displayName: string;
   isOwner: boolean;
   isManagerHere: boolean;
   shopName: string | null;
+  shopId: string | null;
+  shops: ShopSwitcherOption[];
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
@@ -111,17 +114,11 @@ export function AppShell({
             matters because switching branch mid-day is exactly the action a
             manager takes one-handed while holding something else.
           */}
-          <Link
-            href="/settings/shops"
-            className="flex min-h-11 min-w-0 items-center gap-2 rounded-full border border-border bg-background px-3 shadow-sm transition-colors hover:border-primary hover:bg-primary/5"
-            title="Change today's shop"
-          >
-            <Store className="size-4 shrink-0 text-muted-foreground" />
-            <span className="truncate font-semibold">
-              {shopName ?? "No shop selected"}
-            </span>
-            <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-          </Link>
+          <ShopSwitcher
+            shops={shops}
+            currentShopId={shopId}
+            currentShopName={shopName}
+          />
 
           <div className="ml-auto flex items-center gap-3">
             <span className="hidden text-sm text-muted-foreground sm:inline">

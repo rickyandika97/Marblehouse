@@ -11,15 +11,16 @@ import { formatMoney } from "@/lib/money";
 import type { PrizeCostDTO } from "@/server/dto/prize";
 import { StockTabs } from "./stock-tabs";
 
-export const metadata = { title: "Stock · Marblehouse" };
+export const metadata = { title: "Inventory · Marblehouse" };
 export const dynamic = "force-dynamic";
 
 /**
- * Stock management (§8.7) — MANAGER and OWNER.
+ * Inventory (§8.7) — MANAGER and OWNER.
  *
- * §8.7's five tabs are all present as of Phase 5: On hand · Receive ·
- * Transfers · Opname · Low stock. (Transfers and Opname were deliberately
- * absent in Phase 4 rather than stubbed — see BUILD-LOG D-35.)
+ * Since D-156 this is the ONE stock screen: the prize catalog merged in from
+ * Settings → Prizes, which now redirects here. §8.7's tabs are Inventory ·
+ * Receive · Transfers · Opname · Low stock, where Inventory is a single table
+ * over the whole catalog and per-item detail lives in the row's drawer.
  *
  * Cost columns are decided HERE, server-side, and the client component is only
  * ever handed what the role may see (§7.5). `listPrizes` already returns the
@@ -56,7 +57,7 @@ export default async function StockPage() {
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight">Stock</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Inventory</h1>
         <p className="mt-1 text-sm text-muted-foreground">{session.shop.name}</p>
       </div>
 
@@ -110,6 +111,7 @@ export default async function StockPage() {
 
       <StockTabs
         shopId={session.shopId}
+        shopName={session.shop.name}
         prizes={prizes}
         showCost={showCost}
         canReceive

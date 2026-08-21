@@ -60,6 +60,11 @@ export interface TrendPoint {
   transactions: number;
 }
 
+/** Cost-bearing daily series, intentionally absent from manager payloads. */
+export interface OwnerTrendPoint extends TrendPoint {
+  grossProfit: string;
+}
+
 export interface ShopRevenueSlice {
   shopId: string;
   shopName: string;
@@ -98,8 +103,11 @@ export interface ManagerDashboard {
 export interface OwnerDashboard {
   role: "OWNER";
   isAllShops: boolean;
-  today: TodayRow;
+  /** Cost-bearing additions exist only on the owner payload. */
+  today: TodayRow & { grossProfit: string; averageOrderValue: string };
   trend30d: TrendPoint[];
+  /** 180 days lets the UI compare the selected 90-day window with its prior period. */
+  trend180d: OwnerTrendPoint[];
   paymentSplit: { cash: string; edc: string };
   revenueByShop: ShopRevenueSlice[];
   monthToDate: {
@@ -107,6 +115,10 @@ export interface OwnerDashboard {
     previousMonthRevenue: string;
     deltaPercent: string | null;
     grossProfit: string;
+    transactions: number;
+    uniqueCustomers: number;
+    ticketsAwarded: number;
+    prizesRedeemed: number;
   };
   alerts: OwnerAlertsPanel;
   liability: {
@@ -158,16 +170,18 @@ async function ownerDashboard(
     todaySummaryRow,
     byShop,
     mtd,
+    todayProfit,
     alerts,
     liability,
     valuation,
     team,
   ] = await Promise.all([
     todayFigures(actor, todayInput, scope),
-    trend30d(actor, input, actor.businessDate),
+    ownerTrend180d(actor, input, scope, actor.businessDate),
     salesSummary(actor, todayInput),
     salesByShop(actor, input),
-    monthToDate(actor, actor.businessDate),
+    monthToDate(actor, actor.businessDate, input, scope),
+    profitReport(actor, todayInput),
     ownerAlerts(actor, scope),
     liabilityReport(actor, input),
     stockValuation(actor, input),
@@ -177,8 +191,13 @@ async function ownerDashboard(
   return {
     role: "OWNER",
     isAllShops: scope.isAllShops,
-    today: todayRow,
-    trend30d: trend,
+    today: {
+      ...todayRow,
+      grossProfit: todayProfit.combined.grossProfit,
+      averageOrderValue: todaySummaryRow.averageTransactionValue,
+    },
+    trend30d: trend.slice(-30),
+    trend180d: trend,
     paymentSplit: { cash: todaySummaryRow.cash, edc: todaySummaryRow.edc },
     revenueByShop: topShopsWithOthers(byShop.rows),
     monthToDate: mtd,
@@ -216,7 +235,9 @@ function topShopsWithOthers(rows: ShopRevenueSlice[]): ShopRevenueSlice[] {
 /** §8.3 row 2: this month vs last month, with a % delta, plus MTD gross profit. */
 async function monthToDate(
   actor: Actor,
-  businessDate: Date
+  businessDate: Date,
+  input: ReportRangeInput,
+  scope: ResolvedScope
 ): Promise<OwnerDashboard["monthToDate"]> {
   const d = new Date(businessDate);
   const monthStart = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
@@ -225,15 +246,32 @@ async function monthToDate(
   );
   const prevMonthEnd = addDays(monthStart, -1);
 
-  const [current, previous, profit] = await Promise.all([
-    salesSummary(actor, { from: isoDate(monthStart), to: isoDate(businessDate) }),
+  const monthInput = { ...input, from: isoDate(monthStart), to: isoDate(businessDate) };
+  const [current, previous, profit, tickets, redeemed] = await Promise.all([
+    salesSummary(actor, monthInput),
     salesSummary(actor, {
+      ...input,
       from: isoDate(prevMonthStart),
       to: isoDate(prevMonthEnd),
     }),
-    profitReport(actor, {
-      from: isoDate(monthStart),
-      to: isoDate(businessDate),
+    profitReport(actor, monthInput),
+    prisma.ticketLedger.aggregate({
+      where: {
+        type: "AWARD",
+        shopId: { in: scope.shopIds },
+        businessDate: { gte: monthStart, lte: businessDate },
+      },
+      _sum: { delta: true },
+    }),
+    prisma.redemptionLine.aggregate({
+      where: {
+        redemption: {
+          shopId: { in: scope.shopIds },
+          businessDate: { gte: monthStart, lte: businessDate },
+          isVoided: false,
+        },
+      },
+      _sum: { qty: true },
     }),
   ]);
 
@@ -254,6 +292,10 @@ async function monthToDate(
           .toString()
       : null,
     grossProfit: profit.combined.grossProfit,
+    transactions: current.transactions,
+    uniqueCustomers: current.uniqueCustomers,
+    ticketsAwarded: tickets._sum.delta ?? 0,
+    prizesRedeemed: redeemed._sum.qty ?? 0,
   };
 }
 
@@ -386,7 +428,70 @@ async function trend30d(
     from: isoDate(addDays(businessDate, -29)),
     to: isoDate(businessDate),
   });
-  return rows;
+  // `groupBy` omits days with no completed sale. A chart whose points are only
+  // sale days makes a quiet week look like a compressed busy one, so preserve
+  // each of the 30 calendar slots and explicitly represent the gaps as zero.
+  const byDate = new Map(rows.map((row) => [row.businessDate, row]));
+  const firstDay = addDays(businessDate, -29);
+  return Array.from({ length: 30 }, (_, offset) => {
+    const businessDate = isoDate(addDays(firstDay, offset));
+    return byDate.get(businessDate) ?? { businessDate, revenue: "0", transactions: 0 };
+  });
+}
+
+/**
+ * The BisMan-style owner chart needs revenue, gross profit and orders on the
+ * same daily grain. Gross profit stays faithful to `profitReport`: revenue
+ * less recorded prize expense and shrinkage, never a recomputed current COGS.
+ */
+async function ownerTrend180d(
+  actor: Actor,
+  input: ReportRangeInput,
+  scope: ResolvedScope,
+  businessDate: Date
+): Promise<OwnerTrendPoint[]> {
+  const firstDay = addDays(businessDate, -179);
+  const range = { ...input, from: isoDate(firstDay), to: isoDate(businessDate) };
+  const [{ rows }, consumptions] = await Promise.all([
+    dailySales(actor, range),
+    prisma.stockConsumption.findMany({
+      where: {
+        movement: {
+          shopId: { in: scope.shopIds },
+          businessDate: { gte: firstDay, lte: businessDate },
+          type: { in: ["REDEEM", "OPNAME_LOSS", "DAMAGE"] },
+        },
+      },
+      select: {
+        qty: true,
+        unitCogsAtConsumption: true,
+        movement: { select: { businessDate: true } },
+      },
+    }),
+  ]);
+
+  const salesByDate = new Map(rows.map((row) => [row.businessDate, row]));
+  const costsByDate = new Map<string, Prisma.Decimal>();
+  for (const consumption of consumptions) {
+    const date = isoDate(consumption.movement.businessDate);
+    const cost = consumption.unitCogsAtConsumption.mul(consumption.qty);
+    costsByDate.set(date, (costsByDate.get(date) ?? new Prisma.Decimal(0)).add(cost));
+  }
+
+  return Array.from({ length: 180 }, (_, offset) => {
+    const businessDate = isoDate(addDays(firstDay, offset));
+    const sales = salesByDate.get(businessDate) ?? {
+      businessDate,
+      revenue: "0",
+      transactions: 0,
+    };
+    return {
+      ...sales,
+      grossProfit: new Prisma.Decimal(sales.revenue)
+        .sub(costsByDate.get(businessDate) ?? new Prisma.Decimal(0))
+        .toString(),
+    };
+  });
 }
 
 /**

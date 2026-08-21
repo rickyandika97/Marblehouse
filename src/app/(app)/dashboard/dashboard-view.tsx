@@ -1,8 +1,6 @@
 import Link from "next/link";
 import {
   AlertTriangle,
-  ArrowDownRight,
-  ArrowUpRight,
   CircleDollarSign,
   Clock,
   Package,
@@ -14,6 +12,7 @@ import { formatAmount, formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import type { Dashboard } from "@/server/services/dashboard";
 import { DashboardShopPicker } from "./shop-picker";
+import { OwnerSalesPerformance } from "./owner-sales-performance";
 
 /**
  * Dashboard presentation (§8.3, §8.4).
@@ -51,87 +50,11 @@ export function DashboardView({
         {isOwner && <DashboardShopPicker shopId={shopId} shops={shops} />}
       </div>
 
-      {/* ── Row 1: today ── */}
-      <section aria-label="Today" className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-        <Stat label="Revenue" value={formatMoney(dashboard.today.revenue)} icon={CircleDollarSign} />
-        <Stat label="Sales" value={formatAmount(dashboard.today.transactions)} />
-        <Stat label="Customers" value={formatAmount(dashboard.today.uniqueCustomers)} icon={Users} />
-        <Stat label="Tickets awarded" value={formatAmount(dashboard.today.ticketsAwarded)} icon={Ticket} />
-        <Stat label="Prizes redeemed" value={formatAmount(dashboard.today.prizesRedeemed)} icon={Package} />
-      </section>
-
-      {/* ── Row 2: the period (owner only — it carries gross profit) ── */}
-      {isOwner && (
-        <section aria-label="This month" className="grid gap-3 md:grid-cols-3">
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
-                Month to date
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-semibold tabular-nums">
-                {formatMoney(dashboard.monthToDate.revenue)}
-              </p>
-              <Delta percent={dashboard.monthToDate.deltaPercent} />
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
-                Last month
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-semibold tabular-nums">
-                {formatMoney(dashboard.monthToDate.previousMonthRevenue)}
-              </p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">
-                Gross profit (MTD)
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-semibold tabular-nums">
-                {formatMoney(dashboard.monthToDate.grossProfit)}
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Revenue − prize expense − shrinkage
-              </p>
-            </CardContent>
-          </Card>
-        </section>
+      {dashboard.role === "OWNER" ? (
+        <OwnerSalesOverview dashboard={dashboard} />
+      ) : (
+        <ManagerSalesOverview dashboard={dashboard} />
       )}
-
-      {/* ── Row 3: breakdown ── */}
-      <section className="grid gap-3 lg:grid-cols-2">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">Last 30 days</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Sparkline points={dashboard.trend30d} />
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">
-              {isOwner ? "Revenue by shop" : "Payment method, today"}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {isOwner ? (
-              <ShopBars rows={dashboard.revenueByShop} />
-            ) : (
-              <PaymentSplit split={dashboard.paymentSplit} />
-            )}
-          </CardContent>
-        </Card>
-      </section>
 
       {/* ── Row 4: alerts — §8.3 calls this the most valuable panel ── */}
       <Card>
@@ -260,6 +183,102 @@ export function DashboardView({
   );
 }
 
+/**
+ * The owner sees cost-bearing profit figures and the month-to-date roll-up.
+ * Keeping this in an owner-only component makes a cost-field reference a type
+ * error everywhere in the manager branch, not merely a hidden card.
+ */
+function OwnerSalesOverview({
+  dashboard,
+}: {
+  dashboard: Extract<Dashboard, { role: "OWNER" }>;
+}) {
+  return (
+    <>
+      <section
+        aria-label="Today’s sales"
+        className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6"
+      >
+        <Stat
+          label="Revenue today"
+          value={formatMoney(dashboard.today.revenue)}
+          icon={CircleDollarSign}
+        />
+        <Stat label="Profit today" value={formatMoney(dashboard.today.grossProfit)} />
+        <Stat label="Average order" value={formatMoney(dashboard.today.averageOrderValue)} />
+        <Stat label="Orders today" value={formatAmount(dashboard.today.transactions)} />
+        <Stat
+          label="Tickets awarded"
+          value={formatAmount(dashboard.today.ticketsAwarded)}
+          icon={Ticket}
+        />
+        <Stat
+          label="Prizes redeemed"
+          value={formatAmount(dashboard.today.prizesRedeemed)}
+          icon={Package}
+        />
+      </section>
+
+      <section className="grid gap-3 lg:grid-cols-[minmax(0,2fr)_minmax(17rem,1fr)]">
+        <OwnerSalesPerformance points={dashboard.trend180d} />
+
+        <Card>
+          <CardHeader className="border-b pb-3">
+            <CardTitle>Revenue by shop</CardTitle>
+            <p className="text-xs text-muted-foreground">Month to date</p>
+          </CardHeader>
+          <CardContent className="pt-4">
+            <ShopBars rows={dashboard.revenueByShop} />
+          </CardContent>
+        </Card>
+      </section>
+    </>
+  );
+}
+
+/** Managers keep the existing, non-cost-bearing data set. */
+function ManagerSalesOverview({
+  dashboard,
+}: {
+  dashboard: Extract<Dashboard, { role: "MANAGER" }>;
+}) {
+  return (
+    <>
+      <section aria-label="Today" className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+        <Stat label="Revenue today" value={formatMoney(dashboard.today.revenue)} icon={CircleDollarSign} />
+        <Stat label="Orders today" value={formatAmount(dashboard.today.transactions)} />
+        <Stat label="Customers" value={formatAmount(dashboard.today.uniqueCustomers)} icon={Users} />
+        <Stat label="Tickets awarded" value={formatAmount(dashboard.today.ticketsAwarded)} icon={Ticket} />
+        <Stat label="Prizes redeemed" value={formatAmount(dashboard.today.prizesRedeemed)} icon={Package} />
+      </section>
+
+      <section className="grid gap-3 lg:grid-cols-2">
+        <Card>
+          <CardHeader className="border-b pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-x-5 gap-y-2">
+              <CardTitle>Sales performance</CardTitle>
+              <ChartLegend />
+            </div>
+            <p className="text-xs text-muted-foreground">Last 30 days</p>
+          </CardHeader>
+          <CardContent className="pt-4">
+            <SalesPerformanceChart points={dashboard.trend30d} />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="border-b pb-3">
+            <CardTitle>Payment method, today</CardTitle>
+          </CardHeader>
+          <CardContent className="pt-4">
+            <PaymentSplit split={dashboard.paymentSplit} />
+          </CardContent>
+        </Card>
+      </section>
+    </>
+  );
+}
+
 // ─────────────────────────── pieces ───────────────────────────
 
 function Stat({
@@ -296,64 +315,115 @@ function Figure({ label, value }: { label: string; value: string }) {
   );
 }
 
-function Delta({ percent }: { percent: string | null }) {
-  // Null means there is no prior month to compare against. A "0%" or "+100%"
-  // would both be inventions.
-  if (percent === null) {
-    return <p className="mt-1 text-xs text-muted-foreground">No prior month to compare</p>;
-  }
-  const n = Number(percent);
-  const up = n >= 0;
-  const Icon = up ? ArrowUpRight : ArrowDownRight;
+function ChartLegend() {
   return (
-    <p
-      className={cn(
-        "mt-1 flex items-center gap-1 text-xs font-medium",
-        up ? "text-emerald-600" : "text-red-600"
-      )}
-    >
-      <Icon className="size-3.5" />
-      {up ? "+" : ""}
-      {percent}% vs last month
-    </p>
+    <div className="flex items-center gap-4 text-xs text-muted-foreground" aria-label="Chart legend">
+      <span className="flex items-center gap-1.5">
+        <i className="size-2 rounded-sm bg-stone-300" aria-hidden />
+        Revenue
+      </span>
+      <span className="flex items-center gap-1.5">
+        <i className="h-0.5 w-3 rounded bg-blue-500" aria-hidden />
+        Orders
+      </span>
+    </div>
   );
 }
 
 /**
- * A dependency-free sparkline.
- *
- * Recharts is in the stack (§5.2) and is the right tool for the report screens,
- * but this is a 30-point trend inside a server component — an inline SVG keeps
- * the dashboard fully server-rendered with no client bundle at all.
+ * A server-rendered revenue-and-orders chart. Unlike the old sparkline, it
+ * keeps zero-sale days visible, provides axes and a legend, and gives revenue
+ * and order volume their own scales — the compact visual hierarchy used by the
+ * sales-performance reference without adding a client-side chart library.
  */
-function Sparkline({ points }: { points: { businessDate: string; revenue: string }[] }) {
+function SalesPerformanceChart({
+  points,
+}: {
+  points: { businessDate: string; revenue: string; transactions: number }[];
+}) {
   if (points.length === 0) {
     return <p className="text-sm text-muted-foreground">No sales in this period yet.</p>;
   }
 
-  const values = points.map((p) => Number(p.revenue));
-  const max = Math.max(...values, 1);
-  const w = 100;
-  const h = 28;
-  const step = points.length > 1 ? w / (points.length - 1) : w;
-  const path = values
-    .map((v, i) => `${i === 0 ? "M" : "L"} ${(i * step).toFixed(2)} ${(h - (v / max) * h).toFixed(2)}`)
+  const revenues = points.map((p) => Number(p.revenue));
+  const orders = points.map((p) => p.transactions);
+  const total = revenues.reduce((sum, value) => sum + value, 0);
+  const maxRevenue = Math.max(...revenues, 1);
+  const maxOrders = Math.max(...orders, 1);
+  const left = 8;
+  const right = 96;
+  const top = 5;
+  const bottom = 39;
+  const width = right - left;
+  const height = bottom - top;
+  const step = points.length > 1 ? width / (points.length - 1) : width;
+  const barWidth = Math.min(step * 0.58, 2.2);
+  const orderPath = orders
+    .map((value, index) => {
+      const x = left + index * step;
+      const y = bottom - (value / maxOrders) * height;
+      return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+    })
     .join(" ");
-  const total = values.reduce((a, b) => a + b, 0);
+  const dateLabel = (index: number) =>
+    new Intl.DateTimeFormat("id-ID", {
+      day: "numeric",
+      month: "short",
+      timeZone: "UTC",
+    }).format(new Date(`${points[index]!.businessDate}T00:00:00.000Z`));
 
   return (
     <div>
       <svg
-        viewBox={`0 0 ${w} ${h}`}
+        viewBox="0 0 100 48"
         preserveAspectRatio="none"
-        className="h-16 w-full"
+        className="h-52 w-full"
         role="img"
-        aria-label={`Revenue over the last ${points.length} days`}
+        aria-label={`Revenue and orders over the last ${points.length} days`}
       >
-        <path d={path} fill="none" stroke="currentColor" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
+        {[top, top + height / 3, top + (height * 2) / 3, bottom].map((y) => (
+          <line
+            key={y}
+            x1={left}
+            x2={right}
+            y1={y}
+            y2={y}
+            className="stroke-border"
+            strokeWidth="0.25"
+            vectorEffect="non-scaling-stroke"
+          />
+        ))}
+        {revenues.map((value, index) => {
+          const barHeight = (value / maxRevenue) * height;
+          const x = left + index * step - barWidth / 2;
+          return (
+            <rect
+              key={points[index]!.businessDate}
+              x={x}
+              y={bottom - barHeight}
+              width={barWidth}
+              height={barHeight}
+              rx="0.35"
+              className="fill-stone-300 dark:fill-stone-700"
+            />
+          );
+        })}
+        <path
+          d={orderPath}
+          fill="none"
+          className="stroke-blue-500"
+          strokeWidth="1.25"
+          strokeDasharray="2 1.3"
+          vectorEffect="non-scaling-stroke"
+        />
       </svg>
-      <p className="mt-2 text-sm text-muted-foreground">
-        {formatMoney(total)} over {points.length} days
+      <div className="-mt-2 flex justify-between pl-[8%] pr-[4%] text-[11px] text-muted-foreground">
+        <span>{dateLabel(0)}</span>
+        <span>{dateLabel(Math.floor((points.length - 1) / 2))}</span>
+        <span>{dateLabel(points.length - 1)}</span>
+      </div>
+      <p className="mt-3 text-sm text-muted-foreground">
+        {formatMoney(total)} across {formatAmount(orders.reduce((sum, value) => sum + value, 0))} orders
       </p>
     </div>
   );

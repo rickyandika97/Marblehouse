@@ -7,8 +7,8 @@
  *
  * What is worth proving here rather than assuming:
  *
- *  - **One record per configured shift per user per business day**, including
- *    under a concurrent double-tap. A later shift at another branch is allowed.
+ *  - **One open shift per staff member**, including under a concurrent
+ *    double-tap. A later shift only becomes available after clock-out.
  *  - **Lateness is snapshotted** (§4.14) so editing a shift later cannot
  *    rewrite history.
  *  - **A denied location is recorded, not refused** — the clock-in still
@@ -204,7 +204,7 @@ describe("clock-in (§4.13)", () => {
     ).toBe(1);
   });
 
-  it("allows a later shift at a different shop on the same business day", async () => {
+  it("requires clock-out before a later shift at a different shop", async () => {
     const { shop, shift, actor } = await fixture();
     const secondShop = await makeShop(prisma, "Later shift");
     shopIds.push(secondShop.id);
@@ -222,10 +222,17 @@ describe("clock-in (§4.13)", () => {
       },
     });
 
-    await track(clockIn(actor, shop.id, await photo(), {
+    const first = await track(clockIn(actor, shop.id, await photo(), {
       shiftId: shift.id,
       locationDenied: true,
     }));
+
+    await expect(clockIn(actor, secondShop.id, await photo(), {
+      shiftId: secondShift.id,
+      locationDenied: true,
+    })).rejects.toThrow(/clock out.*before clocking in again/i);
+
+    await clockOut(actor, { attendanceId: first.id });
     await track(clockIn(actor, secondShop.id, await photo(), {
       shiftId: secondShift.id,
       locationDenied: true,
@@ -234,7 +241,7 @@ describe("clock-in (§4.13)", () => {
     expect(await prisma.attendance.count({ where: { userId: actor.userId } })).toBe(2);
   });
 
-  it("allows two different shifts at the same shop on the same business day", async () => {
+  it("allows another shift at the same shop after clock-out", async () => {
     const { shop, shift, actor } = await fixture();
     const laterShift = await prisma.shift.create({
       data: {
@@ -246,10 +253,11 @@ describe("clock-in (§4.13)", () => {
       },
     });
 
-    await track(clockIn(actor, shop.id, await photo(), {
+    const first = await track(clockIn(actor, shop.id, await photo(), {
       shiftId: shift.id,
       locationDenied: true,
     }));
+    await clockOut(actor, { attendanceId: first.id });
     await track(clockIn(actor, shop.id, await photo(), {
       shiftId: laterShift.id,
       locationDenied: true,
@@ -258,8 +266,17 @@ describe("clock-in (§4.13)", () => {
     expect(await prisma.attendance.count({ where: { userId: actor.userId } })).toBe(2);
   });
 
-  it("creates exactly one record when two clock-ins race", async () => {
+  it("creates exactly one record when two different shifts race", async () => {
     const { shop, shift, actor } = await fixture();
+    const laterShift = await prisma.shift.create({
+      data: {
+        shopId: shop.id,
+        name: "Concurrent later shift",
+        startTime: new Date(Date.UTC(1970, 0, 1, 18, 0, 0)),
+        endTime: new Date(Date.UTC(1970, 0, 1, 23, 0, 0)),
+        daysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+      },
+    });
 
     const attempts = await Promise.allSettled([
       clockIn(actor, shop.id, await photo(), {
@@ -267,7 +284,7 @@ describe("clock-in (§4.13)", () => {
         locationDenied: false,
       }),
       clockIn(actor, shop.id, await photo(), {
-        shiftId: shift.id,
+        shiftId: laterShift.id,
         locationDenied: false,
       }),
     ]);
@@ -277,13 +294,12 @@ describe("clock-in (§4.13)", () => {
     }
 
     const ok = attempts.filter((a) => a.status === "fulfilled");
-    // The unique constraint arbitrates — exactly one wins.
+    // The per-person transaction lock arbitrates — exactly one wins.
     expect(ok).toHaveLength(1);
 
     // The LOSER must fail cleanly. A double-tap on shop wifi is the expected
-    // case, so it has to surface as a friendly CONFLICT, not a raw P2002
-    // escaping as a 500. Asserting only "one succeeded" left the P2002 catch
-    // untested — a mutation removing it kept every test green.
+    // case, so it has to surface as a friendly CONFLICT, not a raw database
+    // error escaping as a 500.
     const loser = attempts.find((a) => a.status === "rejected");
     expect(loser).toBeDefined();
     const reason = (loser as PromiseRejectedResult).reason as {
@@ -503,7 +519,7 @@ describe("clock-out", () => {
     await expect(clockOut(actor, {})).rejects.toThrow(/have not clocked in/i);
   });
 
-  it("closes the selected record without closing another open shift", async () => {
+  it("closes the selected open record", async () => {
     const { shop, shift, actor } = await fixture();
     const laterShift = await prisma.shift.create({
       data: {
@@ -518,19 +534,20 @@ describe("clock-out", () => {
       shiftId: shift.id,
       locationDenied: true,
     }));
+    await clockOut(actor, { attendanceId: first.id });
     const second = await track(clockIn(actor, shop.id, await photo(), {
       shiftId: laterShift.id,
       locationDenied: true,
     }));
 
-    await clockOut(actor, { attendanceId: first.id });
+    await clockOut(actor, { attendanceId: second.id });
 
     const rows = await prisma.attendance.findMany({
       where: { id: { in: [first.id, second.id] } },
       select: { id: true, clockOutAt: true },
     });
     expect(rows.find((row) => row.id === first.id)?.clockOutAt).not.toBeNull();
-    expect(rows.find((row) => row.id === second.id)?.clockOutAt).toBeNull();
+    expect(rows.find((row) => row.id === second.id)?.clockOutAt).not.toBeNull();
   });
 
   it("keeps a forgotten prior-day clock-out actionable and requires a reason and time", async () => {
@@ -761,6 +778,7 @@ it("filters attendance history by employee, date, late, and early arrival", asyn
         businessDate: actor.businessDate,
         // 08:30 Asia/Jakarta, before the captured 09:00 shift start.
         clockInAt: new Date("2026-03-11T01:30:00.000Z"),
+        clockOutAt: new Date("2026-03-11T08:00:00.000Z"),
         shiftStartAtCapture: new Date(Date.UTC(1970, 0, 1, 9, 0, 0)),
       },
     }),
@@ -771,6 +789,7 @@ it("filters attendance history by employee, date, late, and early arrival", asyn
         shiftId: laterShift.id,
         businessDate: actor.businessDate,
         clockInAt: new Date("2026-03-11T09:10:00.000Z"), // 16:10 Asia/Jakarta
+        clockOutAt: new Date("2026-03-11T13:00:00.000Z"),
         shiftStartAtCapture: new Date(Date.UTC(1970, 0, 1, 16, 0, 0)),
         isLate: true,
         lateMinutes: 10,
@@ -868,6 +887,7 @@ it("keeps a multi-branch manager's team list to branches they manage", async () 
       shopId: manager.shop.id,
       businessDate: manager.actor.businessDate,
       clockInAt: new Date("2026-03-11T02:00:00.000Z"),
+      clockOutAt: new Date("2026-03-11T10:00:00.000Z"),
     },
   });
   const previousDay = new Date(manager.actor.businessDate);
@@ -878,6 +898,7 @@ it("keeps a multi-branch manager's team list to branches they manage", async () 
       shopId: staffBranch.shop.id,
       businessDate: previousDay,
       clockInAt: new Date("2026-03-10T02:00:00.000Z"),
+      clockOutAt: new Date("2026-03-10T10:00:00.000Z"),
     },
   });
   attendanceIds.push(today.id, staffBranchRecord.id);

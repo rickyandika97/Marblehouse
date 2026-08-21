@@ -49,8 +49,7 @@ export function ClockInFlow({
   scheduled,
   onLeave,
   shopHasRoster,
-  alreadyClockedIn,
-  record,
+  openRecord,
   doneHref,
 }: {
   shopName: string;
@@ -71,8 +70,13 @@ export function ClockInFlow({
    * before §4.14.1 — no cover prompt, matching the server's own gate.
    */
   shopHasRoster: boolean;
-  alreadyClockedIn: boolean;
-  record: { clockInAt: string; isLate: boolean; lateMinutes: number } | null;
+  /** Any open shift blocks a new clock-in, including one at another branch. */
+  openRecord: {
+    id: string;
+    clockInAt: string;
+    shopName: string;
+    shift: { id: string; name: string; endTime: string } | null;
+  } | null;
   /**
    * Where the Back / Done buttons go — the caller's role landing path, NOT a
    * hardcoded /dashboard. Staff have no dashboard (D-113).
@@ -237,35 +241,28 @@ export function ClockInFlow({
     }
   }
 
-  if (alreadyClockedIn && !result) {
+  if (openRecord && !result) {
     return (
       <div className="space-y-4">
-        <h1 className="text-2xl font-bold tracking-tight">Already clocked in</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Clock out first</h1>
         <div className="rounded-xl border p-4">
           <p className="text-sm">
-            You clocked in at{" "}
+            You are clocked in at <strong>{openRecord.shopName}</strong> since{" "}
             <strong>
-              {record
-                ? new Date(record.clockInAt).toLocaleTimeString("id-ID", {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })
-                : "—"}
+              {new Date(openRecord.clockInAt).toLocaleTimeString("id-ID", {
+                hour: "2-digit",
+                minute: "2-digit",
+              })}
             </strong>
-            {record?.isLate ? (
-              <span className="text-red-600">
-                {" "}
-                · {record.lateMinutes} minutes late
-              </span>
-            ) : null}
+            {openRecord.shift ? ` · ${openRecord.shift.name}` : null}
           </p>
           <p className="mt-2 text-sm text-muted-foreground">
-            This shift is already clocked in. You can still clock in for a
-            later shift at another branch.
+            Clock out of this shift before clocking in again. This prevents
+            overlapping shifts, even when the next shift is at another branch.
           </p>
         </div>
-        <Button render={<a href={doneHref} />} size="lg" className="w-full">
-          Back
+        <Button render={<a href="/attendance#clock-out" />} size="lg" className="w-full">
+          Clock out
         </Button>
       </div>
     );

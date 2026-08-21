@@ -54,8 +54,7 @@ export default async function ClockInPage() {
        * the screen demands a reason the API would have accepted without.
        */
       shopHasRoster={shopRoster.length > 0}
-      alreadyClockedIn={status.clockedIn}
-      record={status.record}
+      openRecord={status.openRecords[0] ?? null}
       /**
        * Where "Done" goes. Both buttons used to be hardcoded to /dashboard,
        * which is MANAGER-or-OWNER only — so a STAFF member finishing a

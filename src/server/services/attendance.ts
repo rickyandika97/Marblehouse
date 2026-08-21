@@ -311,10 +311,12 @@ export async function attendanceStatus(actor: Actor, now = new Date()) {
      * today. Someone unscheduled can still clock in — they just have to go
      * looking for it, and give a reason (D-136).
      */
-    // A completed morning shift is still evidence of that arrival, but a
-    // later scheduled shift at this shop remains eligible for a new clock-in.
+    // A completed morning shift is still evidence of that arrival, but a later
+    // scheduled shift remains eligible once every open attendance is clocked
+    // out.
     prompt:
       !actor.isOwner &&
+      allOpenRecords.length === 0 &&
       scheduledToday &&
       slots.some((slot) => !clockedShiftIds.has(slot.shiftId)),
     clockOutPrompt: clockOutPrompt
@@ -501,9 +503,23 @@ export async function clockIn(
     }
   }
 
-  // Fail before image processing, but only for the same scheduled shift (or
-  // the same branch's no-shift arrival). A PIK morning clock-in must never
-  // prevent an MKG evening clock-in on the same business date.
+  // A person can have one open attendance record at a time, regardless of the
+  // shift, branch, or business date. Check before image processing so staff
+  // get the useful clock-out warning without taking a rejected photo.
+  const openAttendance = await prisma.attendance.findFirst({
+    where: { userId: actor.userId, clockOutAt: null },
+    orderBy: { clockInAt: "desc" },
+    select: { id: true },
+  });
+  if (openAttendance) {
+    throw new AppError(
+      "CONFLICT",
+      "You are already clocked in. Clock out of your current shift before clocking in again."
+    );
+  }
+
+  // A later shift becomes available once the current one is clocked out, but
+  // a completed instance of the same shift still cannot be recorded twice.
   const existing = await prisma.attendance.findFirst({
     where: {
       userId: actor.userId,
@@ -618,6 +634,23 @@ export async function clockIn(
 
   try {
     const record = await prisma.$transaction(async (tx) => {
+      // The fast check above gives the normal request an immediate warning.
+      // This per-person transaction lock closes the check-then-insert race when
+      // two different shifts are submitted simultaneously. The partial unique
+      // index in the migration is the final backstop for writes outside this
+      // service.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${actor.userId}))`;
+      const stillOpen = await tx.attendance.findFirst({
+        where: { userId: actor.userId, clockOutAt: null },
+        select: { id: true },
+      });
+      if (stillOpen) {
+        throw new AppError(
+          "CONFLICT",
+          "You are already clocked in. Clock out of your current shift before clocking in again."
+        );
+      }
+
       const created = await tx.attendance.create({
         data: {
           userId: actor.userId,
@@ -699,7 +732,7 @@ export async function clockIn(
     ) {
       throw new AppError(
         "CONFLICT",
-        "You have already clocked in for this shift today."
+        "You are already clocked in. Clock out of your current shift before clocking in again."
       );
     }
     throw error;

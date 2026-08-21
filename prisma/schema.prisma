@@ -959,10 +959,9 @@ model Attendance {
   editedById        String?
   editedAt          DateTime?
 
-  /// A person may work several scheduled shifts in one business day, including
-  /// at different branches. A configured shift may be clocked into once per
-  /// person and business date; the partial unique index in the accompanying
-  /// migration applies the equivalent double-tap guard for a no-shift arrival.
+  /// A configured shift may be clocked into once per person and business date.
+  /// The accompanying migration additionally permits only one open attendance
+  /// row per person, so the current shift must end before another begins.
   @@unique([userId, businessDate, shiftId])
   @@index([shopId, businessDate])
   @@index([businessDate, isLate])

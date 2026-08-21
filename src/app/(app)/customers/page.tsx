@@ -1,5 +1,6 @@
 import { requireActorPage } from "@/server/auth/page-guard";
 import { searchCustomers } from "@/server/services/customers";
+import { getCustomerWhatsAppReminderTemplate } from "@/server/services/settings";
 import { CustomerSearch } from "./customer-search";
 
 export const metadata = { title: "Customers · Marblehouse" };
@@ -17,7 +18,10 @@ export default async function CustomersPage() {
 
   // Seed the list server-side so the screen is useful before the first
   // keystroke — most lookups are a recent customer.
-  const { customers } = await searchCustomers(actor, {});
+  const [{ customers }, whatsappReminderTemplate] = await Promise.all([
+    searchCustomers(actor, {}),
+    getCustomerWhatsAppReminderTemplate(),
+  ]);
 
   return (
     <div className="space-y-5">
@@ -28,7 +32,10 @@ export default async function CustomersPage() {
         </p>
       </div>
 
-      <CustomerSearch initial={customers} />
+      <CustomerSearch
+        initial={customers}
+        whatsappReminderTemplate={whatsappReminderTemplate}
+      />
     </div>
   );
 }

@@ -14,18 +14,30 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Loader2, Search, UserRound } from "lucide-react";
+import { Loader2, MessageCircle, Search, UserRound } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  customerWhatsAppUrl,
+  renderCustomerWhatsAppReminder,
+} from "@/lib/customer-whatsapp";
 
 interface CustomerRow {
   id: string;
   name: string;
+  phone: string;
   phoneDisplay: string;
   marbleBalance: number;
   ticketBalance: number;
 }
 
-export function CustomerSearch({ initial }: { initial: CustomerRow[] }) {
+export function CustomerSearch({
+  initial,
+  whatsappReminderTemplate,
+}: {
+  initial: CustomerRow[];
+  whatsappReminderTemplate: string;
+}) {
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<CustomerRow[]>(initial);
   const [loading, setLoading] = useState(false);
@@ -80,10 +92,10 @@ export function CustomerSearch({ initial }: { initial: CustomerRow[] }) {
       ) : (
         <ul className="divide-y rounded-xl border">
           {rows.map((customer) => (
-            <li key={customer.id}>
+            <li key={customer.id} className="flex items-center hover:bg-muted">
               <Link
                 href={`/customers/${customer.id}`}
-                className="flex items-center gap-3 px-4 py-4 hover:bg-muted"
+                className="flex min-w-0 flex-1 items-center gap-3 px-4 py-4"
               >
                 <UserRound className="size-5 shrink-0 text-muted-foreground" />
                 <span className="min-w-0 flex-1">
@@ -103,6 +115,27 @@ export function CustomerSearch({ initial }: { initial: CustomerRow[] }) {
                   </span>
                 </span>
               </Link>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="mr-3 shrink-0 text-emerald-700 hover:text-emerald-800"
+                aria-label={`Open WhatsApp reminder for ${customer.name}`}
+                render={
+                  <a
+                    href={customerWhatsAppUrl(
+                      customer.phone,
+                      renderCustomerWhatsAppReminder(
+                        whatsappReminderTemplate,
+                        customer
+                      )
+                    )}
+                    target="_blank"
+                    rel="noreferrer"
+                  />
+                }
+              >
+                <MessageCircle className="size-5" />
+              </Button>
             </li>
           ))}
         </ul>

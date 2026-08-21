@@ -793,6 +793,7 @@ describe("attendanceReport (§9 late rate)", () => {
           shopId: shopA,
           businessDate,
           clockInAt: businessDate,
+          clockOutAt: new Date(businessDate.getTime() + 8 * 60 * 60 * 1000),
           isLate,
           lateMinutes,
           status: isLate ? "LATE" : "PRESENT",
@@ -812,6 +813,10 @@ describe("attendanceReport (§9 late rate)", () => {
     expect(row.lateCount).toBe(1);
     expect(row.lateRate).toBe("0.5");
     expect(row.averageLateMinutes).toBe("10");
+    expect(row.totalWorkMinutes).toBe(960);
+    // These fixture rows do not name a shift, so a bonus calculation cannot
+    // invent an overtime threshold for them.
+    expect(row.totalOvertimeMinutes).toBe(0);
   });
 
   it("refuses team attendance to STAFF (§3.4)", async () => {

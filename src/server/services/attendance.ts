@@ -10,8 +10,8 @@
  *   - `businessDate` is computed server-side like every other dated row (§4.2).
  *   - Lateness is computed from the SHOP's timezone and the SHIFT's start,
  *     then **snapshotted** onto the row (`shiftStartAtCapture`,
- *     `graceMinAtCapture`) so a later edit to the shift cannot rewrite history
- *     (§4.14).
+ *     `shiftEndAtCapture`, `graceMinAtCapture`) so a later edit to the shift
+ *     cannot rewrite history (§4.14), including payroll overtime.
  *   - The photo is watermarked server-side (see `attendance-photo.ts`).
  *
  * A person may work more than one scheduled shift in a business day, including
@@ -559,6 +559,7 @@ export async function clockIn(
   let isLate = false;
   let lateMinutes = 0;
   let shiftStartAtCapture: Date | null = null;
+  let shiftEndAtCapture: Date | null = null;
 
   if (shift) {
     const { hour, minute } = localParts(clockInAt, shop.timezone);
@@ -574,6 +575,7 @@ export async function clockIn(
     }));
 
     shiftStartAtCapture = shift.startTime;
+    shiftEndAtCapture = shift.endTime;
   }
 
   const locationDenied =
@@ -604,6 +606,7 @@ export async function clockIn(
           businessDate: actor.businessDate,
           clockInAt,
           shiftStartAtCapture,
+          shiftEndAtCapture,
           graceMinAtCapture: shop.lateGraceMin,
           status: isLate ? "LATE" : "PRESENT",
           isLate,
@@ -810,6 +813,8 @@ export async function listAttendance(
       businessDate: true,
       clockInAt: true,
       clockOutAt: true,
+      shiftStartAtCapture: true,
+      shiftEndAtCapture: true,
       isLate: true,
       lateMinutes: true,
       status: true,
@@ -820,8 +825,8 @@ export async function listAttendance(
       scheduleSource: true,
       coverReason: true,
       user: { select: { id: true, displayName: true } },
-      shop: { select: { id: true, name: true, code: true } },
-      shift: { select: { id: true, name: true } },
+      shop: { select: { id: true, name: true, code: true, timezone: true } },
+      shift: { select: { id: true, name: true, startTime: true, endTime: true } },
     },
   });
 
@@ -890,6 +895,8 @@ export async function listAttendanceAttention(
       businessDate: true,
       clockInAt: true,
       clockOutAt: true,
+      shiftStartAtCapture: true,
+      shiftEndAtCapture: true,
       isLate: true,
       lateMinutes: true,
       status: true,
@@ -900,8 +907,8 @@ export async function listAttendanceAttention(
       scheduleSource: true,
       coverReason: true,
       user: { select: { id: true, displayName: true } },
-      shop: { select: { id: true, name: true, code: true } },
-      shift: { select: { id: true, name: true } },
+      shop: { select: { id: true, name: true, code: true, timezone: true } },
+      shift: { select: { id: true, name: true, startTime: true, endTime: true } },
     },
   });
 
@@ -923,6 +930,8 @@ export async function getAttendance(actor: Actor, id: string) {
       businessDate: true,
       clockInAt: true,
       clockOutAt: true,
+      shiftStartAtCapture: true,
+      shiftEndAtCapture: true,
       isLate: true,
       lateMinutes: true,
       status: true,
@@ -936,8 +945,8 @@ export async function getAttendance(actor: Actor, id: string) {
       scheduleSource: true,
       coverReason: true,
       user: { select: { id: true, displayName: true } },
-      shop: { select: { id: true, name: true, code: true } },
-      shift: { select: { id: true, name: true } },
+      shop: { select: { id: true, name: true, code: true, timezone: true } },
+      shift: { select: { id: true, name: true, startTime: true, endTime: true } },
     },
   });
   if (!record) throw notFound("That attendance record no longer exists.");
@@ -964,11 +973,87 @@ export function assertCanReadAttendance(
   throw forbidden("You do not have access to that attendance record.");
 }
 
+type AttendanceWorkRow = {
+  businessDate: Date;
+  clockInAt: Date;
+  clockOutAt: Date | null;
+  shiftStartAtCapture: Date | null;
+  shiftEndAtCapture: Date | null;
+  shop: { timezone: string };
+  shift: { startTime: Date; endTime: Date } | null;
+};
+
+/**
+ * Resolve a local wall-clock date/time into an instant without letting the
+ * server's own timezone leak into payroll. Two passes handle offsets around a
+ * daylight-saving transition for branches outside Indonesia.
+ */
+function localWallClockToUtc(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  timezone: string
+): Date {
+  const wanted = Date.UTC(year, month - 1, day, hour, minute);
+  let guess = wanted;
+  for (let pass = 0; pass < 2; pass += 1) {
+    const local = localParts(new Date(guess), timezone);
+    const seen = Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute);
+    guess += wanted - seen;
+  }
+  return new Date(guess);
+}
+
+/**
+ * Completed work is the server clock-out minus the server clock-in. Overtime
+ * is only the time after the scheduled end that applied when the employee
+ * clocked in; an unscheduled/manual row deliberately has no invented overtime.
+ */
+export function attendanceWorkSummary(row: AttendanceWorkRow): {
+  workedMinutes: number | null;
+  overtimeMinutes: number | null;
+} {
+  if (!row.clockOutAt) return { workedMinutes: null, overtimeMinutes: null };
+
+  const workedMinutes = Math.max(
+    0,
+    Math.floor((row.clockOutAt.getTime() - row.clockInAt.getTime()) / 60_000)
+  );
+  const start = row.shiftStartAtCapture ?? row.shift?.startTime ?? null;
+  const end = row.shiftEndAtCapture ?? row.shift?.endTime ?? null;
+  if (!start || !end) return { workedMinutes, overtimeMinutes: null };
+
+  const startMin = shiftTimeToMinutes(start);
+  const endMin = shiftTimeToMinutes(end);
+  const date = new Date(row.businessDate);
+  if (endMin < startMin) date.setUTCDate(date.getUTCDate() + 1);
+  const scheduledEnd = localWallClockToUtc(
+    date.getUTCFullYear(),
+    date.getUTCMonth() + 1,
+    date.getUTCDate(),
+    Math.floor(endMin / 60),
+    endMin % 60,
+    row.shop.timezone
+  );
+
+  return {
+    workedMinutes,
+    overtimeMinutes: Math.max(
+      0,
+      Math.floor((row.clockOutAt.getTime() - scheduledEnd.getTime()) / 60_000)
+    ),
+  };
+}
+
 function toAttendanceDTO(row: {
   id: string;
   businessDate: Date;
   clockInAt: Date;
   clockOutAt: Date | null;
+  shiftStartAtCapture: Date | null;
+  shiftEndAtCapture: Date | null;
   isLate: boolean;
   lateMinutes: number;
   status: string;
@@ -979,14 +1064,16 @@ function toAttendanceDTO(row: {
   scheduleSource: "SCHEDULED" | "COVER" | "MANUAL";
   coverReason: string | null;
   user: { id: string; displayName: string };
-  shop: { id: string; name: string; code: string };
-  shift: { id: string; name: string } | null;
+  shop: { id: string; name: string; code: string; timezone: string };
+  shift: { id: string; name: string; startTime: Date; endTime: Date } | null;
 }) {
+  const work = attendanceWorkSummary(row);
   return {
     id: row.id,
     businessDate: row.businessDate.toISOString().slice(0, 10),
     clockInAt: row.clockInAt.toISOString(),
     clockOutAt: row.clockOutAt?.toISOString() ?? null,
+    ...work,
     isLate: row.isLate,
     lateMinutes: row.lateMinutes,
     status: row.status,
@@ -999,7 +1086,7 @@ function toAttendanceDTO(row: {
     scheduleSource: row.scheduleSource,
     coverReason: row.coverReason,
     user: row.user,
-    shop: row.shop,
+    shop: { id: row.shop.id, name: row.shop.name, code: row.shop.code },
     shift: row.shift,
   };
 }

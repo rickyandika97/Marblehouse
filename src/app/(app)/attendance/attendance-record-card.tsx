@@ -15,6 +15,9 @@ export interface AttendanceRecord {
   businessDate: string;
   clockInAt: string;
   clockOutAt: string | null;
+  /** Null until clock-out; no scheduled shift means overtime is null. */
+  workedMinutes: number | null;
+  overtimeMinutes: number | null;
   isLate: boolean;
   lateMinutes: number;
   status: string;
@@ -48,6 +51,22 @@ export function clockRange(clockInAt: string, clockOutAt: string | null): string
   return clockOutAt
     ? `${hhmm(clockInAt)} → ${hhmm(clockOutAt)}`
     : `${hhmm(clockInAt)} → still in`;
+}
+
+/** Compact, payroll-friendly duration used in history and reports. */
+export function durationLabel(minutes: number): string {
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return hours > 0 ? `${hours}h ${remainder}m` : `${remainder}m`;
+}
+
+export function workSummaryLabel(record: AttendanceRecord): string {
+  if (record.workedMinutes === null) return "Work time pending clock-out";
+  const overtime =
+    record.overtimeMinutes === null
+      ? "no scheduled overtime"
+      : `overtime ${durationLabel(record.overtimeMinutes)}`;
+  return `Worked ${durationLabel(record.workedMinutes)} · ${overtime}`;
 }
 
 /** The coloured status pill used in both the list and the detail. */
@@ -122,6 +141,9 @@ export function AttendanceRecordCard({
           <p className="text-sm text-muted-foreground">
             {clockRange(record.clockInAt, record.clockOutAt)}
             {record.shift ? ` · ${record.shift.name}` : ""}
+          </p>
+          <p className="text-sm font-medium tabular-nums">
+            {workSummaryLabel(record)}
           </p>
           {record.scheduleSource === "COVER" && (
             <p className="text-sm font-medium text-amber-700">

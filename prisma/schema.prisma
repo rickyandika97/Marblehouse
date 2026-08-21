@@ -928,6 +928,9 @@ model Attendance {
 
   /// Snapshot so later shift edits do not rewrite lateness history.
   shiftStartAtCapture DateTime?
+  /// The scheduled end is also preserved so payroll overtime cannot change
+  /// when an administrator edits a shift after it was worked.
+  shiftEndAtCapture   DateTime?
   graceMinAtCapture   Int?
 
   status      AttendanceStatus @default(PRESENT)

@@ -195,6 +195,8 @@ const EXPORTS: Record<string, Builder> = {
         cols([
           { header: "Staff", value: (r) => r.displayName },
           { header: "Records", value: (r) => r.records },
+          { header: "Total work minutes", value: (r) => r.totalWorkMinutes },
+          { header: "Overtime minutes", value: (r) => r.totalOvertimeMinutes },
           { header: "Late count", value: (r) => r.lateCount },
           { header: "Late rate", value: (r) => r.lateRate },
           { header: "Total late minutes", value: (r) => r.totalLateMinutes },

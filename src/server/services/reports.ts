@@ -33,6 +33,7 @@ import { prisma } from "@/lib/prisma";
 import type { Actor } from "@/server/auth/context";
 import { canSeeCostForShop, hasShopAccess } from "@/server/auth/context";
 import { AppError, forbidden } from "@/server/errors";
+import { attendanceWorkSummary } from "@/server/services/attendance";
 
 const ZERO = new Prisma.Decimal(0);
 
@@ -1172,6 +1173,10 @@ export interface AttendanceReportRow {
   userId: string;
   displayName: string;
   records: number;
+  /** Completed clock-in to clock-out time only; open records are excluded. */
+  totalWorkMinutes: number;
+  /** Time after the scheduled end captured when clocking in. */
+  totalOvertimeMinutes: number;
   lateCount: number;
   lateRate: string;
   totalLateMinutes: number;
@@ -1184,7 +1189,13 @@ export async function attendanceReport(
 ): Promise<{
   rows: AttendanceReportRow[];
   scope: ResolvedScope;
-  totals: { records: number; lateCount: number; lateRate: string };
+  totals: {
+    records: number;
+    totalWorkMinutes: number;
+    totalOvertimeMinutes: number;
+    lateCount: number;
+    lateRate: string;
+  };
 }> {
   // Team attendance is a manager view of a SHOP's staff, so the role that
   // matters is the role at the shop that resolves — not "manager somewhere"
@@ -1199,17 +1210,32 @@ export async function attendanceReport(
     ...(input.outsideSchedule ? { scheduleSource: "COVER" as const } : {}),
   };
 
-  const groups = await prisma.attendance.groupBy({
-    by: ["userId"],
-    where: attendanceWhere,
-    _count: true,
-    _sum: { lateMinutes: true },
-  });
-  const lateGroups = await prisma.attendance.groupBy({
-    by: ["userId"],
-    where: { ...attendanceWhere, isLate: true },
-    _count: true,
-  });
+  const [groups, lateGroups, completedRows] = await Promise.all([
+    prisma.attendance.groupBy({
+      by: ["userId"],
+      where: attendanceWhere,
+      _count: true,
+      _sum: { lateMinutes: true },
+    }),
+    prisma.attendance.groupBy({
+      by: ["userId"],
+      where: { ...attendanceWhere, isLate: true },
+      _count: true,
+    }),
+    prisma.attendance.findMany({
+      where: { ...attendanceWhere, clockOutAt: { not: null } },
+      select: {
+        userId: true,
+        businessDate: true,
+        clockInAt: true,
+        clockOutAt: true,
+        shiftStartAtCapture: true,
+        shiftEndAtCapture: true,
+        shop: { select: { timezone: true } },
+        shift: { select: { startTime: true, endTime: true } },
+      },
+    }),
+  ]);
   const users = await prisma.user.findMany({
     where: { id: { in: groups.map((g) => g.userId) } },
     select: { id: true, displayName: true },
@@ -1217,16 +1243,32 @@ export async function attendanceReport(
 
   const nameById = new Map(users.map((u) => [u.id, u.displayName]));
   const lateById = new Map(lateGroups.map((g) => [g.userId, g._count]));
+  const workById = new Map<string, { totalWorkMinutes: number; totalOvertimeMinutes: number }>();
+  for (const record of completedRows) {
+    const current = workById.get(record.userId) ?? {
+      totalWorkMinutes: 0,
+      totalOvertimeMinutes: 0,
+    };
+    const work = attendanceWorkSummary(record);
+    current.totalWorkMinutes += work.workedMinutes ?? 0;
+    current.totalOvertimeMinutes += work.overtimeMinutes ?? 0;
+    workById.set(record.userId, current);
+  }
 
   const rows = groups
     .map((g) => {
       const records = g._count;
       const lateCount = lateById.get(g.userId) ?? 0;
       const totalLateMinutes = g._sum.lateMinutes ?? 0;
+      const work = workById.get(g.userId) ?? {
+        totalWorkMinutes: 0,
+        totalOvertimeMinutes: 0,
+      };
       return {
         userId: g.userId,
         displayName: nameById.get(g.userId) ?? "Unknown user",
         records,
+        ...work,
         lateCount,
         lateRate: ratio(lateCount, records),
         totalLateMinutes,
@@ -1242,6 +1284,8 @@ export async function attendanceReport(
     .sort((a, b) => Number(b.lateRate) - Number(a.lateRate));
 
   const totalRecords = rows.reduce((n, r) => n + r.records, 0);
+  const totalWorkMinutes = rows.reduce((n, r) => n + r.totalWorkMinutes, 0);
+  const totalOvertimeMinutes = rows.reduce((n, r) => n + r.totalOvertimeMinutes, 0);
   const totalLate = rows.reduce((n, r) => n + r.lateCount, 0);
 
   return {
@@ -1249,6 +1293,8 @@ export async function attendanceReport(
     scope,
     totals: {
       records: totalRecords,
+      totalWorkMinutes,
+      totalOvertimeMinutes,
       lateCount: totalLate,
       lateRate: ratio(totalLate, totalRecords),
     },

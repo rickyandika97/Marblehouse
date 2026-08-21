@@ -7,7 +7,11 @@ import {
   listAttendanceAttention,
 } from "@/server/services/attendance";
 import { Card, CardContent } from "@/components/ui/card";
-import { AttendanceRecordCard, type AttendanceRecord } from "./attendance-record-card";
+import {
+  AttendanceRecordCard,
+  durationLabel,
+  type AttendanceRecord,
+} from "./attendance-record-card";
 import {
   ReportShell,
   ReportTable,
@@ -119,6 +123,8 @@ export async function AttendanceReport({
             contentClassName="pt-0"
             items={[
               { label: "Records", value: formatAmount(selected.records) },
+              { label: "Total worked", value: durationLabel(selected.totalWorkMinutes) },
+              { label: "Overtime", value: durationLabel(selected.totalOvertimeMinutes) },
               { label: "Late arrivals", value: formatAmount(selected.lateCount) },
               { label: "Late rate", value: percent(selected.lateRate) },
               {
@@ -185,16 +191,18 @@ export async function AttendanceReport({
         contentClassName="pt-0"
         items={[
           { label: "Records", value: formatAmount(totals.records) },
+          { label: "Total worked", value: durationLabel(totals.totalWorkMinutes) },
+          { label: "Overtime", value: durationLabel(totals.totalOvertimeMinutes) },
           { label: "Late arrivals", value: formatAmount(totals.lateCount) },
           { label: "Late rate", value: percent(totals.lateRate) },
         ]}
       />
 
       <p className="text-sm text-muted-foreground">
-        Lateness is measured from the shift start recorded at the moment of clock-in, so
-        editing a shift later never rewrites past lateness. Five minutes late is on time;
-        five minutes and one second is late. Tap a name to see that person&apos;s clock-in
-        times and photos.
+        Work time is the recorded clock-in to clock-out interval. Overtime is time after
+        the scheduled end captured at clock-in, so editing a shift later never rewrites
+        payroll history. Open records are excluded from these totals. Tap a name to see
+        each clock-in, clock-out, and photo.
       </p>
 
       <ReportTable
@@ -219,6 +227,16 @@ export async function AttendanceReport({
             },
           },
           { header: "Records", cell: (row) => formatAmount(row.records), numeric: true },
+          {
+            header: "Total worked",
+            cell: (row) => durationLabel(row.totalWorkMinutes),
+            numeric: true,
+          },
+          {
+            header: "Overtime",
+            cell: (row) => durationLabel(row.totalOvertimeMinutes),
+            numeric: true,
+          },
           { header: "Late", cell: (row) => formatAmount(row.lateCount), numeric: true },
           { header: "Late rate", cell: (row) => percent(row.lateRate), numeric: true },
           {

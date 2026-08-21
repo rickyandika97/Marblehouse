@@ -168,6 +168,7 @@ describe("clock-in (§4.13)", () => {
         latitude: true,
         graceMinAtCapture: true,
         shiftStartAtCapture: true,
+        shiftEndAtCapture: true,
       },
     });
     expect(row?.photoPath).toMatch(/^attendance[/\\]/);
@@ -177,6 +178,7 @@ describe("clock-in (§4.13)", () => {
     // §4.14: the shift start and grace are SNAPSHOTTED onto the record so a
     // later edit to the shift cannot rewrite this day's lateness.
     expect(row?.shiftStartAtCapture).not.toBeNull();
+    expect(row?.shiftEndAtCapture).not.toBeNull();
     expect(row?.graceMinAtCapture).toBe(5);
   });
 
@@ -776,6 +778,32 @@ it("filters attendance history by employee, date, late, and early arrival", asyn
     to: "2026-03-12",
   });
   expect(otherDate).toEqual([]);
+});
+
+it("returns completed work and overtime from the captured scheduled end", async () => {
+  const { shop, user, shift, actor } = await fixture();
+  const row = await prisma.attendance.create({
+    data: {
+      userId: user.id,
+      shopId: shop.id,
+      shiftId: shift.id,
+      businessDate: actor.businessDate,
+      // 09:00 → 18:20 Asia/Jakarta = 9h 20m worked, 1h 20m after a 17:00 end.
+      clockInAt: new Date("2026-03-11T02:00:00.000Z"),
+      clockOutAt: new Date("2026-03-11T11:20:00.000Z"),
+      shiftStartAtCapture: new Date(Date.UTC(1970, 0, 1, 9, 0, 0)),
+      shiftEndAtCapture: new Date(Date.UTC(1970, 0, 1, 17, 0, 0)),
+    },
+  });
+  attendanceIds.push(row.id);
+
+  const [listed] = await listAttendance(actor, { mineOnly: true });
+  expect(listed).toMatchObject({
+    id: row.id,
+    clockOutAt: "2026-03-11T11:20:00.000Z",
+    workedMinutes: 560,
+    overtimeMinutes: 80,
+  });
 });
 
 it("keeps a multi-branch manager's team list to branches they manage", async () => {

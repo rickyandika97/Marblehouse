@@ -12,6 +12,7 @@ import {
   AttendanceRecordCard,
   StatusPill,
   clockRange,
+  workSummaryLabel,
   type AttendanceRecord,
 } from "./attendance-record-card";
 import { cn } from "@/lib/utils";
@@ -227,6 +228,9 @@ export function AttendanceList({
                     {clockRange(r.clockInAt, r.clockOutAt)}
                     {r.shift ? ` · ${r.shift.name}` : ""} · {r.shop.code}
                     {r.scheduleSource === "COVER" ? " · Outside schedule" : ""}
+                  </p>
+                  <p className="text-xs font-medium tabular-nums">
+                    {workSummaryLabel(r)}
                   </p>
                 </div>
 

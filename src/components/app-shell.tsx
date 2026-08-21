@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 import { AttendanceBanner } from "@/components/attendance-banner";
 import { ShopHandoffBanner } from "@/components/shop-handoff-banner";
 import { ShopSwitcher, type ShopSwitcherOption } from "@/components/shop-switcher";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 /**
  * Role-dependent bottom tab bar (§8.0).
@@ -119,6 +120,7 @@ export function AppShell({
             currentShopId={shopId}
             currentShopName={shopName}
           />
+          <ThemeToggle />
 
           <div className="ml-auto flex items-center gap-3">
             <span className="hidden text-sm text-muted-foreground sm:inline">

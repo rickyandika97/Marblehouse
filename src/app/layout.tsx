@@ -48,10 +48,16 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="id" style={{ ["--font-sans" as string]: FONT_STACK }}>
+    <html
+      lang="id"
+      suppressHydrationWarning
+      style={{ ["--font-sans" as string]: FONT_STACK }}
+    >
       <body className="min-h-full subpixel-antialiased">
-        <Providers>{children}</Providers>
-        <Toaster position="top-center" richColors />
+        <Providers>
+          {children}
+          <Toaster position="top-center" richColors />
+        </Providers>
       </body>
     </html>
   );

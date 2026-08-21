@@ -20,6 +20,7 @@ import {
 } from "@/lib/customer-whatsapp";
 import type { CustomerOwnerDTO } from "@/server/dto/customer";
 import { BalanceActions } from "./balance-actions";
+import { EditCustomer } from "./edit-customer";
 import { MergeCustomer } from "./merge-customer";
 
 export const metadata = { title: "Customer · Marblehouse" };
@@ -90,6 +91,7 @@ export default async function CustomerDetailPage({
             {customer.phoneDisplay}
           </p>
         </div>
+        <EditCustomer customer={customer} />
         {owner && <MergeCustomer winnerId={customer.id} winnerName={customer.name} />}
       </div>
 

@@ -202,6 +202,22 @@ export async function updateCustomer(
       },
     });
 
+    await writeAudit(actor, {
+      entity: "Customer",
+      entityId: id,
+      action: "UPDATE",
+      before: {
+        name: existing.name,
+        phone: existing.phoneNormalized,
+        note: existing.note,
+      },
+      after: {
+        name: updated.name,
+        phone: updated.phoneNormalized,
+        note: updated.note,
+      },
+    });
+
     return toCustomerDTO(updated);
   } catch (e) {
     if (

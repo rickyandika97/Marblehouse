@@ -15,7 +15,12 @@
  * Pure-function tests, no database.
  */
 import { describe, expect, it } from "vitest";
-import { formatPhoneLocal, isPlausiblePhone, normalizePhone } from "../phone";
+import {
+  formatPhoneLocal,
+  isPlausiblePhone,
+  normalizePhone,
+  phoneSearchCandidates,
+} from "../phone";
 
 /** The canonical form every spelling below must collapse to. */
 const KEY = "+628123456789";
@@ -126,5 +131,19 @@ describe("display formatting", () => {
     // §4.4 stores both the raw input and the key. This is what keeps the
     // displayed value and the lookup value describing one customer.
     expect(normalizePhone(formatPhoneLocal(KEY))).toBe(KEY);
+  });
+});
+
+describe("phone search candidates", () => {
+  it("finds a country-code record from the local digits staff type", () => {
+    const candidates = phoneSearchCandidates("0812-3456");
+
+    expect(candidates).toContain("08123456");
+    expect(candidates).toContain("628123456");
+    expect(candidates.some((term) => KEY.includes(term))).toBe(true);
+  });
+
+  it("keeps a subscriber-number fragment literal", () => {
+    expect(phoneSearchCandidates("3456")).toEqual(["3456"]);
   });
 });

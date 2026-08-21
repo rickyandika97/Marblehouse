@@ -58,12 +58,10 @@ export function SaleForm({
   presets,
   allowCustomAmount,
   initialSummary,
-  shopId,
 }: {
   presets: Preset[];
   allowCustomAmount: boolean;
   initialSummary: Summary;
-  shopId: string;
 }) {
   const router = useRouter();
 
@@ -293,7 +291,6 @@ export function SaleForm({
       <CustomerPicker
         open={pickerOpen}
         onOpenChange={setPickerOpen}
-        shopId={shopId}
         onPick={(picked) => {
           setCustomer(picked);
           setPickerOpen(false);

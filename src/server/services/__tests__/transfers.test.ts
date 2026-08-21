@@ -36,12 +36,13 @@ async function setup(
   opts: { allowDirectTransfer?: boolean } = {}
 ) {
   const [from, to] = await Promise.all([makeShop(tx, "Source"), makeShop(tx, "Dest")]);
-  if (opts.allowDirectTransfer) {
-    await tx.shop.update({
-      where: { id: from.id },
-      data: { allowDirectTransfer: true },
-    });
-  }
+  // Most transfer tests exercise the normal two-step path explicitly. The
+  // production default is direct transfer, so pin the fixture to this test
+  // mode rather than inheriting a database default that changes over time.
+  await tx.shop.update({
+    where: { id: from.id },
+    data: { allowDirectTransfer: opts.allowDirectTransfer ?? false },
+  });
   const prize = await makePrize(tx);
   const actor = await makeActorWithUser(tx, {
     role: "MANAGER",
@@ -143,6 +144,41 @@ describe("transfer dispatch", () => {
 });
 
 describe("transfer receive", () => {
+  it("activates the received item at the destination without changing its warning level", async () => {
+    await withRollback(async (tx) => {
+      const { from, to, prize, actor } = await setup(tx);
+      await tx.shopPrizeConfig.create({
+        data: {
+          shopId: to.id,
+          prizeItemId: prize.id,
+          isActive: false,
+          lowStockThreshold: 7,
+        },
+      });
+      await makeBatch(tx, {
+        shopId: from.id,
+        prizeItemId: prize.id,
+        qty: 3,
+        unitCogs: 1000,
+      });
+
+      const dispatched = await dispatchTransfer(
+        tx,
+        actor,
+        { fromShopId: from.id, toShopId: to.id, lines: [{ prizeItemId: prize.id, qty: 3 }] },
+        BUSINESS_DATE
+      );
+      await receiveTransfer(tx, actor, dispatched.id, BUSINESS_DATE);
+
+      await expect(
+        tx.shopPrizeConfig.findUnique({
+          where: { shopId_prizeItemId: { shopId: to.id, prizeItemId: prize.id } },
+          select: { isActive: true, lowStockThreshold: true },
+        })
+      ).resolves.toEqual({ isActive: true, lowStockThreshold: 7 });
+    });
+  });
+
   it("conserves quantity and cost across a dispatch → receive round trip (§15)", async () => {
     await withRollback(async (tx) => {
       const { from, to, prize, actor } = await setup(tx);

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ChevronRight, ImageIcon, Loader2 } from "lucide-react";
+import { ArrowRight, ChevronRight, ImageIcon, Loader2, Pencil } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,6 +15,11 @@ import {
 } from "@/components/ui/dialog";
 import { formatMoney } from "@/lib/money";
 import { AdjustStockButton } from "./adjust-stock";
+import {
+  TransferCart,
+  type Destination,
+  type TransferSourceShop,
+} from "./transfer-cart";
 import { cn } from "@/lib/utils";
 import type { PrizeDTO } from "@/server/dto/prize";
 
@@ -90,6 +95,8 @@ export function ItemDrawer({
   shopId,
   shopName,
   showCost,
+  destinations,
+  sourceShops,
   open,
   onOpenChange,
 }: {
@@ -97,14 +104,26 @@ export function ItemDrawer({
   shopId: string;
   shopName: string;
   showCost: boolean;
+  destinations: Destination[];
+  sourceShops: TransferSourceShop[];
   open: boolean;
   onOpenChange: (next: boolean) => void;
 }) {
+  const [view, setView] = useState<"item" | "catalog">("item");
+  const [stockScope, setStockScope] = useState<"this" | "across">("this");
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [transferSourceShopId, setTransferSourceShopId] = useState(shopId);
+
+  function startTransfer(fromShopId = shopId) {
+    setTransferSourceShopId(fromShopId);
+    setTransferOpen(true);
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[786px]">
         <DialogHeader>
-          <DialogTitle>{prize.name}</DialogTitle>
+          <DialogTitle className="text-xl font-bold">{prize.name}</DialogTitle>
           <p className="text-sm text-muted-foreground">
             {prize.sku}
             {prize.category && ` · ${prize.category}`} ·{" "}
@@ -115,16 +134,98 @@ export function ItemDrawer({
           </p>
         </DialogHeader>
 
-        <div className="space-y-6">
-          <BatchSection
-            prize={prize}
-            shopId={shopId}
-            showCost={showCost}
-            open={open}
-          />
-          <BranchSection prize={prize} shopId={shopId} shopName={shopName} />
-          <CatalogSection prize={prize} />
-        </div>
+        {view === "item" ? (
+          <div className="space-y-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex w-fit gap-0.5 rounded-[10px] bg-muted p-0.5">
+                <button
+                  type="button"
+                  className={cn(
+                    "h-9 rounded-lg px-3.5 text-[13px] font-semibold transition-colors",
+                    stockScope === "this"
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                  onClick={() => setStockScope("this")}
+                >
+                  This shop
+                </button>
+                <button
+                  type="button"
+                  className={cn(
+                    "h-9 rounded-lg px-3.5 text-[13px] font-semibold transition-colors",
+                    stockScope === "across"
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                  onClick={() => setStockScope("across")}
+                >
+                  Across shops
+                </button>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  className="h-10 min-h-0 rounded-[10px] px-3.5 text-[13px] font-semibold"
+                  onClick={() => setView("catalog")}
+                >
+                  <Pencil className="size-4" />
+                  Edit
+                </Button>
+                <Button
+                  variant="outline"
+                  className="h-10 min-h-0 rounded-[10px] px-3.5 text-[13px] font-semibold"
+                  onClick={() => startTransfer()}
+                >
+                  <ArrowRight className="size-4" />
+                  Send to another shop
+                </Button>
+              </div>
+            </div>
+
+            {stockScope === "this" ? (
+              <BatchSection
+                prize={prize}
+                shopId={shopId}
+                shopName={shopName}
+                showCost={showCost}
+                open={open}
+                onStartTransfer={startTransfer}
+              />
+            ) : (
+              <AcrossShopsSection
+                prizeId={prize.id}
+                sourceShops={sourceShops}
+                showCost={showCost}
+                open={open}
+                onStartTransfer={startTransfer}
+              />
+            )}
+            <BranchSummary prize={prize} shopName={shopName} />
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <CatalogSection prize={prize} />
+            <BranchSection prize={prize} shopId={shopId} shopName={shopName} />
+          </div>
+        )}
+
+        <Dialog open={transferOpen} onOpenChange={setTransferOpen}>
+          <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
+            <DialogHeader>
+              <DialogTitle>Send {prize.name}</DialogTitle>
+            </DialogHeader>
+            <TransferCart
+              key={transferSourceShopId}
+              initialFromShopId={transferSourceShopId}
+              initialPrizeItemId={prize.id}
+              sourceShops={sourceShops}
+              destinations={destinations}
+              onSent={() => setTransferOpen(false)}
+            />
+          </DialogContent>
+        </Dialog>
       </DialogContent>
     </Dialog>
   );
@@ -135,13 +236,17 @@ export function ItemDrawer({
 function BatchSection({
   prize,
   shopId,
+  shopName,
   showCost,
   open,
+  onStartTransfer,
 }: {
   prize: PrizeDTO;
   shopId: string;
+  shopName: string;
   showCost: boolean;
   open: boolean;
+  onStartTransfer: () => void;
 }) {
   const [rows, setRows] = useState<BatchRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -177,11 +282,9 @@ function BatchSection({
 
   return (
     <section>
-      <h3 className="text-sm font-semibold">Batches</h3>
+      <h3 className="text-sm font-semibold">Batches at {shopName}</h3>
       <p className="mt-0.5 text-xs text-muted-foreground">
-        Oldest first — the order stock is drawn in. A batch that came from
-        another branch keeps its original date, so it stays in its true place in
-        the queue.
+        Oldest first — the order stock is drawn in.
       </p>
 
       {error && (
@@ -208,8 +311,10 @@ function BatchSection({
             <BatchRowItem
               key={b.id}
               batch={b}
+              ticketCost={prize.ticketCost}
               showCost={showCost}
               isNext={b.id === nextLotId}
+              onStartTransfer={onStartTransfer}
             />
           ))}
         </ul>
@@ -220,19 +325,23 @@ function BatchSection({
 
 function BatchRowItem({
   batch,
+  ticketCost,
   showCost,
   isNext,
+  onStartTransfer,
 }: {
   batch: BatchRow;
+  ticketCost: number;
   showCost: boolean;
   isNext: boolean;
+  onStartTransfer: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const used = batch.qtyReceived - batch.qtyRemaining;
 
   return (
     <li>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3.5 py-3">
         {/*
           `min-w-0` alone is not enough: the batch code is one long unbroken
           token, so without a basis wide enough to hold it the flex item
@@ -263,9 +372,23 @@ function BatchRowItem({
             {batch.supplier && ` · ${batch.supplier}`}
             {batch.note && ` · ${batch.note}`}
           </p>
+          {used > 0 && (
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {used.toLocaleString("id-ID")} redeemed so far for{" "}
+              {(used * ticketCost).toLocaleString("id-ID")} tickets
+            </p>
+          )}
         </div>
 
-        <div className="ml-auto shrink-0 text-right">
+        {showCost && batch.unitCogs !== undefined && (
+          <p className="shrink-0 text-xs text-muted-foreground tabular-nums">
+            {formatMoney(batch.unitCogs)} each
+            {batch.remainingValue !== undefined &&
+              ` · ${formatMoney(batch.remainingValue)} left`}
+          </p>
+        )}
+
+        <div className="shrink-0 text-right">
           <p className="font-semibold tabular-nums">
             {batch.qtyRemaining.toLocaleString("id-ID")}
             <span className="font-normal text-muted-foreground">
@@ -273,23 +396,26 @@ function BatchRowItem({
               / {batch.qtyReceived.toLocaleString("id-ID")}
             </span>
           </p>
-          {showCost && batch.unitCogs !== undefined && (
-            <p className="text-xs text-muted-foreground tabular-nums">
-              {formatMoney(batch.unitCogs)} each
-              {batch.remainingValue !== undefined &&
-                ` · ${formatMoney(batch.remainingValue)} left`}
-            </p>
-          )}
         </div>
+
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-10 min-h-0 rounded-[8px] px-3 text-xs font-semibold"
+          onClick={onStartTransfer}
+        >
+          <ArrowRight className="size-3.5" />
+          Send
+        </Button>
 
         {/*
           Only a lot something has come OUT of has a history to show. Offering
           the control on an untouched batch would open an empty drawer.
         */}
         {used > 0 ? (
-          <Button
-            size="sm"
-            variant="ghost"
+          <button
+            type="button"
+            className="inline-flex h-8 items-center gap-1 px-1 text-xs font-semibold text-muted-foreground hover:text-foreground"
             onClick={() => setExpanded((v) => !v)}
             aria-expanded={expanded}
           >
@@ -297,7 +423,7 @@ function BatchRowItem({
               className={cn("size-4 transition-transform", expanded && "rotate-90")}
             />
             {used.toLocaleString("id-ID")} used
-          </Button>
+          </button>
         ) : (
           <span className="shrink-0 px-3 text-xs text-muted-foreground">
             Untouched
@@ -308,6 +434,146 @@ function BatchRowItem({
       {expanded && <ConsumptionList batchId={batch.id} showCost={showCost} />}
     </li>
   );
+}
+
+function BranchSummary({ prize, shopName }: { prize: PrizeDTO; shopName: string }) {
+  const threshold = prize.shopConfig?.lowStockThreshold ?? 0;
+  const carried = prize.shopConfig?.isActive ?? false;
+
+  return (
+    <section className="rounded-xl border p-3.5">
+      <h3 className="text-[13px] font-semibold">At {shopName}</h3>
+      <p className="mt-1 text-[13px] text-muted-foreground">
+        <span className="font-medium text-foreground tabular-nums">
+          {prize.onHand.toLocaleString("id-ID")}
+        </span>{" "}
+        on hand · warns at {threshold} · {carried ? "carried at this shop" : "not carried here"}
+      </p>
+    </section>
+  );
+}
+
+/* ─────────────────────────── ACROSS SHOPS ─────────────────────────── */
+
+function AcrossShopsSection({
+  prizeId,
+  sourceShops,
+  showCost,
+  open,
+  onStartTransfer,
+}: {
+  prizeId: string;
+  sourceShops: TransferSourceShop[];
+  showCost: boolean;
+  open: boolean;
+  onStartTransfer: (shopId: string) => void;
+}) {
+  const rows = sourceShops.map((shop) => ({
+    shop,
+    prize: shop.prizes.find((candidate) => candidate.id === prizeId),
+  }));
+  const carriedCount = rows.filter((row) => row.prize?.shopConfig?.isActive).length;
+  const totalOnHand = rows.reduce((total, row) => total + (row.prize?.onHand ?? 0), 0);
+
+  return (
+    <section>
+      <p className="text-xs text-muted-foreground">
+        Carried at {carriedCount} of {rows.length} branches ·{" "}
+        {totalOnHand.toLocaleString("id-ID")} units total.
+      </p>
+
+      <ul className="mt-3 divide-y rounded-xl border">
+        {rows.map(({ shop, prize: shopPrize }) => (
+          <NetworkShopRow
+            key={shop.id}
+            shop={shop}
+            prize={shopPrize}
+            showCost={showCost}
+            open={open}
+            onStartTransfer={() => onStartTransfer(shop.id)}
+          />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function NetworkShopRow({
+  shop,
+  prize,
+  showCost,
+  open,
+  onStartTransfer,
+}: {
+  shop: TransferSourceShop;
+  prize: PrizeDTO | undefined;
+  showCost: boolean;
+  open: boolean;
+  onStartTransfer: () => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const status = networkStatus(prize);
+  const onHand = prize?.onHand ?? 0;
+
+  return (
+    <li>
+      <button
+        type="button"
+        className="flex w-full items-center gap-3 px-3.5 py-3 text-left hover:bg-muted/40"
+        onClick={() => setExpanded((current) => !current)}
+        aria-expanded={expanded}
+      >
+        <ChevronRight
+          className={cn("size-4 shrink-0 text-muted-foreground transition-transform", expanded && "rotate-90")}
+        />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-semibold">
+            {shop.name} <span className="font-normal text-muted-foreground">({shop.code})</span>
+          </span>
+          <span className="mt-0.5 block text-xs text-muted-foreground">
+            {prize?.shopConfig?.isActive ? `${onHand.toLocaleString("id-ID")} on hand` : "Not carried here"}
+          </span>
+        </span>
+        <span className={cn("rounded-full px-2 py-0.5 text-xs font-medium", status.className)}>
+          {status.label}
+        </span>
+        <span className="min-w-8 text-right text-lg font-semibold tabular-nums">
+          {onHand.toLocaleString("id-ID")}
+        </span>
+      </button>
+
+      {expanded &&
+        (prize ? (
+          <div className="border-t px-3.5 py-3 pl-10">
+            <BatchSection
+              prize={prize}
+              shopId={shop.id}
+              shopName={shop.name}
+              showCost={showCost}
+              open={open}
+              onStartTransfer={onStartTransfer}
+            />
+          </div>
+        ) : (
+          <p className="border-t px-3.5 py-3 pl-10 text-sm text-muted-foreground">
+            This item is not carried at this branch.
+          </p>
+        ))}
+    </li>
+  );
+}
+
+function networkStatus(prize: PrizeDTO | undefined) {
+  if (!prize?.shopConfig?.isActive) {
+    return { label: "Not carried", className: "bg-muted text-muted-foreground" };
+  }
+  if (prize.onHand === 0) {
+    return { label: "Out of stock", className: "bg-destructive/10 text-destructive" };
+  }
+  if (prize.isLowStock) {
+    return { label: "Low", className: "bg-amber-100 text-amber-900" };
+  }
+  return { label: "In stock", className: "bg-primary/10 text-primary" };
 }
 
 /**
@@ -494,20 +760,22 @@ function BranchSection({
         <AdjustStockButton shopId={shopId} prize={prize} />
       </div>
 
-      <div className="mt-3 flex flex-wrap items-end gap-3">
-        <label className="text-sm font-medium">
-          Warn when stock falls to
-          <Input
-            className="mt-1 w-28 tabular-nums"
-            inputMode="numeric"
-            value={threshold}
-            disabled={!carried || busy}
-            onChange={(e) => setThreshold(e.target.value.replace(/[^0-9]/g, ""))}
-          />
+      <div className="mt-3 flex flex-wrap items-start gap-3">
+        <div>
+          <label className="flex h-12 items-center gap-4 text-sm font-medium">
+            <span>Warn when stock falls to</span>
+            <Input
+              className="w-16 text-center tabular-nums"
+              inputMode="numeric"
+              value={threshold}
+              disabled={!carried || busy}
+              onChange={(e) => setThreshold(e.target.value.replace(/[^0-9]/g, ""))}
+            />
+          </label>
           <span className="mt-1 block text-xs font-normal text-muted-foreground">
             0 means never warn.
           </span>
-        </label>
+        </div>
 
         <Button
           variant="outline"
@@ -669,22 +937,24 @@ function CatalogSection({ prize }: { prize: PrizeDTO }) {
         </label>
       </div>
 
-      <label className="mt-3 block text-sm font-medium">
-        Ticket cost
-        <Input
-          className="mt-1 w-40 tabular-nums"
-          inputMode="numeric"
-          value={ticketCost}
-          onChange={(e) => setTicketCost(e.target.value.replace(/[^0-9]/g, ""))}
-          disabled={busy}
-        />
+      <div className="mt-3">
+        <label className="flex h-12 items-center gap-4 text-sm font-medium">
+          <span>Ticket cost</span>
+          <Input
+            className="w-[77px] text-center tabular-nums"
+            inputMode="numeric"
+            value={ticketCost}
+            onChange={(e) => setTicketCost(e.target.value.replace(/[^0-9]/g, ""))}
+            disabled={busy}
+          />
+        </label>
         {repriced && (
           <span className="mt-1 block text-xs font-normal text-amber-700">
             This price applies at EVERY branch, including ones you do not
             manage. The owner is notified of the change.
           </span>
         )}
-      </label>
+      </div>
 
       <div className="mt-4">
         <ImageField prize={prize} disabled={busy} />

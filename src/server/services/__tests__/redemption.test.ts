@@ -12,7 +12,8 @@
 import { describe, expect, test, afterAll, afterEach } from "vitest";
 import { Prisma } from "@prisma/client";
 import { prisma, makeShop, makePrize, makeBatch, uniq } from "./helpers";
-import { createRedemption, voidRedemption } from "../redemptions";
+import { createRedemption, listRedemptions, voidRedemption } from "../redemptions";
+import { listCustomerLedger } from "../balances";
 import type { Actor } from "@/server/auth/context";
 
 const shopIds: string[] = [];
@@ -85,7 +86,13 @@ async function fixture(opts: {
     },
   } as unknown as Actor & { workSession: NonNullable<Actor["workSession"]> };
 
-  return { shopId: shop.id, prizeItemId: prize.id, customerId: customer.id, actor };
+  return {
+    shopId: shop.id,
+    prizeItemId: prize.id,
+    prizeName: prize.name,
+    customerId: customer.id,
+    actor,
+  };
 }
 
 afterEach(async () => {
@@ -146,6 +153,40 @@ describe("redemption checkout", () => {
       where: { id: result.id },
     });
     expect(redemption.totalCogs.toString()).toBe("8000");
+
+    // Customer history must retain the original redemption description even
+    // when the catalog item is later renamed or removed from sale.
+    await prisma.prizeItem.update({
+      where: { id: f.prizeItemId },
+      data: { name: "Renamed catalog prize", isActive: false },
+    });
+
+    const ledger = await listCustomerLedger(f.actor, f.customerId);
+    expect(ledger.entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "REDEEM",
+          redeemedItems: [
+            { name: f.prizeName, qty: 4, ticketCostTotal: 400 },
+          ],
+        }),
+      ])
+    );
+
+    await expect(listRedemptions(f.actor, { customerId: f.customerId })).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: result.id,
+          lines: [
+            expect.objectContaining({
+              prizeName: f.prizeName,
+              qty: 4,
+              ticketCostTotal: 400,
+            }),
+          ],
+        }),
+      ])
+    );
 
     const batches = await prisma.prizeBatch.findMany({
       where: { shopId: f.shopId },

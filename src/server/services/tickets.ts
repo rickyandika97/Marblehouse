@@ -111,9 +111,10 @@ export async function applyRedemptionTickets(
   delta: number,
   type: "REDEEM" | "VOID_RESTORE",
   reason: string | undefined,
-  tx: Prisma.TransactionClient
+  tx: Prisma.TransactionClient,
+  redemptionId: string
 ): Promise<BalanceMutationDTO> {
-  return changeTickets(actor, customerId, delta, type, reason, tx);
+  return changeTickets(actor, customerId, delta, type, reason, tx, redemptionId);
 }
 
 async function changeTickets(
@@ -122,7 +123,8 @@ async function changeTickets(
   delta: number,
   type: "AWARD" | "ADJUST" | "REDEEM" | "VOID_RESTORE",
   reason: string | undefined,
-  tx: Prisma.TransactionClient
+  tx: Prisma.TransactionClient,
+  redemptionId?: string
 ): Promise<BalanceMutationDTO> {
   const changed = await tx.customer.updateMany({
     where: {
@@ -165,6 +167,7 @@ async function changeTickets(
       delta,
       balanceAfter: customer.ticketBalance,
       reason: reason?.trim() || null,
+      redemptionId: redemptionId ?? null,
       businessDate: actor.businessDate,
     },
     include: INCLUDE,
@@ -186,4 +189,3 @@ async function changeTickets(
     customer,
   };
 }
-

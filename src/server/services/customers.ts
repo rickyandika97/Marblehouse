@@ -14,7 +14,12 @@ import { Prisma, type Customer } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { AppError, forbidden, notFound } from "@/server/errors";
 import { writeAudit } from "@/server/audit";
-import { normalizePhone, isPlausiblePhone, formatPhoneLocal } from "@/lib/phone";
+import {
+  normalizePhone,
+  isPlausiblePhone,
+  formatPhoneLocal,
+  phoneSearchCandidates,
+} from "@/lib/phone";
 import type { Actor } from "@/server/auth/context";
 import {
   toCustomerDTO,
@@ -93,6 +98,7 @@ export async function searchCustomers(
 ): Promise<{ customers: CustomerDTO[]; nextCursor: string | null }> {
   const q = input.q?.trim() ?? "";
   const digits = q.replace(/\D/g, "");
+  const phoneTerms = phoneSearchCandidates(q);
 
   // A query of pure digits is a phone lookup; anything else is a name search.
   // When both are plausible (e.g. "0812") the phone match is what staff mean.
@@ -105,7 +111,11 @@ export async function searchCustomers(
         ? { sales: { some: { shopId: input.shopId, status: "COMPLETED" } } }
         : {}
       : digits.length >= 3
-        ? { phoneNormalized: { contains: digits } }
+        ? {
+            OR: phoneTerms.map((term) => ({
+              phoneNormalized: { contains: term },
+            })),
+          }
         : { name: { contains: q, mode: "insensitive" } }),
   };
 

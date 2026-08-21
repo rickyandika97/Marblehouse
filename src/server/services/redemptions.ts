@@ -211,6 +211,7 @@ export async function createRedemption(
         redemptionId: redemption.id,
         prizeItemId: entry.item.id,
         qty: entry.qty,
+        prizeName: entry.item.name,
         ticketCostEach: entry.item.ticketCost,
         ticketCostTotal: entry.lineTotal,
         cogsTotal: consumed.totalCogs,
@@ -233,7 +234,8 @@ export async function createRedemption(
     -totalTickets,
     "REDEEM",
     undefined,
-    tx
+    tx,
+    redemption.id
   );
 
   const dto: RedemptionReceiptDTO = {
@@ -340,7 +342,8 @@ export async function voidRedemption(
     redemption.totalTickets,
     "VOID_RESTORE",
     input.reason,
-    tx
+    tx,
+    redemption.id
   );
 
   await tx.redemption.update({
@@ -405,7 +408,7 @@ export async function listRedemptions(actor: Actor, input: ListRedemptionsInput)
     orderBy: { occurredAt: "desc" },
     take: input.limit ?? 50,
     include: {
-      lines: { include: { prizeItem: { select: { id: true, name: true } } } },
+      lines: true,
     },
   });
 
@@ -417,7 +420,7 @@ export async function listRedemptions(actor: Actor, input: ListRedemptionsInput)
       totalTickets: r.totalTickets,
       lines: r.lines.map((l) => ({
         prizeItemId: l.prizeItemId,
-        prizeName: l.prizeItem.name,
+        prizeName: l.prizeName,
         qty: l.qty,
         ticketCostEach: l.ticketCostEach,
         ticketCostTotal: l.ticketCostTotal,

@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Loader2, PackagePlus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -12,9 +12,13 @@ import { cn } from "@/lib/utils";
 import type { PrizeDTO, PrizeCostDTO } from "@/server/dto/prize";
 import { AdjustStockButton } from "./adjust-stock";
 import { InventoryTable } from "./inventory-table";
-import { TransferCart, type Destination } from "./transfer-cart";
+import {
+  TransferCart,
+  type Destination,
+  type TransferSourceShop,
+} from "./transfer-cart";
 
-type Tab = "inventory" | "receive" | "transfers" | "opname" | "low-stock";
+type Tab = "inventory" | "transfers" | "opname" | "low-stock";
 
 export interface TransferRow {
   id: string;
@@ -35,9 +39,10 @@ export interface TransferRow {
  * stocking policy, the catalog row) lives in the row's drawer rather than in
  * tabs of its own. See `inventory-table.tsx` and `item-drawer.tsx`.
  *
- * The tabs that remain are WORKFLOWS, not views of stock: receiving a
- * delivery, moving a box between branches, running a physical count. Opname in
- * particular is a whole-shop session, so it has no sensible per-item home.
+ * The tabs that remain are workflows, not views of stock: moving a box between
+ * branches and running a physical count. Receiving is scoped to an inventory
+ * row, where the item is already known. Opname in particular is a whole-shop
+ * session, so it has no sensible per-item home.
  *
  * Low stock stays its own tab because it answers "what do I need to order?"
  * — a different question from "what do we have?", and the one a manager opens
@@ -55,6 +60,7 @@ export function StockTabs({
   canReceive,
   transfers,
   destinations,
+  sourceShops,
 }: {
   shopId: string;
   shopName: string;
@@ -63,18 +69,31 @@ export function StockTabs({
   canReceive: boolean;
   transfers: TransferRow[];
   destinations: Destination[];
+  sourceShops: TransferSourceShop[];
 }) {
-  const [tab, setTab] = useState<Tab>("inventory");
+  const searchParams = useSearchParams();
+  const requestedTab = searchParams.get("tab");
+  const transferRequest = searchParams.get("transfer");
+  const [tab, setTab] = useState<Tab>(
+    requestedTab === "transfers" ? "transfers" : "inventory"
+  );
+
+  useEffect(() => {
+    if (requestedTab === "transfers") setTab("transfers");
+  }, [requestedTab, transferRequest]);
 
   const stocked = prizes.filter((p) => p.shopConfig?.isActive);
   const lowStock = stocked.filter((p) => p.isLowStock);
   const tabs: Array<{ id: Tab; label: string; count?: number }> = [
     { id: "inventory", label: "Inventory", count: stocked.length },
-    ...(canReceive ? [{ id: "receive" as const, label: "Receive" }] : []),
     {
       id: "transfers",
       label: "Transfers",
-      count: transfers.filter((t) => t.status === "IN_TRANSIT").length,
+      count: transfers.filter(
+        (t) =>
+          t.status === "IN_TRANSIT" &&
+          (t.fromShop.id === shopId || t.toShop.id === shopId)
+      ).length,
     },
     { id: "opname", label: "Opname" },
     { id: "low-stock", label: "Low stock", count: lowStock.length },
@@ -110,18 +129,20 @@ export function StockTabs({
           shopId={shopId}
           shopName={shopName}
           showCost={showCost}
+          canReceive={canReceive}
+          destinations={destinations}
+          sourceShops={sourceShops}
         />
-      )}
-      {tab === "receive" && (
-        <ReceiveForm shopId={shopId} prizes={prizes} showCost={showCost} />
       )}
       {tab === "transfers" && (
         <TransfersPanel
           shopId={shopId}
           transfers={transfers}
           destinations={destinations}
-          prizes={stocked}
-          showCost={showCost}
+          sourceShops={sourceShops}
+          initialFromShopId={searchParams.get("fromShopId") ?? shopId}
+          initialPrizeItemId={searchParams.get("prizeItemId") ?? undefined}
+          transferRequest={transferRequest}
         />
       )}
       {tab === "opname" && <OpnamePanel shopId={shopId} />}
@@ -154,7 +175,7 @@ function OnHandTable({
   if (rows.length === 0) {
     return (
       <p className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
-        This shop carries no prizes yet. Use the Receive tab to bring stock in.
+        This shop carries no prizes yet. Use + Batch on an inventory item to bring stock in.
       </p>
     );
   }
@@ -215,171 +236,6 @@ function OnHandTable({
 }
 
 /**
- * Receive a delivery (§8.7).
- *
- * The cost field renders ONLY when `showCost`. Everyone else sees the §8.7 note
- * — "Cost will be added by the owner." — rather than a disabled input, because
- * a greyed-out box invites someone to go looking for the permission.
- *
- * The server rejects a `unitCogs` from an unauthorised caller with a 403 rather
- * than dropping it, so this is presentation only, not the control.
- */
-function ReceiveForm({
-  shopId,
-  prizes,
-  showCost,
-}: {
-  shopId: string;
-  prizes: PrizeDTO[];
-  showCost: boolean;
-}) {
-  const router = useRouter();
-  const [prizeItemId, setPrizeItemId] = useState("");
-  const [qty, setQty] = useState("");
-  const [unitCogs, setUnitCogs] = useState("");
-  const [supplier, setSupplier] = useState("");
-  const [batchCode, setBatchCode] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-
-  const parsedQty = Number(qty);
-  const canSubmit =
-    !submitting && prizeItemId !== "" && Number.isInteger(parsedQty) && parsedQty > 0;
-
-  async function submit() {
-    if (!canSubmit) return;
-    setSubmitting(true);
-    try {
-      const response = await fetch("/api/stock/batches", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          // A double-tap on shop wifi must not book two deliveries.
-          "Idempotency-Key": crypto.randomUUID(),
-        },
-        body: JSON.stringify({
-          shopId,
-          prizeItemId,
-          qtyReceived: parsedQty,
-          supplier: supplier.trim() || undefined,
-          batchCode: batchCode.trim() || undefined,
-          // Omitted entirely when the field was never shown, which is what
-          // flags the batch as needing a cost (§7.5).
-          ...(showCost && unitCogs.trim() !== ""
-            ? { unitCogs: Number(unitCogs) }
-            : {}),
-        }),
-      });
-      const result = await response.json().catch(() => null);
-
-      if (!response.ok) {
-        toast.error(result?.error?.message ?? "Could not record that delivery.");
-        return;
-      }
-
-      toast.success("Stock received", {
-        description: showCost && unitCogs.trim() !== ""
-          ? `${parsedQty} units added.`
-          : `${parsedQty} units added — waiting for the owner to set a cost.`,
-      });
-      setQty("");
-      setUnitCogs("");
-      setSupplier("");
-      setBatchCode("");
-      router.refresh();
-    } catch {
-      toast.error("No connection. Check the wifi and try again.");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  return (
-    <div className="space-y-4 rounded-xl border p-4">
-      <label className="block font-medium">
-        Prize
-        <select
-          className="mt-1 min-h-12 w-full rounded-lg border bg-background px-3 text-base"
-          value={prizeItemId}
-          onChange={(e) => setPrizeItemId(e.target.value)}
-        >
-          <option value="">Choose an item…</option>
-          {prizes
-            .filter((p) => p.isActive)
-            .map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-                {p.shopConfig?.isActive ? "" : " (not carried here — see Catalog)"}
-              </option>
-            ))}
-        </select>
-      </label>
-
-      <label className="block font-medium">
-        Quantity received
-        <Input
-          className="mt-1 text-xl font-bold tabular-nums"
-          inputMode="numeric"
-          value={qty}
-          onChange={(e) => setQty(e.target.value.replace(/\D/g, ""))}
-          placeholder="0"
-        />
-      </label>
-
-      {showCost ? (
-        <label className="block font-medium">
-          Unit cost
-          <Input
-            className="mt-1 tabular-nums"
-            inputMode="numeric"
-            value={unitCogs}
-            onChange={(e) => setUnitCogs(e.target.value.replace(/[^\d.]/g, ""))}
-            placeholder="Cost per single unit"
-          />
-          <span className="mt-1 block text-xs font-normal text-muted-foreground">
-            Leave blank to price it later. Prize expense is understated until
-            every delivery has a cost.
-          </span>
-        </label>
-      ) : (
-        <p className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">
-          Cost will be added by the owner.
-        </p>
-      )}
-
-      <div className="grid gap-4 sm:grid-cols-2">
-        <label className="block font-medium">
-          Supplier <span className="font-normal text-muted-foreground">(optional)</span>
-          <Input
-            className="mt-1"
-            value={supplier}
-            onChange={(e) => setSupplier(e.target.value)}
-            maxLength={120}
-          />
-        </label>
-        <label className="block font-medium">
-          Batch code <span className="font-normal text-muted-foreground">(optional)</span>
-          <Input
-            className="mt-1"
-            value={batchCode}
-            onChange={(e) => setBatchCode(e.target.value)}
-            maxLength={60}
-          />
-        </label>
-      </div>
-
-      <Button size="lg" className="w-full" disabled={!canSubmit} onClick={submit}>
-        {submitting ? (
-          <Loader2 className="size-5 animate-spin" />
-        ) : (
-          <PackagePlus className="size-5" />
-        )}
-        Receive stock
-      </Button>
-    </div>
-  );
-}
-
-/**
  * Transfers tab (§8.7): two lists plus a dispatch form.
  *
  * Inbound rows carry a Receive button showing what is expected; outbound rows
@@ -389,14 +245,18 @@ function TransfersPanel({
   shopId,
   transfers,
   destinations,
-  prizes,
-  showCost,
+  sourceShops,
+  initialFromShopId,
+  initialPrizeItemId,
+  transferRequest,
 }: {
   shopId: string;
   transfers: TransferRow[];
   destinations: Destination[];
-  prizes: PrizeDTO[];
-  showCost: boolean;
+  sourceShops: TransferSourceShop[];
+  initialFromShopId: string;
+  initialPrizeItemId?: string;
+  transferRequest: string | null;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -407,6 +267,9 @@ function TransfersPanel({
 
   const outbound = transfers.filter((t) => t.fromShop.id === shopId);
   const inbound = transfers.filter((t) => t.toShop.id === shopId);
+  const inboundElsewhere = transfers.filter(
+    (t) => t.toShop.id !== shopId && t.status === "IN_TRANSIT"
+  );
 
   async function post(url: string, body?: unknown) {
     setBusy(true);
@@ -450,13 +313,22 @@ function TransfersPanel({
     }
   }
 
+  async function receive(transfer: TransferRow) {
+    if (await post(`/api/transfers/${transfer.id}/receive`)) {
+      toast.success(`Received at ${transfer.toShop.name}`, {
+        description: "The stock is now counted at that branch.",
+      });
+    }
+  }
+
   return (
     <div className="space-y-5">
       <TransferCart
-        shopId={shopId}
-        prizes={prizes}
+        key={transferRequest ?? "transfer-form"}
+        initialFromShopId={initialFromShopId}
+        initialPrizeItemId={initialPrizeItemId}
+        sourceShops={sourceShops}
         destinations={destinations}
-        showCost={showCost}
       />
 
       <TransferList
@@ -468,11 +340,7 @@ function TransfersPanel({
             <Button
               size="sm"
               disabled={busy}
-              onClick={async () => {
-                if (await post(`/api/transfers/${t.id}/receive`)) {
-                  toast.success("Received — the stock is now counted here.");
-                }
-              }}
+              onClick={() => receive(t)}
             >
               Receive
             </Button>
@@ -480,20 +348,38 @@ function TransfersPanel({
         }
       />
 
+      {inboundElsewhere.length > 0 && (
+        <TransferList
+          title="Coming in at other shops"
+          rows={inboundElsewhere}
+          empty=""
+          action={(t) => (
+            <Button size="sm" disabled={busy} onClick={() => receive(t)}>
+              Receive at {t.toShop.code}
+            </Button>
+          )}
+        />
+      )}
+
       <TransferList
         title="Going out"
         rows={outbound}
         empty="Nothing has been sent from here."
         action={(t) =>
           t.status === "IN_TRANSIT" ? (
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={busy}
-              onClick={() => setCancelTarget(t)}
-            >
-              Cancel
-            </Button>
+            <div className="flex shrink-0 gap-2">
+              <Button size="sm" disabled={busy} onClick={() => receive(t)}>
+                Accept at {t.toShop.code}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busy}
+                onClick={() => setCancelTarget(t)}
+              >
+                Cancel
+              </Button>
+            </div>
           ) : null
         }
       />

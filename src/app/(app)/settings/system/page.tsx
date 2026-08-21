@@ -1,9 +1,11 @@
 import { requireOwnerPage } from "@/server/auth/page-guard";
 import {
   getBusinessDayStartHour,
+  getCustomerWhatsAppReminderTemplate,
   getTicketAwardReasonThreshold,
 } from "@/server/services/settings";
 import { BusinessDayHourForm } from "./business-day-hour-form";
+import { CustomerWhatsAppReminderForm } from "./customer-whatsapp-reminder-form";
 import { TicketAwardThresholdForm } from "./ticket-award-threshold-form";
 
 export const metadata = { title: "System settings · Marblehouse" };
@@ -19,9 +21,11 @@ export default async function SystemSettingsPage() {
           Business-wide controls. Changes are audit-logged.
         </p>
       </div>
+      <CustomerWhatsAppReminderForm
+        initial={await getCustomerWhatsAppReminderTemplate()}
+      />
       <TicketAwardThresholdForm initial={await getTicketAwardReasonThreshold()} />
       <BusinessDayHourForm initial={await getBusinessDayStartHour()} />
     </div>
   );
 }
-

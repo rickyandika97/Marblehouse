@@ -39,10 +39,13 @@ import { prisma } from "@/lib/prisma";
 import type { Actor } from "@/server/auth/context";
 import { forbidden } from "@/server/errors";
 import { writeAudit } from "@/server/audit";
+import { DEFAULT_CUSTOMER_WHATSAPP_REMINDER_TEMPLATE } from "@/lib/customer-whatsapp";
 
 export const BUSINESS_DAY_START_HOUR_KEY = "businessDayStartHour";
 export const TICKET_AWARD_REASON_THRESHOLD_KEY =
   "ticketAwardReasonThreshold";
+export const CUSTOMER_WHATSAPP_REMINDER_TEMPLATE_KEY =
+  "customerWhatsAppReminderTemplate";
 
 /** Used when the row is missing — a fresh database before the seed runs. */
 export const DEFAULT_BUSINESS_DAY_START_HOUR = 4;
@@ -54,6 +57,10 @@ export const updateTicketAwardReasonThresholdSchema = z.object({
 
 export const updateBusinessDayStartHourSchema = z.object({
   hour: z.number().int().min(0).max(23),
+});
+
+export const updateCustomerWhatsAppReminderTemplateSchema = z.object({
+  template: z.string().trim().min(1).max(1_000),
 });
 
 /**
@@ -85,6 +92,21 @@ export async function getTicketAwardReasonThreshold(): Promise<number> {
   return Number.isInteger(n) && n >= 1
     ? n
     : DEFAULT_TICKET_AWARD_REASON_THRESHOLD;
+}
+
+/**
+ * The saved text is a draft template, never an automated WhatsApp send.
+ * Unknown placeholder-like text is kept as written so an owner can include
+ * normal braces in their copy; only the three documented placeholders expand.
+ */
+export async function getCustomerWhatsAppReminderTemplate(): Promise<string> {
+  const row = await prisma.appSetting.findUnique({
+    where: { key: CUSTOMER_WHATSAPP_REMINDER_TEMPLATE_KEY },
+  });
+
+  return typeof row?.value === "string" && row.value.trim()
+    ? row.value
+    : DEFAULT_CUSTOMER_WHATSAPP_REMINDER_TEMPLATE;
 }
 
 export async function updateTicketAwardReasonThreshold(
@@ -122,6 +144,45 @@ export async function updateTicketAwardReasonThreshold(
     tx
   );
   return { threshold };
+}
+
+export async function updateCustomerWhatsAppReminderTemplate(
+  actor: Actor,
+  template: string,
+  tx: Prisma.TransactionClient,
+  meta: { ipAddress?: string | null } = {}
+): Promise<{ template: string }> {
+  if (!actor.isOwner) {
+    throw forbidden("Only the owner can change the WhatsApp reminder.");
+  }
+
+  const before = await tx.appSetting.findUnique({
+    where: { key: CUSTOMER_WHATSAPP_REMINDER_TEMPLATE_KEY },
+  });
+  const previous =
+    typeof before?.value === "string" && before.value.trim()
+      ? before.value
+      : DEFAULT_CUSTOMER_WHATSAPP_REMINDER_TEMPLATE;
+
+  await tx.appSetting.upsert({
+    where: { key: CUSTOMER_WHATSAPP_REMINDER_TEMPLATE_KEY },
+    update: { value: template },
+    create: { key: CUSTOMER_WHATSAPP_REMINDER_TEMPLATE_KEY, value: template },
+  });
+  await writeAudit(
+    actor,
+    {
+      entity: "AppSetting",
+      entityId: CUSTOMER_WHATSAPP_REMINDER_TEMPLATE_KEY,
+      action: "UPDATE",
+      before: { template: previous },
+      after: { template },
+      ipAddress: meta.ipAddress ?? null,
+    },
+    tx
+  );
+
+  return { template };
 }
 
 /**

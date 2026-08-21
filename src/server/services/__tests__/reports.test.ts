@@ -875,6 +875,7 @@ async function makeRedemption(args: {
       lines: {
         create: {
           prizeItemId: prizeId,
+          prizeName: "Report Prize",
           qty: args.qty,
           ticketCostEach: Math.round(args.ticketCostTotal / args.qty),
           ticketCostTotal: args.ticketCostTotal,

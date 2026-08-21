@@ -271,7 +271,7 @@ function CreateShopDialog({ onCreated }: { onCreated: () => void }) {
   const [address, setAddress] = useState("");
   const [phone, setPhone] = useState("");
   const [lateGraceMin, setLateGraceMin] = useState("5");
-  const [allowDirectTransfer, setAllowDirectTransfer] = useState(false);
+  const [allowDirectTransfer, setAllowDirectTransfer] = useState(true);
   const [fields, setFields] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -282,7 +282,7 @@ function CreateShopDialog({ onCreated }: { onCreated: () => void }) {
     setAddress("");
     setPhone("");
     setLateGraceMin("5");
-    setAllowDirectTransfer(false);
+    setAllowDirectTransfer(true);
     setFields({});
     setError(null);
   }

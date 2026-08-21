@@ -396,13 +396,13 @@ describe("audit and defaults", () => {
     expect((row!.after as { lateGraceMin: number }).lateGraceMin).toBe(20);
   });
 
-  it("defaults grace to 5 minutes, the clock-out photo on, and the other toggles off", async () => {
+  it("defaults grace to 5 minutes, direct transfers and clock-out photo on", async () => {
     const owner = await makeUser("OWNER");
     const shop = await create(owner);
 
     expect(shop.lateGraceMin).toBe(5);
     expect(shop.allowCustomAmount).toBe(false);
-    expect(shop.allowDirectTransfer).toBe(false);
+    expect(shop.allowDirectTransfer).toBe(true);
     expect(shop.requireClockOutPhoto).toBe(true);
     expect(shop.isActive).toBe(true);
   });

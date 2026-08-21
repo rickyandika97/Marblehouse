@@ -21,8 +21,8 @@ import {
  * **This must exist somewhere.** `POST /api/prizes` shipped in Phase 5 with no
  * UI at all, which D-116 fixed by building the Settings screen; deleting that
  * screen without moving the form here would have reintroduced exactly the same
- * defect — a catalog that can only be added to by SQL, and a Receive tab whose
- * `<select>` a fresh branch could never populate.
+ * defect — a catalog that can only be added to by SQL, with no item to receive
+ * stock against.
  */
 export function AddPrizeButton({ existingSkus }: { existingSkus: string[] }) {
   const router = useRouter();
@@ -173,8 +173,9 @@ export function AddPrizeButton({ existingSkus }: { existingSkus: string[] }) {
             <p className="flex gap-2 rounded-lg bg-muted px-4 py-3 text-sm text-muted-foreground">
               <Package className="mt-0.5 size-4 shrink-0" />
               <span>
-                This creates the catalog entry only. Use <strong>Receive</strong>{" "}
-                to bring quantity into this branch before it can be redeemed.
+                This creates the catalog entry only. Use <strong>+ Batch</strong>{" "}
+                on the inventory row to bring quantity into this branch before it can be
+                redeemed.
               </span>
             </p>
 

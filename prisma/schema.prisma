@@ -119,7 +119,7 @@ model Shop {
   // See §4.2, correction C-1, and BUILD-LOG D-18.
   lateGraceMin         Int      @default(5)
   allowCustomAmount    Boolean  @default(false)
-  allowDirectTransfer  Boolean  @default(false)
+  allowDirectTransfer  Boolean  @default(true)
   requireClockOutPhoto Boolean  @default(false)
   isHqPseudoShop       Boolean  @default(false)
   isActive             Boolean  @default(true)
@@ -621,6 +621,8 @@ model RedemptionLine {
   prizeItem    PrizeItem  @relation(fields: [prizeItemId], references: [id])
 
   qty             Int
+  /// Immutable catalog name at redemption time, kept after a prize is renamed or removed.
+  prizeName       String
   ticketCostEach  Int
   ticketCostTotal Int
   /// OWNER-ONLY.

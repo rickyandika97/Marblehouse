@@ -13,6 +13,8 @@ export interface LedgerEntryDTO {
   occurredAt: string;
   shop: { id: string; name: string };
   recordedBy: { id: string; displayName: string };
+  /** Present for ticket entries tied to a prize redemption. */
+  redeemedItems?: Array<{ name: string; qty: number; ticketCostTotal: number }>;
 }
 
 export interface BalanceMutationDTO {
@@ -23,4 +25,3 @@ export interface BalanceMutationDTO {
     ticketBalance: number;
   };
 }
-

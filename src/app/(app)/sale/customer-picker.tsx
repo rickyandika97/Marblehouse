@@ -3,8 +3,8 @@
 /**
  * Customer picker sheet (§8.2).
  *
- *   "Search field that matches on partial phone digits or name, a 'recent
- *    customers at this shop' list, and a '+ New customer' form (name + phone).
+ *   "Search field that matches on partial phone digits or name, a customer
+ *    list, and a '+ New customer' form (name + phone).
  *    'Skip — walk-in' is always the easy option."
  *
  * Walk-in is the default state of the sale form, so "skip" here is simply
@@ -40,17 +40,15 @@ export function CustomerPicker({
   open,
   onOpenChange,
   onPick,
-  shopId,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onPick: (customer: PickedCustomer) => void;
-  /** Scopes the empty-query list to this shop's regulars (§8.2). */
-  shopId: string;
 }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<PickedCustomer[]>([]);
   const [loading, setLoading] = useState(false);
+  const [hasLoaded, setHasLoaded] = useState(false);
   const [creating, setCreating] = useState(false);
 
   // Reset to a clean sheet each time it opens — the previous customer's search
@@ -59,6 +57,7 @@ export function CustomerPicker({
     if (open) {
       setQuery("");
       setCreating(false);
+      setHasLoaded(false);
     }
   }, [open]);
 
@@ -71,13 +70,12 @@ export function CustomerPicker({
     if (!open) return;
 
     let cancelled = false;
-    const timer = setTimeout(async () => {
+    const load = async () => {
       setLoading(true);
       try {
-        // With no query typed, scope to this shop so the picker opens on the
-        // regulars staff actually see (§8.2) rather than every customer ever.
+        // The phone book opens with customers ready to pick. Search remains
+        // global too, so a first-time visitor can be found at any branch.
         const params = new URLSearchParams({ q: query });
-        if (query.trim() === "") params.set("shopId", shopId);
 
         const res = await fetch(`/api/customers?${params}`, {
           cache: "no-store",
@@ -88,15 +86,23 @@ export function CustomerPicker({
       } catch {
         if (!cancelled) setResults([]);
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          setHasLoaded(true);
+        }
       }
-    }, 200);
+    };
+
+    // Opening the phone book should populate it, not wait for a keystroke.
+    // Keep the debounce only for subsequent typing.
+    const timer = query === "" ? undefined : setTimeout(load, 200);
+    if (query === "") void load();
 
     return () => {
       cancelled = true;
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
     };
-  }, [query, open, shopId]);
+  }, [query, open]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -138,11 +144,11 @@ export function CustomerPicker({
                 </p>
               )}
 
-              {!loading && results.length === 0 && (
+              {hasLoaded && !loading && results.length === 0 && (
                 <p className="py-6 text-center text-sm text-muted-foreground">
                   {query
                     ? "Nobody matches that."
-                    : "No customers yet at this shop."}
+                    : "No customers yet."}
                 </p>
               )}
 

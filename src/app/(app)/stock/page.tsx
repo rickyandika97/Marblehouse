@@ -36,11 +36,25 @@ export default async function StockPage() {
   const [prizes, uncostedCount, transfers, shops] = await Promise.all([
     listPrizes(actor, { shopId: session.shopId, includeUnstocked: true }),
     countUncostedBatches(actor),
-    listTransfers(actor, { shopId: session.shopId }),
+    // Transfers can be received at any shop the actor is allowed to manage.
+    // The client keeps the current-shop lists separate, then surfaces in-transit
+    // deliveries to the actor's other branches as explicit receipt actions.
+    listTransfers(actor, {}),
     selectableShops(actor),
   ]);
 
   const showCost = canSeeCostForShop(actor, session.shopId);
+  const sourceShops = await Promise.all(
+    shops.map(async (shop) => ({
+      id: shop.id,
+      name: shop.name,
+      code: shop.code,
+      prizes:
+        shop.id === session.shopId
+          ? prizes
+          : await listPrizes(actor, { shopId: shop.id, includeUnstocked: true }),
+    }))
+  );
 
   // Only read valuation off the DTO when the gate says it is there. The cast is
   // safe precisely because `showCost` mirrors what the service branched on.
@@ -116,10 +130,8 @@ export default async function StockPage() {
         showCost={showCost}
         canReceive
         transfers={transfers}
-        // Never offer the current shop as its own destination (§4.10).
-        destinations={shops
-          .filter((s) => s.id !== session.shopId)
-          .map((s) => ({ id: s.id, name: s.name, code: s.code }))}
+        destinations={shops.map((s) => ({ id: s.id, name: s.name, code: s.code }))}
+        sourceShops={sourceShops}
       />
     </div>
   );

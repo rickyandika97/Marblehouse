@@ -333,6 +333,26 @@ async function applyReceive(
         businessDate,
       },
     });
+
+    // A branch receiving stock has made an explicit decision to carry that
+    // item. Without this, the batches exist but the normal inventory and
+    // redemption views hide them behind a missing/inactive shop config.
+    // Preserve a branch's configured warning level when reactivating it.
+    await tx.shopPrizeConfig.upsert({
+      where: {
+        shopId_prizeItemId: {
+          shopId: transfer.toShopId,
+          prizeItemId: line.prizeItemId,
+        },
+      },
+      create: {
+        shopId: transfer.toShopId,
+        prizeItemId: line.prizeItemId,
+        isActive: true,
+        lowStockThreshold: 0,
+      },
+      update: { isActive: true },
+    });
   }
 
   await tx.prizeTransfer.update({

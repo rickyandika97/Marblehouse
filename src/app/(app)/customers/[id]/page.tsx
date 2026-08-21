@@ -1,15 +1,23 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, Gift } from "lucide-react";
+import { ArrowLeft, Gift, MessageCircle } from "lucide-react";
 import { requireActorPage } from "@/server/auth/page-guard";
 import { getCustomerForActor } from "@/server/services/customers";
 import { listSales } from "@/server/services/sales";
+import { listRedemptions } from "@/server/services/redemptions";
 import { listCustomerLedger } from "@/server/services/balances";
-import { getTicketAwardReasonThreshold } from "@/server/services/settings";
+import {
+  getCustomerWhatsAppReminderTemplate,
+  getTicketAwardReasonThreshold,
+} from "@/server/services/settings";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { formatMoney } from "@/lib/money";
 import { AppError } from "@/server/errors";
+import {
+  customerWhatsAppUrl,
+  renderCustomerWhatsAppReminder,
+} from "@/lib/customer-whatsapp";
 import type { CustomerOwnerDTO } from "@/server/dto/customer";
 import { BalanceActions } from "./balance-actions";
 import { MergeCustomer } from "./merge-customer";
@@ -50,11 +58,23 @@ export default async function CustomerDetailPage({
   const owner = actor.isOwner ? (customer as CustomerOwnerDTO) : null;
 
   // The customer's own sale history, already role-scoped by the service.
-  const [{ sales }, ledger, awardReasonThreshold] = await Promise.all([
+  const [
+    { sales },
+    ledger,
+    awardReasonThreshold,
+    redemptions,
+    whatsappReminderTemplate,
+  ] = await Promise.all([
     listSales(actor, { customerId: id }),
     listCustomerLedger(actor, id, ledgerCursor),
     getTicketAwardReasonThreshold(),
+    listRedemptions(actor, { customerId: id }),
+    getCustomerWhatsAppReminderTemplate(),
   ]);
+  const whatsappUrl = customerWhatsAppUrl(
+    customer.phone,
+    renderCustomerWhatsAppReminder(whatsappReminderTemplate, customer)
+  );
 
   return (
     <div className="space-y-5">
@@ -102,6 +122,18 @@ export default async function CustomerDetailPage({
       </div>
 
       <Button
+        variant="outline"
+        size="lg"
+        className="w-full"
+        render={
+          <a href={whatsappUrl} target="_blank" rel="noreferrer" />
+        }
+      >
+        <MessageCircle className="size-5" />
+        Send WhatsApp reminder
+      </Button>
+
+      <Button
         size="xl"
         className="w-full"
         render={<Link href={`/customers/${customer.id}/redeem`} />}
@@ -145,6 +177,16 @@ export default async function CustomerDetailPage({
                       {entry.shop.name} · {entry.recordedBy.displayName}
                       {entry.reason ? ` · ${entry.reason}` : ""}
                     </span>
+                    {entry.redeemedItems && entry.redeemedItems.length > 0 && (
+                      <span className="block text-xs text-muted-foreground">
+                        {entry.redeemedItems
+                          .map(
+                            (item) =>
+                              `${item.qty}× ${item.name} · ${item.ticketCostTotal.toLocaleString("id-ID")} tickets`
+                          )
+                          .join(", ")}
+                      </span>
+                    )}
                   </span>
                   <span className="text-right text-xs text-muted-foreground">
                     <span className="block tabular-nums">Balance {entry.balanceAfter.toLocaleString("id-ID")}</span>
@@ -162,6 +204,50 @@ export default async function CustomerDetailPage({
             >
               Older activity
             </Button>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Prize redemption history</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {redemptions.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No prizes redeemed yet.</p>
+          ) : (
+            <ul className="divide-y text-sm">
+              {redemptions.map((redemption) => (
+                <li key={redemption.id} className="py-3">
+                  <div className="flex gap-3">
+                    <span
+                      className={
+                        redemption.isVoided
+                          ? "font-medium text-muted-foreground line-through"
+                          : "font-medium"
+                      }
+                    >
+                      {redemption.isVoided ? "Tickets restored" : "Tickets spent"}
+                    </span>
+                    <span className="font-bold tabular-nums">
+                      {redemption.isVoided ? "+" : "-"}
+                      {redemption.totalTickets.toLocaleString("id-ID")}
+                    </span>
+                    <span className="ml-auto text-xs text-muted-foreground tabular-nums">
+                      {redemption.businessDate}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {redemption.lines
+                      .map(
+                        (line) =>
+                          `${line.qty}× ${line.prizeName} · ${line.ticketCostTotal.toLocaleString("id-ID")} tickets`
+                      )
+                      .join(", ")}
+                  </p>
+                </li>
+              ))}
+            </ul>
           )}
         </CardContent>
       </Card>

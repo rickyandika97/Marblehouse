@@ -95,7 +95,7 @@ const shopFields = {
     .max(120, "120 minutes is the maximum grace.")
     .default(5),
   allowCustomAmount: z.boolean().default(false),
-  allowDirectTransfer: z.boolean().default(false),
+  allowDirectTransfer: z.boolean().default(true),
   requireClockOutPhoto: z.boolean().default(true),
 };
 

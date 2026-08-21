@@ -54,7 +54,6 @@ export default async function SalePage() {
           presets={presets}
           allowCustomAmount={session.shop.allowCustomAmount}
           initialSummary={summary}
-          shopId={session.shopId}
         />
       )}
     </div>

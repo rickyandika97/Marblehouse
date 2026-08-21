@@ -6,7 +6,6 @@ import { Loader2, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { formatMoney } from "@/lib/money";
 import type { PrizeDTO } from "@/server/dto/prize";
 
 /**
@@ -19,40 +18,13 @@ import type { PrizeDTO } from "@/server/dto/prize";
  *    became five transfer records the receiving branch confirmed separately.
  *    One physical box should be one record.
  *
- * 2. **The FIFO plan is shown before sending.** `POST /api/transfers/preview`
- *    reports which lots dispatch would draw. This is visibility, NOT choice —
- *    the sender cannot pick lots, because cherry-picking cheap ones would
- *    invert the cost basis at both branches. See `previewTransferPlan`.
- *
- * The preview is a forecast, not a reservation: stock can move between
- * previewing and sending, and dispatch re-runs FIFO for real inside a
- * transaction. A line that has gone short in the meantime fails there with
- * INSUFFICIENT_STOCK, which is the authoritative answer.
+ * FIFO allocation remains server-owned: dispatch selects the oldest lots
+ * inside its transaction, so a sender cannot cherry-pick a cheaper cost basis.
  */
 
 interface CartLine {
   prizeItemId: string;
   qty: number;
-}
-
-interface PreviewLot {
-  batchId: string;
-  batchCode: string | null;
-  qty: number;
-  receivedAt: string;
-  supplier: string | null;
-  unitCogs?: string;
-  lineValue?: string;
-  needsCosting?: boolean;
-}
-
-interface PreviewLine {
-  prizeItemId: string;
-  prizeName: string;
-  qty: number;
-  onHand: number;
-  short: boolean;
-  lots: PreviewLot[];
 }
 
 export interface Destination {
@@ -61,35 +33,36 @@ export interface Destination {
   code: string;
 }
 
-function shortDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("id-ID", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
+export interface TransferSourceShop extends Destination {
+  prizes: PrizeDTO[];
 }
 
 export function TransferCart({
-  shopId,
-  prizes,
+  initialFromShopId,
+  initialPrizeItemId,
+  sourceShops,
   destinations,
-  showCost,
+  onSent,
 }: {
-  shopId: string;
-  prizes: PrizeDTO[];
+  initialFromShopId: string;
+  initialPrizeItemId?: string;
+  sourceShops: TransferSourceShop[];
   destinations: Destination[];
-  showCost: boolean;
+  onSent?: () => void;
 }) {
   const router = useRouter();
+  const [fromShopId, setFromShopId] = useState(initialFromShopId);
   const [toShopId, setToShopId] = useState("");
-  const [note, setNote] = useState("");
   const [lines, setLines] = useState<CartLine[]>([]);
-  const [prizeItemId, setPrizeItemId] = useState("");
+  const [prizeItemId, setPrizeItemId] = useState(initialPrizeItemId ?? "");
   const [qty, setQty] = useState("");
-  const [preview, setPreview] = useState<PreviewLine[] | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const byId = new Map(prizes.map((p) => [p.id, p]));
+  const sourceShop =
+    sourceShops.find((shop) => shop.id === fromShopId) ?? sourceShops[0];
+  const sourcePrizes = sourceShop?.prizes.filter((prize) => prize.onHand > 0) ?? [];
+  const byId = new Map(sourcePrizes.map((p) => [p.id, p]));
+  const availableDestinations = destinations.filter((shop) => shop.id !== sourceShop?.id);
   const parsedQty = Number(qty);
   const canAdd =
     prizeItemId !== "" && Number.isInteger(parsedQty) && parsedQty > 0;
@@ -108,39 +81,24 @@ export function TransferCart({
     });
     setPrizeItemId("");
     setQty("");
-    // Any edit invalidates a plan computed for the old cart.
-    setPreview(null);
   }
 
   function removeLine(id: string) {
     setLines((prev) => prev.filter((l) => l.prizeItemId !== id));
-    setPreview(null);
   }
 
-  async function loadPreview() {
-    if (lines.length === 0) return;
-    setBusy(true);
-    try {
-      const response = await fetch("/api/transfers/preview", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fromShopId: shopId, lines }),
-      });
-      const result = await response.json().catch(() => null);
-      if (!response.ok) {
-        toast.error(result?.error?.message ?? "Could not work out the batches.");
-        return;
-      }
-      setPreview(result as PreviewLine[]);
-    } catch {
-      toast.error("No connection. Check the wifi and try again.");
-    } finally {
-      setBusy(false);
-    }
+  function changeSource(nextFromShopId: string) {
+    setFromShopId(nextFromShopId);
+    // A cart is always one physical box from one branch; line stock must not
+    // survive changing the branch underneath it.
+    setLines([]);
+    setPrizeItemId("");
+    setQty("");
+    setToShopId((current) => (current === nextFromShopId ? "" : current));
   }
 
   async function send() {
-    if (!toShopId || lines.length === 0) return;
+    if (!sourceShop || !toShopId || lines.length === 0) return;
     setBusy(true);
     try {
       const response = await fetch("/api/transfers", {
@@ -151,10 +109,9 @@ export function TransferCart({
           "Idempotency-Key": crypto.randomUUID(),
         },
         body: JSON.stringify({
-          fromShopId: shopId,
+          fromShopId: sourceShop.id,
           toShopId,
           lines,
-          ...(note.trim() ? { note: note.trim() } : {}),
         }),
       });
       const result = await response.json().catch(() => null);
@@ -167,8 +124,7 @@ export function TransferCart({
           "The stock is in transit and is in neither branch's count until it is received.",
       });
       setLines([]);
-      setPreview(null);
-      setNote("");
+      onSent?.();
       router.refresh();
     } catch {
       toast.error("No connection. Check the wifi and try again.");
@@ -177,49 +133,64 @@ export function TransferCart({
     }
   }
 
-  const anyShort = preview?.some((l) => l.short) ?? false;
-
   return (
-    <div className="space-y-4 rounded-xl border p-4">
-      <p className="font-medium">Send stock to another branch</p>
+    <div className="space-y-3.5 rounded-[14px] border bg-card p-[18px]">
+      <p className="text-sm font-semibold">Send stock to another branch</p>
 
-      <label className="block text-sm font-medium">
-        Destination
-        <select
-          className="mt-1 min-h-12 w-full rounded-lg border bg-background px-3 text-base"
-          value={toShopId}
-          onChange={(e) => setToShopId(e.target.value)}
-        >
-          <option value="">Choose a branch…</option>
-          {destinations.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.name} ({d.code})
-            </option>
-          ))}
-        </select>
-      </label>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="text-[13px] font-semibold text-foreground">
+          From
+          <select
+            className="mt-[5px] h-11 w-full rounded-[10px] border bg-background px-3 text-sm text-foreground"
+            value={sourceShop?.id ?? ""}
+            onChange={(event) => changeSource(event.target.value)}
+          >
+            {sourceShops.map((shop) => (
+              <option key={shop.id} value={shop.id}>
+                {shop.name} ({shop.code})
+              </option>
+            ))}
+          </select>
+        </label>
 
-      <div className="flex flex-wrap items-end gap-2">
-        <label className="min-w-48 flex-1 text-sm font-medium">
+        <label className="text-[13px] font-semibold text-foreground">
+          To
+          <select
+            className="mt-[5px] h-11 w-full rounded-[10px] border bg-background px-3 text-sm"
+            value={toShopId}
+            onChange={(e) => setToShopId(e.target.value)}
+          >
+            <option value="">Choose a branch…</option>
+            {availableDestinations.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.name} ({d.code})
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <div className="flex flex-wrap items-end gap-2.5">
+        <label className="min-w-48 flex-1 text-[13px] font-semibold text-foreground">
           Prize
           <select
-            className="mt-1 min-h-12 w-full rounded-lg border bg-background px-3 text-base"
+            className="mt-[5px] h-11 w-full rounded-[10px] border bg-background px-3 text-sm"
             value={prizeItemId}
             onChange={(e) => setPrizeItemId(e.target.value)}
           >
             <option value="">Choose an item…</option>
-            {prizes.map((p) => (
-              <option key={p.id} value={p.id} disabled={p.onHand < 1}>
+            {sourcePrizes.map((p) => (
+              <option key={p.id} value={p.id}>
                 {p.name} — {p.onHand} on hand
               </option>
             ))}
           </select>
         </label>
 
-        <label className="w-28 text-sm font-medium">
+        <label className="w-[100px] text-[13px] font-semibold text-foreground">
           Qty
           <Input
-            className="mt-1 tabular-nums"
+            className="mt-[5px] h-11 rounded-[10px] px-3 text-sm tabular-nums"
             inputMode="numeric"
             value={qty}
             onChange={(e) => setQty(e.target.value.replace(/\D/g, ""))}
@@ -227,7 +198,12 @@ export function TransferCart({
           />
         </label>
 
-        <Button variant="outline" onClick={addLine} disabled={!canAdd}>
+        <Button
+          variant="outline"
+          className="h-11 min-h-0 rounded-[10px] px-[18px] text-sm font-semibold"
+          onClick={addLine}
+          disabled={!canAdd}
+        >
           <Plus className="size-4" />
           Add
         </Button>
@@ -257,91 +233,18 @@ export function TransferCart({
         </ul>
       )}
 
-      <label className="block text-sm font-medium">
-        Note{" "}
-        <span className="font-normal text-muted-foreground">(optional)</span>
-        <Input
-          className="mt-1"
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          maxLength={500}
-          placeholder="Which box, who is carrying it"
-        />
-      </label>
-
-      {preview && (
-        <div className="space-y-3 rounded-lg border bg-muted/30 p-3">
-          <p className="text-sm font-medium">Batches that will be sent</p>
-          <p className="text-xs text-muted-foreground">
-            Oldest stock goes first. This is worked out automatically so the
-            cost basis stays honest at both branches — it is not a choice.
-          </p>
-
-          {preview.map((line) => (
-            <div key={line.prizeItemId}>
-              <p className="text-sm font-medium">
-                {line.prizeName}{" "}
-                <span className="font-normal text-muted-foreground">
-                  · {line.qty} of {line.onHand} on hand
-                </span>
-              </p>
-
-              {line.short ? (
-                <p className="mt-1 text-sm text-destructive">
-                  Only {line.onHand} here — reduce the quantity before sending.
-                </p>
-              ) : (
-                <ul className="mt-1 space-y-0.5">
-                  {line.lots.map((lot) => (
-                    <li
-                      key={lot.batchId}
-                      className="flex flex-wrap gap-x-2 text-xs text-muted-foreground"
-                    >
-                      <span className="font-medium text-foreground tabular-nums">
-                        {lot.qty}
-                      </span>
-                      from {lot.batchCode ?? shortDate(lot.receivedAt)}
-                      <span>· received {shortDate(lot.receivedAt)}</span>
-                      {showCost && lot.unitCogs !== undefined && (
-                        <span>
-                          · {formatMoney(lot.unitCogs)} each
-                          {lot.needsCosting && " (no cost set)"}
-                        </span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          ))}
-        </div>
+      {lines.length === 0 && (
+        <p className="text-[13px] text-muted-foreground">No items added yet.</p>
       )}
 
-      <div className="flex flex-wrap gap-2">
-        <Button
-          variant="outline"
-          onClick={loadPreview}
-          disabled={busy || lines.length === 0}
-        >
-          {busy && <Loader2 className="size-4 animate-spin" />}
-          Check batches
-        </Button>
-
-        <Button
-          className="flex-1"
-          size="lg"
-          onClick={send}
-          disabled={busy || lines.length === 0 || !toShopId || anyShort}
-        >
-          {busy && <Loader2 className="size-4 animate-spin" />}
-          Send {lines.length > 0 && `${lines.length} ${lines.length === 1 ? "item" : "items"}`}
-        </Button>
-      </div>
-
-      <p className="text-xs text-muted-foreground">
-        The stock leaves this branch immediately and arrives when the other
-        branch confirms it.
-      </p>
+      <Button
+        className="h-[52px] min-h-0 w-full rounded-[10px] text-[15px] font-semibold"
+        onClick={send}
+        disabled={busy || lines.length === 0 || !toShopId}
+      >
+        {busy && <Loader2 className="size-4 animate-spin" />}
+        Send {lines.length > 0 && `${lines.length} ${lines.length === 1 ? "item" : "items"}`}
+      </Button>
     </div>
   );
 }

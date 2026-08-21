@@ -487,6 +487,7 @@ export async function seedDemo(prisma: PrismaClient): Promise<void> {
               create: [
                 {
                   prizeItemId: prize.id,
+                  prizeName: prize.name,
                   qty,
                   ticketCostEach: prize.ticketCost,
                   ticketCostTotal,

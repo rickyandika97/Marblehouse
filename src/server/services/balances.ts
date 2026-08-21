@@ -86,6 +86,38 @@ export async function listCustomerLedger(
     }),
   ]);
 
+  // TicketLedger keeps the exact redemption ID and its lines snapshot the
+  // prize name and ticket cost, so customer history never depends on today's
+  // catalog values.
+  const redemptionIds = [
+    ...new Set(
+      tickets
+        .map((entry) => entry.redemptionId)
+        .filter((id): id is string => id !== null)
+    ),
+  ];
+  const redemptions = redemptionIds.length
+    ? await prisma.redemption.findMany({
+        where: { id: { in: redemptionIds }, customerId },
+        select: {
+          id: true,
+          lines: {
+            select: { prizeName: true, qty: true, ticketCostTotal: true },
+          },
+        },
+      })
+    : [];
+  const redeemedItemsById = new Map(
+    redemptions.map((redemption) => [
+      redemption.id,
+      redemption.lines.map((line) => ({
+        name: line.prizeName,
+        qty: line.qty,
+        ticketCostTotal: line.ticketCostTotal,
+      })),
+    ])
+  );
+
   const combined: LedgerEntryDTO[] = [
     ...marbles.map((entry) => ({
       id: entry.id,
@@ -110,6 +142,9 @@ export async function listCustomerLedger(
       occurredAt: entry.occurredAt.toISOString(),
       shop: entry.shop,
       recordedBy: entry.user,
+      ...(entry.redemptionId
+        ? { redeemedItems: redeemedItemsById.get(entry.redemptionId) ?? [] }
+        : {}),
     })),
   ].sort(compareEntries);
 

@@ -265,6 +265,7 @@ describe("uncosted batches and backfill", () => {
             create: [
               {
                 prizeItemId: prize.id,
+                prizeName: prize.name,
                 qty: 4,
                 ticketCostEach: 100,
                 ticketCostTotal: 400,

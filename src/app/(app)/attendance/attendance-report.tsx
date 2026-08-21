@@ -22,6 +22,7 @@ export type AttendanceReportSearchParams = {
   to?: string;
   shopId?: string;
   userId?: string;
+  outsideSchedule?: string;
 };
 
 const percent = (rate: string) => `${(Number(rate) * 100).toFixed(1)}%`;
@@ -30,6 +31,7 @@ type NotClockedInEmployee = {
   userId: string;
   displayName: string;
   shop: { id: string; name: string; code: string };
+  shift: { id: string; name: string; startTime: string; endTime: string };
 };
 
 /**
@@ -44,12 +46,14 @@ export async function AttendanceReport({
 }) {
   const actor = await requireManagerOrOwnerPage();
   const { from, to } = rangeFrom(sp, actor.businessDate);
+  const outsideSchedule = sp.outsideSchedule === "true";
   const filters = await filterPropsFor(actor);
 
   const { rows, totals } = await attendanceReport(actor, {
     from,
     to,
     ...(sp.shopId ? { shopId: sp.shopId } : {}),
+    ...(outsideSchedule ? { outsideSchedule: true } : {}),
   }).catch(asPageError);
 
   // The dashboard asks a live, today-only question. Keep its named answers
@@ -71,6 +75,7 @@ export async function AttendanceReport({
   // into a staff member, so every link stays inside /attendance.
   const rangeParams = new URLSearchParams({ view: "report", from, to });
   if (sp.shopId) rangeParams.set("shopId", sp.shopId);
+  if (outsideSchedule) rangeParams.set("outsideSchedule", "true");
 
   const selected = sp.userId
     ? rows.find((row) => row.userId === sp.userId)
@@ -82,6 +87,7 @@ export async function AttendanceReport({
       from,
       to,
       ...(sp.shopId ? { shopId: sp.shopId } : {}),
+      ...(outsideSchedule ? { outsideSchedule: true } : {}),
     }).catch(asPageError)) as AttendanceRecord[];
 
     return (
@@ -96,6 +102,8 @@ export async function AttendanceReport({
         to={to}
         exportName="attendance"
         shopId={sp.shopId}
+        outsideSchedule={outsideSchedule}
+        showOutsideSchedule
         {...filters}
       >
         <Link
@@ -156,6 +164,8 @@ export async function AttendanceReport({
       to={to}
       exportName="attendance"
       shopId={sp.shopId}
+      outsideSchedule={outsideSchedule}
+      showOutsideSchedule
       {...filters}
     >
       <Link
@@ -247,9 +257,11 @@ function TodayAttention({
           ) : (
             <ul className="mt-2 space-y-1.5 text-sm">
               {notClockedIn.map((employee) => (
-                <li key={`${employee.shop.id}:${employee.userId}`}>
+                <li key={`${employee.shop.id}:${employee.userId}:${employee.shift.id}`}>
                   {employee.displayName}
-                  <span className="text-muted-foreground"> · {employee.shop.name}</span>
+                  <span className="text-muted-foreground">
+                    {" "}· {employee.shop.name} · {employee.shift.name} ({employee.shift.startTime}–{employee.shift.endTime})
+                  </span>
                 </li>
               ))}
             </ul>

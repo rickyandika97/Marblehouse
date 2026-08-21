@@ -76,11 +76,15 @@ export async function GET(
     }
 
     const { searchParams } = new URL(req.url);
-    const input = reportRangeSchema.parse({
+    const range = reportRangeSchema.parse({
       shopId: searchParams.get("shopId") ?? undefined,
       from: searchParams.get("from") ?? undefined,
       to: searchParams.get("to") ?? undefined,
     });
+    const input =
+      name === "attendance" && searchParams.get("outsideSchedule") === "true"
+        ? { ...range, outsideSchedule: true }
+        : range;
 
     return report(actor, input);
   });

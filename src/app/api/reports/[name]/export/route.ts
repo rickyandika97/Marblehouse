@@ -22,11 +22,15 @@ export async function GET(
     const actor = await requireManagerOrOwner();
     const { name } = await params;
     const { searchParams } = new URL(req.url);
-    const input = reportRangeSchema.parse({
+    const range = reportRangeSchema.parse({
       shopId: searchParams.get("shopId") ?? undefined,
       from: searchParams.get("from") ?? undefined,
       to: searchParams.get("to") ?? undefined,
     });
+    const input =
+      name === "attendance" && searchParams.get("outsideSchedule") === "true"
+        ? { ...range, outsideSchedule: true }
+        : range;
 
     const { filename, csv } = await buildExport(name, actor, input);
     return csvResponse(filename, csv);

@@ -22,6 +22,10 @@ export async function GET(req: Request) {
       from: searchParams.get("from") ?? undefined,
       to: searchParams.get("to") ?? undefined,
       lateOnly: searchParams.get("lateOnly") === "true" ? true : undefined,
+      arrival: searchParams.get("arrival") ?? undefined,
+      q: searchParams.get("q") ?? undefined,
+      outsideSchedule:
+        searchParams.get("outsideSchedule") === "true" ? true : undefined,
     });
 
     return listAttendance(actor, input);

@@ -71,9 +71,15 @@ export const clockOutSchema = z.object({
 export const listAttendanceSchema = z.object({
   shopId: z.string().min(1).optional(),
   userId: z.string().min(1).optional(),
-  from: z.string().optional(),
-  to: z.string().optional(),
+  from: z.string().date().optional(),
+  to: z.string().date().optional(),
   lateOnly: z.boolean().optional(),
+  /** Late means after grace; early means before the scheduled start. */
+  arrival: z.enum(["late", "early"]).optional(),
+  /** Owner/manager team-list name search, applied in SQL before the 50-row cap. */
+  q: z.string().trim().max(120).optional(),
+  /** Clock-ins made to cover a shift the employee was not rostered for. */
+  outsideSchedule: z.boolean().optional(),
   /** Personal history across every branch assigned to the current user. */
   mineOnly: z.boolean().optional(),
 });
@@ -83,6 +89,13 @@ export const attendanceAttentionSchema = z.object({
   shopId: z.string().min(1).optional(),
   issue: z.enum(["not-clocked-in", "late"]),
 });
+
+export interface MissingClockInSlot {
+  userId: string;
+  displayName: string;
+  shop: { id: string; name: string; code: string };
+  shift: { id: string; name: string; startTime: string; endTime: string };
+}
 
 export const editAttendanceSchema = z.object({
   status: z.enum(["PRESENT", "LATE", "EXCUSED", "ABSENT"]).optional(),
@@ -95,6 +108,81 @@ export const editAttendanceSchema = z.object({
  *  returns as a Date on 1970-01-01 in UTC. */
 function shiftTimeToMinutes(time: Date): number {
   return minutesFromMidnight(time.getUTCHours(), time.getUTCMinutes());
+}
+
+/** Whether the business date has reached this shift's wall-clock start. */
+function hasShiftStarted(
+  businessDate: Date,
+  timezone: string,
+  startTime: string,
+  now: Date
+): boolean {
+  const local = localParts(now, timezone);
+  const localDate = `${local.year}-${String(local.month).padStart(2, "0")}-${String(
+    local.day
+  ).padStart(2, "0")}`;
+  const scheduledDate = businessDate.toISOString().slice(0, 10);
+
+  // Before the 04:00 business-day boundary, `businessDate` is yesterday. Any
+  // scheduled shift for it has already started; do not make a missed evening
+  // shift disappear merely because midnight passed.
+  if (localDate > scheduledDate) return true;
+  if (localDate < scheduledDate) return false;
+
+  const [hour, minute] = startTime.split(":").map(Number) as [number, number];
+  return minutesFromMidnight(local.hour, local.minute) >= minutesFromMidnight(hour, minute);
+}
+
+/**
+ * Every scheduled shift that has started but has no attendance record yet.
+ *
+ * This is deliberately shift-keyed, rather than employee-keyed: one person
+ * can work a morning and evening shift (or shifts at two branches) and each
+ * arrival is independently recorded by the multi-shift attendance model.
+ */
+export async function listStartedMissingClockIns(
+  actor: Actor,
+  shopIds: string[],
+  now = new Date()
+): Promise<MissingClockInSlot[]> {
+  if (shopIds.length === 0) return [];
+
+  const [shops, clockedIn] = await Promise.all([
+    prisma.shop.findMany({
+      where: { id: { in: shopIds }, isActive: true, isHqPseudoShop: false },
+      select: { id: true, name: true, code: true, timezone: true },
+    }),
+    prisma.attendance.findMany({
+      where: { shopId: { in: shopIds }, businessDate: actor.businessDate },
+      select: { userId: true, shopId: true, shiftId: true },
+    }),
+  ]);
+
+  const clockedInKeys = new Set(
+    clockedIn
+      .filter((row): row is typeof row & { shiftId: string } => row.shiftId !== null)
+      .map((row) => `${row.shopId}:${row.userId}:${row.shiftId}`)
+  );
+  const resolved = await Promise.all(
+    shops.map(async (shop) => ({ shop, slots: await resolveDay(actor, shop.id, actor.businessDate) }))
+  );
+
+  return resolved.flatMap(({ shop, slots }) =>
+    slots
+      .filter((slot) => hasShiftStarted(actor.businessDate, shop.timezone, slot.startTime, now))
+      .filter((slot) => !clockedInKeys.has(`${shop.id}:${slot.userId}:${slot.shiftId}`))
+      .map((slot) => ({
+        userId: slot.userId,
+        displayName: slot.employeeName,
+        shop: { id: shop.id, name: shop.name, code: shop.code },
+        shift: {
+          id: slot.shiftId,
+          name: slot.shiftName,
+          startTime: slot.startTime,
+          endTime: slot.endTime,
+        },
+      }))
+  );
 }
 
 /**
@@ -677,13 +765,40 @@ export async function listAttendance(
 
     if (input.userId && !staffOnly) scope.userId = input.userId;
   }
-  if (input.lateOnly) scope.isLate = true;
+  if (input.lateOnly || input.arrival === "late") scope.isLate = true;
+  if (input.outsideSchedule) scope.scheduleSource = "COVER";
+
+  if (input.q) {
+    scope.user = {
+      displayName: { contains: input.q, mode: "insensitive" },
+    };
+  }
 
   if (input.from || input.to) {
     scope.businessDate = {
       ...(input.from ? { gte: new Date(input.from) } : {}),
       ...(input.to ? { lte: new Date(input.to) } : {}),
     };
+  }
+
+  if (input.arrival === "early") {
+    /**
+     * Arrival is stored as an instant while a shift start is a wall-clock
+     * time. Compare them in the branch timezone in PostgreSQL, before the
+     * normal scoped query and its 50-record cap. The date check keeps a
+     * post-midnight clock-in for an overnight shift from looking "early" just
+     * because 00:05 sorts before 22:00 as a time of day.
+     */
+    const earlyIds = await prisma.$queryRaw<{ id: string }[]>(Prisma.sql`
+      SELECT a."id"
+      FROM "Attendance" a
+      INNER JOIN "Shop" s ON s."id" = a."shopId"
+      WHERE a."shiftStartAtCapture" IS NOT NULL
+        AND (a."clockInAt" AT TIME ZONE 'UTC' AT TIME ZONE s."timezone")::date = a."businessDate"
+        AND (a."clockInAt" AT TIME ZONE 'UTC' AT TIME ZONE s."timezone")::time
+            < a."shiftStartAtCapture"::time
+    `);
+    scope.id = { in: earlyIds.map((row) => row.id) };
   }
 
   const rows = await prisma.attendance.findMany({
@@ -702,6 +817,8 @@ export async function listAttendance(
       photoPath: true,
       photoPurgedAt: true,
       note: true,
+      scheduleSource: true,
+      coverReason: true,
       user: { select: { id: true, displayName: true } },
       shop: { select: { id: true, name: true, code: true } },
       shift: { select: { id: true, name: true } },
@@ -721,7 +838,8 @@ export async function listAttendance(
  */
 export async function listAttendanceAttention(
   actor: Actor,
-  input: z.infer<typeof attendanceAttentionSchema>
+  input: z.infer<typeof attendanceAttentionSchema>,
+  now = new Date()
 ) {
   if (input.shopId) assertShopAccess(actor, input.shopId);
 
@@ -757,30 +875,7 @@ export async function listAttendanceAttention(
         );
 
   if (input.issue === "not-clocked-in") {
-    const [assigned, clockedIn] = await Promise.all([
-      prisma.userShop.findMany({
-        where: { shopId: { in: shopIds }, user: { banned: false } },
-        select: {
-          userId: true,
-          user: { select: { displayName: true } },
-          shop: { select: { id: true, name: true, code: true } },
-        },
-        orderBy: [{ shop: { name: "asc" } }, { user: { displayName: "asc" } }],
-      }),
-      prisma.attendance.findMany({
-        where: { shopId: { in: shopIds }, businessDate: actor.businessDate },
-        select: { userId: true, shopId: true },
-      }),
-    ]);
-
-    const clockedInKeys = new Set(clockedIn.map((row) => `${row.shopId}:${row.userId}`));
-    return assigned
-      .filter((row) => !clockedInKeys.has(`${row.shop.id}:${row.userId}`))
-      .map((row) => ({
-        userId: row.userId,
-        displayName: row.user.displayName,
-        shop: row.shop,
-      }));
+    return listStartedMissingClockIns(actor, shopIds, now);
   }
 
   const late = await prisma.attendance.findMany({
@@ -802,6 +897,8 @@ export async function listAttendanceAttention(
       photoPath: true,
       photoPurgedAt: true,
       note: true,
+      scheduleSource: true,
+      coverReason: true,
       user: { select: { id: true, displayName: true } },
       shop: { select: { id: true, name: true, code: true } },
       shift: { select: { id: true, name: true } },
@@ -836,6 +933,8 @@ export async function getAttendance(actor: Actor, id: string) {
       photoPath: true,
       photoPurgedAt: true,
       note: true,
+      scheduleSource: true,
+      coverReason: true,
       user: { select: { id: true, displayName: true } },
       shop: { select: { id: true, name: true, code: true } },
       shift: { select: { id: true, name: true } },
@@ -877,6 +976,8 @@ function toAttendanceDTO(row: {
   photoPath: string | null;
   photoPurgedAt: Date | null;
   note: string | null;
+  scheduleSource: "SCHEDULED" | "COVER" | "MANUAL";
+  coverReason: string | null;
   user: { id: string; displayName: string };
   shop: { id: string; name: string; code: string };
   shift: { id: string; name: string } | null;
@@ -895,6 +996,8 @@ function toAttendanceDTO(row: {
     photoUrl: row.photoPath ? `/api/attendance/${row.id}/photo` : null,
     photoPurged: row.photoPurgedAt !== null,
     note: row.note,
+    scheduleSource: row.scheduleSource,
+    coverReason: row.coverReason,
     user: row.user,
     shop: row.shop,
     shift: row.shift,

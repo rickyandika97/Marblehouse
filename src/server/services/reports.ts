@@ -1180,7 +1180,7 @@ export interface AttendanceReportRow {
 
 export async function attendanceReport(
   actor: Actor,
-  input: ReportRangeInput
+  input: ReportRangeInput & { outsideSchedule?: boolean }
 ): Promise<{
   rows: AttendanceReportRow[];
   scope: ResolvedScope;
@@ -1193,22 +1193,21 @@ export async function attendanceReport(
   // where they are staff.
   const scope = await resolveScope(actor, input, { requireManagerAt: true });
 
+  const attendanceWhere = {
+    shopId: { in: scope.shopIds },
+    businessDate: { gte: scope.from, lte: scope.to },
+    ...(input.outsideSchedule ? { scheduleSource: "COVER" as const } : {}),
+  };
+
   const groups = await prisma.attendance.groupBy({
     by: ["userId"],
-    where: {
-      shopId: { in: scope.shopIds },
-      businessDate: { gte: scope.from, lte: scope.to },
-    },
+    where: attendanceWhere,
     _count: true,
     _sum: { lateMinutes: true },
   });
   const lateGroups = await prisma.attendance.groupBy({
     by: ["userId"],
-    where: {
-      shopId: { in: scope.shopIds },
-      businessDate: { gte: scope.from, lte: scope.to },
-      isLate: true,
-    },
+    where: { ...attendanceWhere, isLate: true },
     _count: true,
   });
   const users = await prisma.user.findMany({

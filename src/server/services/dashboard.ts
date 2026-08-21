@@ -18,6 +18,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { Actor } from "@/server/auth/context";
 import { forbidden } from "@/server/errors";
+import { listStartedMissingClockIns } from "./attendance";
 import {
   addDays,
   attendanceReport,
@@ -400,7 +401,7 @@ async function sharedAlerts(
 ): Promise<AlertsPanel> {
   const businessDate = actor.businessDate;
 
-  const [lowStock, shops, clockedIn, assignments, lateToday, stale, drift] =
+  const [lowStock, shops, missingClockIns, lateToday, stale, drift] =
     await Promise.all([
       // Takes the resolved scope directly — see lowStockRowsForScope. Passing
       // a re-derived shopId here would silently narrow an owner's all-shops
@@ -410,14 +411,7 @@ async function sharedAlerts(
         where: { id: { in: scope.shopIds }, isActive: true, isHqPseudoShop: false },
         select: { id: true, name: true },
       }),
-      prisma.attendance.findMany({
-        where: { shopId: { in: scope.shopIds }, businessDate },
-        select: { userId: true, shopId: true },
-      }),
-      prisma.userShop.findMany({
-        where: { shopId: { in: scope.shopIds }, user: { banned: false } },
-        select: { userId: true, shopId: true },
-      }),
+      listStartedMissingClockIns(actor, scope.shopIds),
       prisma.attendance.count({
         where: { shopId: { in: scope.shopIds }, businessDate, isLate: true },
       }),
@@ -436,13 +430,13 @@ async function sharedAlerts(
       }),
     ]);
 
-  // "Staff not yet clocked in today, per shop" — assigned minus present.
-  const clockedInKeys = new Set(clockedIn.map((a) => `${a.shopId}:${a.userId}`));
+  // Only rostered shifts whose start time has arrived can be missing.
   const notClockedInByShop = new Map<string, number>();
-  for (const a of assignments) {
-    if (!clockedInKeys.has(`${a.shopId}:${a.userId}`)) {
-      notClockedInByShop.set(a.shopId, (notClockedInByShop.get(a.shopId) ?? 0) + 1);
-    }
+  for (const slot of missingClockIns) {
+    notClockedInByShop.set(
+      slot.shop.id,
+      (notClockedInByShop.get(slot.shop.id) ?? 0) + 1
+    );
   }
 
   return {

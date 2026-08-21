@@ -28,6 +28,8 @@ export function ReportShell({
   shops,
   canSeeAllShops,
   businessDate,
+  outsideSchedule,
+  showOutsideSchedule,
   children,
 }: {
   title: string;
@@ -41,10 +43,14 @@ export function ReportShell({
   /** OWNER only — a manager gets one shop at a time (§3.4). */
   canSeeAllShops?: boolean;
   businessDate?: string;
+  outsideSchedule?: boolean;
+  /** Attendance reports only: clock-ins made while covering an unrostered shift. */
+  showOutsideSchedule?: boolean;
   children: React.ReactNode;
 }) {
   const params = new URLSearchParams({ from, to });
   if (shopId) params.set("shopId", shopId);
+  if (outsideSchedule) params.set("outsideSchedule", "true");
 
   return (
     <div className="space-y-6">
@@ -80,6 +86,8 @@ export function ReportShell({
           shops={shops ?? []}
           canSeeAllShops={canSeeAllShops ?? false}
           businessDate={businessDate}
+          outsideSchedule={outsideSchedule}
+          showOutsideSchedule={showOutsideSchedule ?? false}
         />
       )}
 

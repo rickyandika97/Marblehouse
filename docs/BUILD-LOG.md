@@ -6085,3 +6085,62 @@ from the normal employee view just as they are from the live roster, preserving
 the requested "what do they normally work?" answer without mixing in history.
 The query is owner-only and reads all live assignments in one query, rather than
 asking the client to assemble branches or expose a new employee-schedule API.
+
+### D-153 · Not-clocked-in alerts follow started rostered shifts
+
+**Owner-reported defect, 21 Aug 2026.** Dashboard alerts previously counted
+every active person assigned to a branch who had not clocked in, which included
+people on later shifts and people not rostered that day at all. The linked
+attendance views used the same incorrect rule.
+
+Alerts now resolve the actual roster for the business date, honouring removed
+assignments, one-day overrides, approved leave, and inactive shifts, then keep
+only shifts whose local start time has arrived. Attendance is matched by
+`(shopId, userId, shiftId)`: a clock-in for the 10:00–16:00 shift does not
+satisfy that person's separate 16:00–20:00 arrival. The dashboard count and
+both named attendance views call the same service, so their totals cannot
+disagree. Each named entry identifies its branch and shift.
+
+**Verified:** a focused test proves that at 11:00 only the 09:00 shift is
+alerted, and after its clock-in the 16:00 shift appears at 17:00; `npm run
+typecheck`, `npm run lint`, and `npm test` all pass (`486/486`).
+
+### D-154 · Attendance history has owner filters for people, timing, shop, and date
+
+**Owner request, 21 Aug 2026.** The owner keeps the all-shop attendance history
+but can now narrow it by a calendar date range, shop, arrival timing, and
+employee name. Each filter lives in the URL, so opening a result and refreshing
+the page retains the exact same view.
+
+**Early** means a clock-in before that attendance row's captured scheduled
+shift start. It does not mean simply "not late", so an on-time arrival is in
+neither the Early nor Late filter; a cover or manual record without a scheduled
+start is likewise not called early. The comparison is performed in the branch's
+timezone in PostgreSQL before the result cap, including a date guard for
+overnight shifts. Late continues to use the stored grace-aware `isLate` fact.
+
+The existing all-shops default is unchanged. The filter service applies the
+same server-side scope to the name, date, shop, early, and late predicates, so
+the controls cannot expose another branch's records to a manager.
+
+**Verified:** focused attendance coverage for employee-name, date, Early, and
+Late filtering; `npm run typecheck`, `npm run lint`, and `npm test` pass
+(`487/487`).
+
+### D-155 · Outside-schedule clock-ins are visible and filterable
+
+**Owner request, 21 Aug 2026.** Attendance now has an **Outside schedule**
+filter in both the history and Attendance & Lateness report. It selects only
+records whose server-recorded `scheduleSource` is `COVER`: the employee was
+not rostered for that shift and supplied a cover reason. It deliberately does
+not infer an exception from a clock time, and it excludes manual records and
+branches with no roster, which are not evidence that an employee ignored their
+own schedule.
+
+The result row and individual attendance card explicitly say **Outside
+scheduled shift** and show the recorded reason. The report filter, person
+drill-in URL, JSON route, and CSV export carry the same predicate, so a filtered
+report and its export cannot disagree.
+
+**Verified:** focused cover-filter assertion plus `npm run typecheck`, `npm run
+lint`, and `npm test` (`487/487`).

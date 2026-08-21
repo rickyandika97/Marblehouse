@@ -15,6 +15,7 @@ import {
   type AttendanceRecord,
 } from "./attendance-record-card";
 import { cn } from "@/lib/utils";
+import { AttendanceFilters } from "./attendance-filters";
 
 /**
  * Attendance history (§8.9).
@@ -34,6 +35,7 @@ export function AttendanceList({
   canExcuse,
   selfUserId,
   attention,
+  filters,
 }: {
   myRows: AttendanceRecord[];
   teamRows: AttendanceRecord[];
@@ -47,8 +49,19 @@ export function AttendanceList({
       userId: string;
       displayName: string;
       shop: { id: string; name: string; code: string };
+      shift: { id: string; name: string; startTime: string; endTime: string };
     }[];
   } | null;
+  filters: {
+    from?: string;
+    to?: string;
+    shopId?: string;
+    arrival?: "late" | "early";
+    q?: string;
+    outsideSchedule?: boolean;
+    shops: { id: string; name: string }[];
+    businessDate: string;
+  };
 }) {
   const router = useRouter();
   const [scope, setScope] = useState<"mine" | "team">(
@@ -103,6 +116,8 @@ export function AttendanceList({
       {/* Renders nothing unless the viewer is clocked in and not yet out. */}
       <ClockOutCard />
 
+      <AttendanceFilters {...filters} />
+
       {attention && (
         <section className="rounded-xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/30">
           <h2 className="font-semibold text-amber-950 dark:text-amber-100">
@@ -113,7 +128,7 @@ export function AttendanceList({
           <p className="mt-1 text-sm text-amber-900 dark:text-amber-200">
             {attention.issue === "late"
               ? "These clock-ins were recorded after their grace period."
-              : "These assigned employees do not yet have a clock-in record."}
+              : "These scheduled shifts have started but do not yet have a clock-in record."}
           </p>
 
           {attention.rows.length === 0 ? (
@@ -146,11 +161,12 @@ export function AttendanceList({
                 userId: string;
                 displayName: string;
                 shop: { id: string; name: string; code: string };
+                shift: { id: string; name: string; startTime: string; endTime: string };
               }[]).map((row) => (
-                <li key={`${row.shop.id}:${row.userId}`} className="p-3">
+                <li key={`${row.shop.id}:${row.userId}:${row.shift.id}`} className="p-3">
                   <p className="text-sm font-medium">{row.displayName}</p>
                   <p className="text-xs text-muted-foreground">
-                    {row.shop.name} · {row.shop.code}
+                    {row.shop.name} · {row.shift.name} ({row.shift.startTime}–{row.shift.endTime})
                   </p>
                 </li>
               ))}
@@ -210,6 +226,7 @@ export function AttendanceList({
                         rather than indistinguishable from a completed one. */}
                     {clockRange(r.clockInAt, r.clockOutAt)}
                     {r.shift ? ` · ${r.shift.name}` : ""} · {r.shop.code}
+                    {r.scheduleSource === "COVER" ? " · Outside schedule" : ""}
                   </p>
                 </div>
 

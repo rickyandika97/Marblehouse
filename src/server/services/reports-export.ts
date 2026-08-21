@@ -36,7 +36,10 @@ export interface CsvExport {
   csv: string;
 }
 
-type Builder = (actor: Actor, input: ReportRangeInput) => Promise<CsvExport>;
+type Builder = (
+  actor: Actor,
+  input: ReportRangeInput & { outsideSchedule?: boolean }
+) => Promise<CsvExport>;
 
 const cols = <Row,>(c: CsvColumn<Row>[]) => c;
 

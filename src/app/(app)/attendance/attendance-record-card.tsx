@@ -22,6 +22,8 @@ export interface AttendanceRecord {
   photoUrl: string | null;
   photoPurged: boolean;
   note: string | null;
+  scheduleSource: "SCHEDULED" | "COVER" | "MANUAL";
+  coverReason: string | null;
   user: { id: string; displayName: string };
   shop: { id: string; name: string; code: string };
   shift: { id: string; name: string } | null;
@@ -121,6 +123,11 @@ export function AttendanceRecordCard({
             {clockRange(record.clockInAt, record.clockOutAt)}
             {record.shift ? ` · ${record.shift.name}` : ""}
           </p>
+          {record.scheduleSource === "COVER" && (
+            <p className="text-sm font-medium text-amber-700">
+              Outside scheduled shift{record.coverReason ? ` · ${record.coverReason}` : ""}
+            </p>
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {record.locationDenied && (

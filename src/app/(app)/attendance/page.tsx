@@ -1,4 +1,5 @@
 import { requireActorPage } from "@/server/auth/page-guard";
+import { selectableShops } from "@/server/auth/context";
 import {
   listAttendance,
   listAttendanceAttention,
@@ -26,6 +27,9 @@ export default async function AttendancePage({
   searchParams: Promise<{
     attention?: string;
     view?: string;
+    q?: string;
+    arrival?: "late" | "early";
+    outsideSchedule?: string;
   } & AttendanceReportSearchParams>;
 }) {
   const sp = await searchParams;
@@ -33,14 +37,23 @@ export default async function AttendancePage({
 
   const actor = await requireActorPage();
   const { attention, shopId } = sp;
+  const listInput = {
+    ...(shopId ? { shopId } : {}),
+    ...(sp.from ? { from: sp.from } : {}),
+    ...(sp.to ? { to: sp.to } : {}),
+    ...(sp.arrival ? { arrival: sp.arrival } : {}),
+    ...(sp.q ? { q: sp.q } : {}),
+    ...(sp.outsideSchedule === "true" ? { outsideSchedule: true } : {}),
+  };
 
   const isManagerSomewhere = [...actor.shopRoles.values()].some(
     (sr) => sr.role === "MANAGER"
   );
   const canSeeTeam = actor.isOwner || isManagerSomewhere;
-  const [myRows, teamRows] = await Promise.all([
-    actor.isOwner ? Promise.resolve([]) : listAttendance(actor, { mineOnly: true }),
-    canSeeTeam ? listAttendance(actor, {}) : Promise.resolve([]),
+  const [myRows, teamRows, shops] = await Promise.all([
+    actor.isOwner ? Promise.resolve([]) : listAttendance(actor, { mineOnly: true, ...listInput }),
+    canSeeTeam ? listAttendance(actor, listInput) : Promise.resolve([]),
+    selectableShops(actor),
   ]);
   const issue =
     attention === "not-clocked-in" || attention === "late" ? attention : null;
@@ -59,6 +72,11 @@ export default async function AttendancePage({
       showMyAttendance={!actor.isOwner}
       canExcuse={actor.isOwner}
       selfUserId={actor.userId}
+      filters={{
+        ...listInput,
+        shops: shops.map((shop) => ({ id: shop.id, name: shop.name })),
+        businessDate: actor.businessDate.toISOString().slice(0, 10),
+      }}
       attention={
         issue
           ? {

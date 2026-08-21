@@ -604,25 +604,55 @@ describe("read scoping (§3.4)", () => {
   });
 });
 
-it("lists the named people behind today's dashboard attendance alerts", async () => {
+it("lists only rostered shifts that have started behind today's dashboard attendance alerts", async () => {
   const staff = await fixture();
   const owner = await fixture({ role: "OWNER" });
 
-  // The dashboard's "not clocked in" count is based on branch assignments,
-  // not on attendance rows (there is intentionally no row until they clock in).
+  // Branch assignment alone is not an alert: the employee must be rostered.
   await prisma.userShop.create({
     data: { userId: staff.actor.userId, shopId: staff.shop.id, role: "STAFF" },
+  });
+  await prisma.scheduleAssignment.create({
+    data: {
+      userId: staff.actor.userId,
+      shopId: staff.shop.id,
+      shiftId: staff.shift.id,
+      daysOfWeek: [3],
+      effectiveFrom: staff.actor.businessDate,
+      createdById: owner.actor.userId,
+    },
+  });
+
+  const afternoonShift = await prisma.shift.create({
+    data: {
+      shopId: staff.shop.id,
+      name: "Afternoon shift",
+      startTime: new Date(Date.UTC(1970, 0, 1, 16, 0, 0)),
+      endTime: new Date(Date.UTC(1970, 0, 1, 20, 0, 0)),
+      daysOfWeek: [3],
+    },
+  });
+  await prisma.scheduleAssignment.create({
+    data: {
+      userId: staff.actor.userId,
+      shopId: staff.shop.id,
+      shiftId: afternoonShift.id,
+      daysOfWeek: [3],
+      effectiveFrom: staff.actor.businessDate,
+      createdById: owner.actor.userId,
+    },
   });
 
   const missing = await listAttendanceAttention(owner.actor, {
     issue: "not-clocked-in",
     shopId: staff.shop.id,
-  });
+  }, new Date("2026-03-11T04:00:00.000Z")); // 11:00 Asia/Jakarta
   expect(missing).toEqual([
     expect.objectContaining({
       userId: staff.actor.userId,
       displayName: staff.user.displayName,
       shop: expect.objectContaining({ id: staff.shop.id }),
+      shift: expect.objectContaining({ id: staff.shift.id, name: "Test shift" }),
     }),
   ]);
 
@@ -651,6 +681,101 @@ it("lists the named people behind today's dashboard attendance alerts", async ()
     isLate: true,
     lateMinutes: 25,
   });
+
+  // A morning record satisfies only its own shift. Once the 16:00 shift
+  // starts, the same employee is correctly alerted for that separate arrival.
+  const afterAfternoonStarts = await listAttendanceAttention(
+    owner.actor,
+    { issue: "not-clocked-in", shopId: staff.shop.id },
+    new Date("2026-03-11T10:00:00.000Z") // 17:00 Asia/Jakarta
+  );
+  expect(afterAfternoonStarts).toEqual([
+    expect.objectContaining({
+      userId: staff.actor.userId,
+      shift: expect.objectContaining({ id: afternoonShift.id, name: "Afternoon shift" }),
+    }),
+  ]);
+});
+
+it("filters attendance history by employee, date, late, and early arrival", async () => {
+  const { shop, user, shift, actor } = await fixture();
+  const owner = await fixture({ role: "OWNER" });
+  const laterShift = await prisma.shift.create({
+    data: {
+      shopId: shop.id,
+      name: "Later test shift",
+      startTime: new Date(Date.UTC(1970, 0, 1, 16, 0, 0)),
+      endTime: new Date(Date.UTC(1970, 0, 1, 20, 0, 0)),
+      daysOfWeek: [3],
+    },
+  });
+
+  const [early, late] = await Promise.all([
+    prisma.attendance.create({
+      data: {
+        userId: user.id,
+        shopId: shop.id,
+        shiftId: shift.id,
+        businessDate: actor.businessDate,
+        // 08:30 Asia/Jakarta, before the captured 09:00 shift start.
+        clockInAt: new Date("2026-03-11T01:30:00.000Z"),
+        shiftStartAtCapture: new Date(Date.UTC(1970, 0, 1, 9, 0, 0)),
+      },
+    }),
+    prisma.attendance.create({
+      data: {
+        userId: user.id,
+        shopId: shop.id,
+        shiftId: laterShift.id,
+        businessDate: actor.businessDate,
+        clockInAt: new Date("2026-03-11T09:10:00.000Z"), // 16:10 Asia/Jakarta
+        shiftStartAtCapture: new Date(Date.UTC(1970, 0, 1, 16, 0, 0)),
+        isLate: true,
+        lateMinutes: 10,
+        status: "LATE",
+        scheduleSource: "COVER",
+        coverReason: "Covering an absent colleague",
+      },
+    }),
+  ]);
+  attendanceIds.push(early.id, late.id);
+
+  const byName = await listAttendance(owner.actor, {
+    shopId: shop.id,
+    q: user.displayName.toUpperCase(),
+  });
+  expect(byName).toHaveLength(2);
+
+  const earlyOnly = await listAttendance(owner.actor, {
+    shopId: shop.id,
+    arrival: "early",
+  });
+  expect(earlyOnly.map((row) => row.id)).toEqual([early.id]);
+
+  const lateOnly = await listAttendance(owner.actor, {
+    shopId: shop.id,
+    arrival: "late",
+  });
+  expect(lateOnly.map((row) => row.id)).toEqual([late.id]);
+
+  const outsideSchedule = await listAttendance(owner.actor, {
+    shopId: shop.id,
+    outsideSchedule: true,
+  });
+  expect(outsideSchedule).toEqual([
+    expect.objectContaining({
+      id: late.id,
+      scheduleSource: "COVER",
+      coverReason: "Covering an absent colleague",
+    }),
+  ]);
+
+  const otherDate = await listAttendance(owner.actor, {
+    shopId: shop.id,
+    from: "2026-03-12",
+    to: "2026-03-12",
+  });
+  expect(otherDate).toEqual([]);
 });
 
 it("keeps a multi-branch manager's team list to branches they manage", async () => {

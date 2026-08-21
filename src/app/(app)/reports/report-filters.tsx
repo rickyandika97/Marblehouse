@@ -34,6 +34,8 @@ export function ReportFilters({
   shops,
   canSeeAllShops,
   businessDate,
+  outsideSchedule,
+  showOutsideSchedule,
 }: {
   from: string;
   to: string;
@@ -42,18 +44,27 @@ export function ReportFilters({
   canSeeAllShops: boolean;
   /** The actor's business date — presets anchor to this, never to `new Date()`. */
   businessDate: string;
+  outsideSchedule?: boolean;
+  showOutsideSchedule?: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const [pending, startTransition] = useTransition();
 
-  function apply(next: { from?: string; to?: string; shopId?: string | null }) {
+  function apply(next: {
+    from?: string;
+    to?: string;
+    shopId?: string | null;
+    outsideSchedule?: boolean;
+  }) {
     const params = new URLSearchParams(searchParams.toString());
     if (next.from) params.set("from", next.from);
     if (next.to) params.set("to", next.to);
     if (next.shopId === null) params.delete("shopId");
     else if (next.shopId !== undefined) params.set("shopId", next.shopId);
+    if (next.outsideSchedule === true) params.set("outsideSchedule", "true");
+    else if (next.outsideSchedule === false) params.delete("outsideSchedule");
 
     startTransition(() => {
       router.push(`${pathname}?${params.toString()}`);
@@ -78,6 +89,16 @@ export function ReportFilters({
             {p.label}
           </Button>
         ))}
+        {showOutsideSchedule && (
+          <Button
+            size="sm"
+            variant={outsideSchedule ? "default" : "outline"}
+            onClick={() => apply({ outsideSchedule: !outsideSchedule })}
+            disabled={pending}
+          >
+            Outside schedule
+          </Button>
+        )}
       </div>
 
       <div className="flex flex-wrap items-end gap-3">

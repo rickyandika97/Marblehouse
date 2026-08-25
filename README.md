@@ -152,12 +152,18 @@ every branch offline until someone is physically there.
 ### Ongoing updates
 
 ```bash
-git pull
-docker compose up -d --build
+./scripts/deploy.sh
 ```
 
-Migrations apply on start. **Never create a migration on this machine** — make
-them on the Mac and commit them.
+Takes a backup of the running app first (so a bad pull is recoverable), then
+pulls, rebuilds, and recreates — preserving the tunnel container if it was
+running — and waits for `/api/health` to report OK before finishing. Refuses
+to run if the working tree has uncommitted changes.
+
+That's `git pull` + `docker compose up -d --build` underneath: migrations
+apply on start, there is no separate build/migrate/restart order to get
+wrong. **Never create a migration on this machine** — make them on the Mac
+and commit them.
 
 ---
 

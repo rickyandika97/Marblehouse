@@ -5753,6 +5753,7 @@ unavailable server/browser boundary.
 | ~~`PATCH /api/prizes/:id` does not accept `imagePath`~~ | **Not a debt — §7.4 reconciled in D-118.** Images live on `GET/POST/DELETE /api/prizes/:id/image`, matching the receipt route so a flaky upload cannot take a text edit down with it. The PRD's route table now lists all three and notes the `PATCH` exclusion. |
 | Prize images have no upload-time dimension floor | A 50x50 photo is accepted and stored at 50x50, then rendered into a 56px card — fine — but a 12x12 one would look like a smudge. `withoutEnlargement` is deliberate (upscaling only blurs), so the fix would be a minimum-size check at upload with a clear message, not silent enlargement. Not urgent; no real product shot is that small. |
 | Sign-in throttle is per-IP, not per-username (§5.4) | D-161. Better Auth buckets on `X-Forwarded-For` and counts successful logins too; storage is in-memory so counters reset on restart. Raised to `max: 30` per 15 min so a shop sharing one router is not locked out, but the per-username rule §5.4 actually specifies is unbuilt. Either implement it (custom rate-limit logic keyed on the submitted username, plus persistence if it must survive a restart) or amend §5.4 to describe the per-IP throttle. Do not leave spec and code disagreeing. |
+| Fresh deploys will hit the root-owned bind-mount bug again | D-163. `./data` and `./backups` are created by Docker as root on first `up`, so the container (uid 1000) cannot write them — breaking every upload and every backup, silently, on a stack that reports healthy. Fixed by hand here with `chown`. Make it durable: either commit `.gitkeep` files so the directories pre-exist owned by the cloning user, or have `docker-entrypoint.sh` assert writability and fail loudly with the chown command. Prefer the loud check. |
 | Phase gate proves the image builds, not that it boots | D-159 and D-160 were both start-time/runtime faults that `docker compose build` cannot catch — a missing `src/` in the runner stage, and a duplicate connector outside Docker entirely. Add to the gate: `docker compose up` once and assert the `app` container reaches healthy, and for anything touching the tunnel, inventory every registered connector (`ps aux | grep cloudflared`, `systemctl status cloudflared`, `docker ps -a`) before trusting a green build. |
 | Docker network MTU 1450 is unverified | D-160. The 1492 path MTU it compensates for is real and measured, but the setting fixed nothing observable and has no test behind it. It is hygiene, not a fix; revisit if any large-payload symptom ever appears, and do not cite it as the cause of a resolved incident. |
 | Manager's "Reports" tab lands on one report | `app-shell.tsx:44` points MANAGER at `/reports/tickets-awarded` rather than `/reports`, so the nav's Reports tab opens a single owner-only report instead of the index. Cosmetic, and noticed while auditing unreferenced routes (D-119). Check what a manager should actually land on — `/reports` itself is role-aware. |
@@ -6638,3 +6639,57 @@ function's TypeScript namespace; runtime behavior is unchanged.
 The Better Auth/Edge Runtime warning and Prisma `package.json#prisma`
 deprecation remain unchanged and are separate recorded debts. **No schema
 change and no migration.**
+
+---
+
+### D-163 · Bind-mounted `/data` and `/backups` are root-owned — every write the app makes was failing
+
+**Found 25 Aug 2026** while verifying the backup path after D-160/D-161, on the
+same first-real-deploy box. Nothing had reported it because no staff had used
+the features yet.
+
+`docker-compose.yml` bind-mounts `./data:/data` and `./backups:/backups`. When
+Docker creates a bind-mount source directory that does not exist, it creates it
+as **root**. The container runs as `USER node` (uid 1000). A bind mount shadows
+whatever is in the image at that path, so `Dockerfile:89`'s
+`chown -R node:node /data /backups` applies to directories that are then hidden
+by the mount and has no effect at runtime.
+
+Result: uid 1000 could not write to either path. Verified directly —
+`touch /data/.wtest` and `touch /backups/.wtest` both returned
+`Permission denied` inside the running container.
+
+**What was broken in production, silently:**
+
+- `npm run backup` — `EACCES … mkdir '/backups/.staging-…'`.
+- **The nightly 02:00 backup job** (`src/server/jobs/scheduler.ts` →
+  `@/server/services/backup`). It writes to the same `/backups`, so automated
+  backups had never once succeeded on this machine. §13's whole
+  local-backup-plus-manual-copy design rests on this working.
+- Every upload: attendance photos (`attendance-photo.ts`, `DATA_DIR`), expense
+  receipts, prize images. Photo-proof clock-in is a §4 core feature and would
+  have failed for the first staff member to try it.
+
+**Fix:** `sudo chown -R 1000:1000 ./data ./backups` on the host. The host user
+here is uid 1000, the same as the container's `node`, so one chown satisfies
+both and leaves the owner normal file-manager access to the bind mounts.
+Verified after: both paths writable, and a real
+`npm run backup` produced `marblehouse-2026-08-25-2002.tar.gz` plus its
+`.sha256` on the host.
+
+**This will recur on any fresh deploy** — a new machine, a fresh clone, or the
+Windows production target — because the directories are created by Docker on
+first `up`, not by the repo. Two durable options, neither taken yet: commit
+`.gitkeep` files so `./data` and `./backups` exist (owned by the cloning user)
+before Docker can create them as root, or have `docker-entrypoint.sh` check
+writability and fail loudly with the chown command rather than letting the app
+start and discover it one failed upload at a time. **Prefer the loud check** —
+a deploy that boots healthy while unable to write anything is precisely the
+failure mode this whole day was made of.
+
+**Pattern worth naming, since three separate faults today shared it.** D-159
+(missing `src/`), the missing `scripts/`, and this one all passed
+`docker compose build` and all broke only when the container actually ran.
+`build` proves the image assembles. It says nothing about whether the thing
+boots, whether it can reach its dependencies, or whether it can write to its
+own volumes. The phase gate needs a runtime assertion, not just a build.

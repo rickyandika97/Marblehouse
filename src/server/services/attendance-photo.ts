@@ -18,7 +18,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import sharp from "sharp";
+import sharp, { type Metadata } from "sharp";
 import { AppError } from "@/server/errors";
 
 /**
@@ -176,7 +176,7 @@ export async function storeAttendancePhoto(
 
   const input = sharp(Buffer.from(upload), { failOn: "error" });
 
-  let metadata: sharp.Metadata;
+  let metadata: Metadata;
   try {
     metadata = await input.metadata();
   } catch {

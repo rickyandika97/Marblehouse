@@ -5764,7 +5764,7 @@ unavailable server/browser boundary.
 | Existing usernames with a dash predate D-110 | The plugin now accepts dashes, matching our schema. Any account someone *tried* to create with a dash before today failed outright, so there is nothing to migrate — but if a future change touches `usernameValidator`, the service regex in `users.ts` must move with it. |
 | Date formatting has the same portability exposure as D-115 | Not fixed — found while diagnosing D-115 and deliberately left, since neither is today's bug. Two shapes. **(a)** Seven `toLocaleTimeString`/`toLocaleDateString("id-ID")` call sites pass no `timeZone`, so they format in the *viewer's* zone: a server on `Asia/Jakarta` and a branch tablet on `Asia/Makassar` render the same instant an hour apart, and any of these that are server-rendered will throw a hydration error exactly as the preset tiles did. Pass `timeZone: "Asia/Jakarta"` explicitly. **(b)** `settings/audit-log/page.tsx:93` and `settings/backups/backup-screen.tsx:72` pass `undefined` as the *locale*, which resolves to the viewer's — guaranteed to differ on any non-`en-US` browser. Both are owner-only screens, which is why they have not been reported. Verified harmless on the owner's own machine today (Node 26 and Chrome agreed on every timestamp tested, midnight rollover included), so this is latent, not live. |
 | Prisma deprecation | `package.json#prisma` moves to `prisma.config.ts` in Prisma 7. Not urgent. |
-| Dependency audit | `npm audit --omit=dev` reports 6 high advisories through Prisma's `effect` dependency and Next's PostCSS/sharp dependencies. The offered automatic fix upgrades outside the pinned stack (Prisma 6.19 / Next 16), so Phase 3 did not force it. Reassess as an explicit dependency/hardening update. |
+| ~~Dependency audit~~ | **Reassessed and hardened — D-162.** The current audit had grown to 17 findings. Stack-compatible upgrades removed every remotely reachable image-processing finding and every PostCSS/Effect/Nanoid finding. Three high findings remain only through Prisma CLI configuration's pinned `deepmerge-ts@7.1.5`; the app never passes request data into that loader. Do not force the incompatible `deepmerge-ts@8` override or downgrade Prisma merely to make the count say zero. |
 | Edge Runtime build warning | From `jose` inside Better Auth. Harmless — we do not use the Edge Runtime (§5.2 forbids it) and nothing enables it. |
 | Phases 1–3 have no unit tests | Vitest landed in Phase 4 (D-26), and `npm test` is a phase gate from Phase 4 onward (D-37). Phases 1–3 shipped before either existed and are covered only by the curl-based `verify-phase{1,2,3}.sh`. **§15's named unit tests are now all in place** — lateness (Phase 6), business-date boundaries and phone normalisation (D-91). What remains uncovered is Phases 1–3's *service* logic, not §15's list. |
 | §15's "money arithmetic never produces a float artefact" has no test | The last unticked line in §15's "Unit tests — other" block. `Decimal` is used throughout and D-13/D-85 caught the `Number()` slips by review, but nothing asserts it. A cheap property-style test over the money helpers would close it. |
@@ -6568,3 +6568,73 @@ persistent storage if the counter should survive a restart), plus tests. Either
 build it or amend §5.4 to describe a per-IP throttle — the divergence between
 spec and code should not be left standing silently. Logged under *Known issues
 / debts*.
+
+---
+
+### D-162 · Dependency hardening prioritises reachable upload paths over an audit count
+
+**Owner request, 21 Aug 2026.** The deferred dependency-security audit was
+re-run against the current lockfile. `npm audit --omit=dev` now reported **17
+package-level findings: 12 high, 5 moderate, 0 critical**. The old debt entry's
+six-high snapshot was stale.
+
+The findings did not carry equal risk:
+
+- **`sharp@0.34.5` was reachable and urgent.** Attendance, expense-receipt and
+  prize-image routes all send user-supplied images through Sharp. The installed
+  release was inside GHSA-f88m-g3jw-g9cj's vulnerable libvips range. Sharp was
+  also only present transitively through Next even though application services
+  import it directly, so a Next packaging change could have removed it without
+  a package.json diff.
+- **PostCSS and Nanoid are build inputs here, not request processors.** No route
+  accepts CSS or source maps, so their advisories were not remotely reachable;
+  they were still patched because compatible releases exist and the production
+  image compiles CSS during its build.
+- **Effect was transitive only.** Marblehouse does not import it. Updating the
+  form resolver and Prisma within their existing major versions moved the tree
+  to `effect@3.21.0`, outside GHSA-38f7-945m-qr2g's affected range.
+- **The remaining `deepmerge-ts` advisory is confined to Prisma's CLI config
+  loader.** `@prisma/config@6.19.3` pins `deepmerge-ts@7.1.5`; it processes the
+  repository's trusted Prisma configuration during generate/migrate commands,
+  never request data. npm suggests a Prisma downgrade, while forcing
+  `deepmerge-ts@8` crosses a transitive major that Prisma does not declare
+  compatible. Neither is a sound security fix. Retain the residual until a
+  Prisma 6 patch adopts the fixed dependency, or handle it as part of a
+  deliberate Prisma 7 migration.
+
+#### Compatible hardening applied
+
+| Package | Before | After | Why |
+|---|---:|---:|---|
+| `sharp` | transitive `0.34.5` | direct, pinned `0.35.3` | Fix the reachable libvips advisories and declare what the services import. |
+| `next` / `eslint-config-next` | `15.5.22` resolved | `15.5.23` | Latest patch in the pinned Next 15 line. |
+| `postcss` | `8.5.6` plus Next's nested `8.4.31` | `8.5.26` | Fix the source-map disclosure advisories. |
+| `nanoid` | `3.3.17` | `3.3.18` | Fix GHSA-2v37-7h3g-55p8. |
+| `@hookform/resolvers` | `5.7.1` | `5.9.1` | Current compatible resolver release. |
+| Prisma client/CLI | `6.13.0` | `6.19.3` | Current patch in the mandated Prisma 6 line; also removes the affected Effect release. |
+
+The `overrides.next` entries are deliberate. Next 15.5.23 still declares its
+older PostCSS and `sharp ^0.34` ranges, so without the overrides a clean
+`npm ci` silently reinstalls vulnerable nested copies even though safe direct
+versions are present. The Nanoid override similarly makes clean-lock installs
+deterministic. `attendance-photo.ts` now imports Sharp's exported `Metadata`
+type directly because Sharp 0.35 no longer exposes it through the default
+function's TypeScript namespace; runtime behavior is unchanged.
+
+#### Verification
+
+- `npm audit --omit=dev`: **3 high, 0 moderate, 0 critical**, all three the one
+  residual `deepmerge-ts → @prisma/config → prisma` chain described above.
+- `npm run typecheck` and `npm run lint`: pass.
+- `npm test`: **511/511**, including all attendance, receipt and prize-image
+  processing tests against Sharp 0.35.3.
+- `npm run build`: pass, 48/48 static pages generated.
+- `docker compose build`: pass on the Linux production image; both `npm ci`
+  stages reproduce the three-finding residual rather than the former tree.
+- One-shot check inside `marblehouse-app:latest`: Sharp **0.35.3**, libvips
+  **8.18.3**, Next **15.5.23**, Prisma **6.19.3**, PostCSS **8.5.26**, and a
+  test JPEG encoded successfully.
+
+The Better Auth/Edge Runtime warning and Prisma `package.json#prisma`
+deprecation remain unchanged and are separate recorded debts. **No schema
+change and no migration.**

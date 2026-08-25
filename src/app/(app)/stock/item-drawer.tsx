@@ -211,7 +211,7 @@ export function ItemDrawer({
           </div>
         )}
 
-        <Dialog open={transferOpen} onOpenChange={setTransferOpen}>
+        <Dialog open={transferOpen} onOpenChange={setTransferOpen} modal={false}>
           <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl">
             <DialogHeader>
               <DialogTitle>Send {prize.name}</DialogTitle>

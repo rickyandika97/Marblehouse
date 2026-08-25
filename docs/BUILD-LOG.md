@@ -6693,3 +6693,65 @@ failure mode this whole day was made of.
 `build` proves the image assembles. It says nothing about whether the thing
 boots, whether it can reach its dependencies, or whether it can write to its
 own volumes. The phase gate needs a runtime assertion, not just a build.
+
+---
+
+### D-164 · Login spinner hung forever on iOS Safari — soft navigation raced its own refresh
+
+**Reported 25 Aug 2026**, after D-160 restored the tunnel: on the owner's
+iPhone, submitting correct credentials in Safari span the "Signing in…" button
+indefinitely. A *wrong* password failed instantly and correctly. Chrome on the
+same phone worked. The home-screen PWA worked. Clearing Safari's website data
+made it work once, then it broke again.
+
+**Everything server-side was provably fine**, which is what made this look like
+infrastructure for far too long:
+
+- Every attempt created a fresh `session` row and updated `lastLoginAt` — the
+  sign-in succeeded, every single time.
+- Zero `429`s across 765 tunnel requests; the container was confirmed running
+  D-161's `max: 30`.
+- No exception in the app log during the hang.
+- Every JS/CSS chunk the login page references returned `200`.
+- The `404`s in the tunnel counters were `apple-touch-icon*.png` and
+  `favicon.ico`, which iOS requests and this app does not ship. Harmless, and a
+  red herring.
+- HTTP/3 was suspected (Safari uses it, `alt-svc` is advertised, and clearing
+  site data resets the alt-svc cache — which fit the intermittency neatly). It
+  was tested directly and **disproved**: 174KB over `--http3-only` from the
+  same wifi succeeded repeatedly.
+
+**Cause, in our own code.** `login-form.tsx` ran, back to back:
+
+```ts
+router.replace(target);
+router.refresh();
+```
+
+`replace()` begins a soft RSC navigation; `refresh()` immediately invalidates
+the router cache underneath it. When those race, the navigation never resolves.
+The success path deliberately never clears `pending` — normally there is
+nothing to clear, because the page goes away — so the button spins forever. A
+race explains every observation the network theories could not: the
+intermittency, the variation by browser, and the fact that a *failed* login
+(which returns early and does clear `pending`) always behaved correctly.
+
+**Fix:** a hard navigation, `window.location.replace(target)`. The browser
+re-requests the page with whatever cookie it just stored and no RSC cache in
+the path. It also **fails visibly** — if the cookie did not stick, the user
+lands on a rendered login page instead of an infinite spinner. A full reload is
+marginally slower and entirely the right trade here.
+
+**Not fixed, same pattern, deliberately left alone:**
+`customers/[id]/redeem/redeem-cart.tsx:123-124` also does
+`router.push(...)` immediately followed by `router.refresh()`. It has not been
+reported broken. It is the same latent race; check it if a redemption ever
+"hangs after confirming". Standalone `router.refresh()` calls elsewhere are
+**not** affected — the race needs a navigation in flight.
+
+**Caveat, stated honestly:** the race is a strong inference from the evidence,
+not a captured stack trace — iOS Safari cannot be inspected without a Mac. The
+fix is a strict improvement regardless of root cause, because it removes the
+soft-navigation path entirely and converts any residual failure from an
+infinite spinner into a visible page. If the spinner ever returns, that
+inference is what to re-examine first.

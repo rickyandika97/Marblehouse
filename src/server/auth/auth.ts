@@ -121,7 +121,25 @@ export const auth = betterAuth({
   },
 
   /**
-   * 5 failed attempts per username per 15 minutes → 15-minute lockout (§5.4).
+   * Sign-in throttle. §5.4 asks for "5 failed attempts per USERNAME per 15
+   * minutes"; this is NOT that, and the difference matters — see D-161.
+   *
+   * Better Auth buckets rate limits **per client IP**, read from
+   * `X-Forwarded-For` (verified 25 Aug 2026: changing that header opens a
+   * fresh bucket, while `CF-Connecting-IP` and `X-Real-IP` do not), and it
+   * counts EVERY attempt, successful ones included.
+   *
+   * A whole branch shares one public IP behind its router, so at the old
+   * `max: 5` a second staff member signing in on a second tablet was locked
+   * out by the first — five logins per 15 minutes for the entire shop. That
+   * was reported in production on 25 Aug 2026.
+   *
+   * 30 keeps brute-force protection meaningful (a password guess costs the
+   * attacker a shared quota) while leaving room for a real shop floor.
+   *
+   * DEBT: the per-username rule §5.4 actually specifies still needs building;
+   * this cap only reduces the collateral damage. Storage is in-memory too, so
+   * every counter resets when the container restarts.
    *
    * `enabled: true` overrides the library default of production-only, because
    * the throttle is part of the acceptance criteria and must be testable in
@@ -132,8 +150,8 @@ export const auth = betterAuth({
     window: 15 * 60,
     max: 100,
     customRules: {
-      "/sign-in/username": { window: 15 * 60, max: 5 },
-      "/sign-in/email": { window: 15 * 60, max: 5 },
+      "/sign-in/username": { window: 15 * 60, max: 30 },
+      "/sign-in/email": { window: 15 * 60, max: 30 },
     },
   },
 

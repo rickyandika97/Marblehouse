@@ -62,5 +62,18 @@ services:
       - app
     profiles: ["tunnel"]
 
+networks:
+  # The ISP link here is PPPoE: real path MTU to the internet is 1492, not the
+  # 1500 Docker assumes (measured 25 Aug 2026 — `ping -M do -s 1472` fails,
+  # 1464 passes). 1450 leaves headroom under that.
+  #
+  # NOTE: this did NOT cause the 25 Aug 502s — that was a duplicate cloudflared
+  # connector (see BUILD-LOG D-160). This setting is retained as correct-for-
+  # this-link hygiene, not as a fix, and is untested against any known failure.
+  default:
+    driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: "1450"
+
 volumes:
   pgdata:

@@ -5752,6 +5752,9 @@ unavailable server/browser boundary.
 | ~~Prize image upload has no UI~~ | **Fixed — D-118.** Settings → Prizes, with thumbnails on the Catalog rows and §8.6's card images on the redemption grid. |
 | ~~`PATCH /api/prizes/:id` does not accept `imagePath`~~ | **Not a debt — §7.4 reconciled in D-118.** Images live on `GET/POST/DELETE /api/prizes/:id/image`, matching the receipt route so a flaky upload cannot take a text edit down with it. The PRD's route table now lists all three and notes the `PATCH` exclusion. |
 | Prize images have no upload-time dimension floor | A 50x50 photo is accepted and stored at 50x50, then rendered into a 56px card — fine — but a 12x12 one would look like a smudge. `withoutEnlargement` is deliberate (upscaling only blurs), so the fix would be a minimum-size check at upload with a clear message, not silent enlargement. Not urgent; no real product shot is that small. |
+| Sign-in throttle is per-IP, not per-username (§5.4) | D-161. Better Auth buckets on `X-Forwarded-For` and counts successful logins too; storage is in-memory so counters reset on restart. Raised to `max: 30` per 15 min so a shop sharing one router is not locked out, but the per-username rule §5.4 actually specifies is unbuilt. Either implement it (custom rate-limit logic keyed on the submitted username, plus persistence if it must survive a restart) or amend §5.4 to describe the per-IP throttle. Do not leave spec and code disagreeing. |
+| Phase gate proves the image builds, not that it boots | D-159 and D-160 were both start-time/runtime faults that `docker compose build` cannot catch — a missing `src/` in the runner stage, and a duplicate connector outside Docker entirely. Add to the gate: `docker compose up` once and assert the `app` container reaches healthy, and for anything touching the tunnel, inventory every registered connector (`ps aux | grep cloudflared`, `systemctl status cloudflared`, `docker ps -a`) before trusting a green build. |
+| Docker network MTU 1450 is unverified | D-160. The 1492 path MTU it compensates for is real and measured, but the setting fixed nothing observable and has no test behind it. It is hygiene, not a fix; revisit if any large-payload symptom ever appears, and do not cite it as the cause of a resolved incident. |
 | Manager's "Reports" tab lands on one report | `app-shell.tsx:44` points MANAGER at `/reports/tickets-awarded` rather than `/reports`, so the nav's Reports tab opens a single owner-only report instead of the index. Cosmetic, and noticed while auditing unreferenced routes (D-119). Check what a manager should actually land on — `/reports` itself is role-aware. |
 | ~~Shop admin has no edit form~~ | **Fixed — D-126, converted to a modal in D-127.** Settings → Shops → Edit, per-row. |
 | ~~Presets have no owner screen~~ | **Fixed — D-103.** Settings → Shops → *shop* → Sale prices. Reported by the owner within a day of D-101 shipping. |
@@ -6412,3 +6415,156 @@ not a speed win. Revisit only with a page that is measurably slow in
 production.
 
 **Verified:** `npm run typecheck`, `npm run lint`, `npm test` (`503/503`).
+
+### D-159 · Production image was missing `src/` — first real Docker deploy crash-looped
+
+**Found during the owner's first real production deploy**, 25 Aug 2026, on a
+Linux box (CachyOS) via `docker compose --profile tunnel up -d --build` — the
+exact on-device pass Phase 9/10 have been waiting on. `docker compose build`
+had passed on every prior phase gate; the failure only shows up at container
+**start**, which is why it survived this long.
+
+**Symptom:** `postgres` and `cloudflared` came up healthy; `app` crash-looped.
+`docker-entrypoint.sh` got through `prisma migrate deploy` fine, then died in
+the seed step:
+
+```
+Error: Cannot find module '../src/server/auth/auth'
+Require stack:
+- /app/prisma/seed.ts
+```
+
+**Root cause:** `prisma/seed.ts` imports `../src/server/auth/auth` directly,
+and `auth.ts` in turn imports `@/lib/prisma` — so the seed step runs `tsx`
+against **TS source**, not the compiled `.next` output, at every container
+start (`docker-entrypoint.sh` runs it before `exec`ing the app). The runner
+stage of the `Dockerfile` only ever copied `node_modules`, `.next`, `public`
+and `prisma` — never `src/` or `tsconfig.json` (needed for the `@/*` path
+alias tsx resolves against). This never failed in dev because `npm run dev`
+runs from the full working tree, and it never failed `docker compose build`
+because the image builds fine — it only breaks when the entrypoint actually
+executes inside the slim runner stage.
+
+**Fix:** added `COPY --from=builder /app/src ./src` and `tsconfig.json` to the
+runner stage's copy list, right before the `package.json`/`next.config.ts`
+copy. `tsx` was already a production dependency (not dev), so no other change
+was needed.
+
+**Not a schema or business-logic bug** — no PRD or invariant implication. Noted
+here because it is exactly the class of defect the "run `docker compose
+build`" gate (CLAUDE.md, *Before finishing any phase* §4) was designed to
+catch, and didn't: that gate proves the image **builds**, not that it **boots**.
+A future phase gate should also run `docker compose up` once against a
+throwaway `.env` and check the `app` container reaches healthy, not just that
+`build` exits 0.
+
+**Verified:** rebuilt (`docker compose --profile tunnel up -d --build`) on the
+owner's machine; `app` container now applies migrations, seeds the owner
+account (`GSM` / username `delvino`), and reaches healthy alongside `postgres`
+and `cloudflared`.
+
+---
+
+### D-160 · Two cloudflared connectors on one tunnel — intermittent 502s that look like everything else
+
+**Symptom, 25 Aug 2026:** `admin.redlight.click` returned Cloudflare `502` on
+some devices and not others, changing by device and by minute, while the same
+URL was reliable from the host itself. It survived four hours of diagnosis
+because every component reported healthy.
+
+**Root cause:** a **systemd `cloudflared.service`** (PID 797,
+`/usr/bin/cloudflared … tunnel run --token-file /etc/cloudflared/token`,
+`enabled`) was running on the host **alongside** the Docker `cloudflared`
+container, both registered to the same tunnel
+`bead1103-5213-40a3-a777-9d7c38bf43f4`. Cloudflare load-balances across every
+registered connector. The tunnel's ingress points at `http://app:5050` — a
+Docker network alias. Inside the compose network it resolves; on the host it
+does not. The systemd connector's journal held **144×**
+`dial tcp: lookup app … no such host`. Roughly half of all traffic was routed
+to a connector that could never reach an origin.
+
+It is almost certainly a leftover from standing the tunnel up natively before
+the move to Docker — `--token-file` is the shape Cloudflare's dashboard install
+snippet creates, and `enabled` means it returned on every reboot.
+
+**Fix:** `sudo systemctl disable --now cloudflared` on the host. `disable`, not
+just `stop` — stopping alone leaves it to come back at next boot and silently
+re-break the site. The Docker connector is now the only registration.
+
+**Why this took four hours, recorded so it doesn't take four again.** Every
+instinct was wrong because every local signal was green:
+
+- `docker compose ps` — all healthy. The container connector *was* fine.
+- `cloudflared` container logs — no errors, ever. Requests it never received
+  cannot fail in its log.
+- `cloudflared_tunnel_request_errors` — `0`, for the same reason.
+- Tunnel registration logs — 4 connections, all `Registered`, all healthy.
+
+**The metric that actually broke it open was
+`cloudflared_tunnel_total_requests` reading `0` while curl was collecting
+502s.** Zero requests arriving, with connections registered and the origin
+reachable from the container's own netns, can only mean the edge is delivering
+to a different connector. Read that counter early — it is on
+`http://localhost:20241/metrics` inside the container's network namespace
+(`docker run --rm --network container:marblehouse-cloudflared-1 curlimages/curl
+-sS http://localhost:20241/metrics`).
+
+**When a Cloudflare Tunnel misbehaves, inventory what else is registered to it
+before touching config:** `ps aux | grep cloudflared`,
+`systemctl status cloudflared`, `docker ps -a | grep cloudflared`. Three wrong
+theories (edge routing, QUIC transport, path MTU) and one self-inflicted
+outage — switching `--protocol http2`, which took the site from half-broken to
+fully broken until reverted — were all spent before that inventory was run.
+
+**Left in place, deliberately:** `docker-compose.yml` now sets the project
+network's MTU to 1450. The link here really is PPPoE — measured path MTU to
+the internet is 1492 (`ping -M do -s 1472` fails, `-s 1464` passes) while every
+interface is configured 1500. That mismatch is real and worth not having, but
+it was **not** the cause of this incident and fixed nothing. The comment in the
+compose file says so; do not cite it as a fix for anything.
+
+---
+
+### D-161 · The sign-in throttle is per-IP, not per-username — a whole branch shares one quota
+
+**Reported immediately after D-160 was fixed:** the same user could sign in on
+one device and be rejected on another.
+
+**Not a concurrent-session limit** — none exists, and multiple devices signed
+in as one user is fine and supported. The rejection was `429 Too many
+requests` from the sign-in throttle.
+
+`auth.ts`'s comment claimed §5.4's rule — *"5 failed attempts per **username**
+per 15 minutes"*. The implementation does something materially different, in
+three ways, all verified against the running container on 25 Aug 2026:
+
+1. **It buckets per client IP, read from `X-Forwarded-For`.** Injecting a
+   different `X-Forwarded-For` against an exhausted bucket returns `401`;
+   injecting a different `CF-Connecting-IP` or `X-Real-IP` still returns `429`.
+   (Note this is *not* the header `clientIp()` in `src/server/http.ts` trusts
+   for audit rows — that one prefers `CF-Connecting-IP`. Two different notions
+   of client IP now exist in the codebase; Better Auth's is not ours to
+   configure through `TRUST_PROXY`.)
+2. **It counts every attempt, successes included** — not just failures.
+3. **Storage is in-memory** (there is no `RateLimit` model in
+   `schema.prisma`), so all counters reset on container restart. That is why
+   the fault looked intermittent while the app was being restarted repeatedly.
+
+A branch sits behind one router, so every tablet in a shop shares one public
+IP — and therefore one quota. At the shipped `max: 5` that was **five logins
+per fifteen minutes for an entire shop**, successful ones included. The second
+staff member to open a till was locked out by the first.
+
+**Fix applied now:** `/sign-in/username` and `/sign-in/email` raised from
+`max: 5` to `max: 30` per 15-minute window. Brute-force protection stays
+meaningful — a guess still consumes a shared quota — while a real shop floor
+fits. Verified: 8 consecutive attempts against the rebuilt container all return
+`401`, with no `429`.
+
+**DEBT — the per-username rule §5.4 specifies is still not built.** Raising the
+cap reduces collateral damage; it does not implement the spec. Doing it
+properly means custom rate-limit logic keyed on the submitted username (and
+persistent storage if the counter should survive a restart), plus tests. Either
+build it or amend §5.4 to describe a per-IP throttle — the divergence between
+spec and code should not be left standing silently. Logged under *Known issues
+/ debts*.

@@ -69,10 +69,15 @@ COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/prisma ./prisma
-# `src` and `scripts` are not needed to serve `next start`, but on-demand
-# backup/restore tooling (`npm run backup`, run via `docker compose exec`)
-# is `tsx` over the same TypeScript source the app itself imports — without
-# these, that command fails inside the container with a module-not-found.
+# `src`, `scripts` and `tsconfig.json` are not needed to serve `next start`,
+# but two things in this image are `tsx` run over the same TypeScript source
+# the app imports (resolving the "@/*" alias through tsconfig.json), and both
+# fail with module-not-found without them:
+#   - `prisma/seed.ts`, which docker-entrypoint.sh runs on EVERY container
+#     start. Missing these crash-loops the container — it builds clean and
+#     dies on boot, which `docker compose build` cannot catch (D-159).
+#   - on-demand backup/restore tooling (`npm run backup`, run via
+#     `docker compose exec`).
 COPY --from=builder /app/src ./src
 COPY --from=builder /app/scripts ./scripts
 COPY --from=builder /app/tsconfig.json ./tsconfig.json

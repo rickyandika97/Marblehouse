@@ -51,11 +51,12 @@ export function PullToRefresh({ children }: { children: React.ReactNode }) {
     }
 
     function onTouchStart(e: TouchEvent) {
-      if (isPending || !atTop()) {
+      const touch = e.touches[0];
+      if (isPending || !touch || !atTop()) {
         startY.current = null;
         return;
       }
-      startY.current = e.touches[0].clientY;
+      startY.current = touch.clientY;
       dragging.current = true;
     }
 
@@ -63,8 +64,9 @@ export function PullToRefresh({ children }: { children: React.ReactNode }) {
     // suppress the browser's own overscroll/bounce so our indicator tracks
     // the finger instead of fighting it.
     function onTouchMove(e: TouchEvent) {
-      if (!dragging.current || startY.current === null) return;
-      const delta = e.touches[0].clientY - startY.current;
+      const touch = e.touches[0];
+      if (!dragging.current || startY.current === null || !touch) return;
+      const delta = touch.clientY - startY.current;
       if (delta <= 0 || !atTop()) {
         dragging.current = false;
         setPull(0);

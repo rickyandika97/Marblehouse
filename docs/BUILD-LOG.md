@@ -6806,11 +6806,33 @@ of one client silently upgrading to HTTPS while the other does not. Confirm
 what scheme is actually in the address bar first — it is one question, and it
 would have replaced a multi-hour elimination hunt.
 
-**Fix:** Cloudflare → SSL/TLS → Edge Certificates → **Always Use HTTPS**, plus
-**HSTS**. Edge-level, so it holds no matter what anyone types or bookmarks.
+**Fix, applied and verified 26 Aug 2026:** Cloudflare → SSL/TLS → Edge
+Certificates → **Always Use HTTPS**. Edge-level, so it holds no matter what
+anyone types or bookmarks. Confirmed after enabling:
 
-**Still open — defence in depth not yet added.** The app itself does not refuse
-plain HTTP; it relies entirely on the edge setting being right. A middleware
+```
+http://admin.redlight.click/           -> 301 https://admin.redlight.click/
+http://admin.redlight.click/login      -> 301 https://…/login
+http://admin.redlight.click/api/health -> 301 https://…/api/health
+following the chain                    -> 200 at https://…/login
+```
+
+Note the first attempt at this toggle did not take — plain HTTP still returned
+`200` from Cloudflare's own edge. Cloudflare has three similarly-named settings
+and only one is right: **Always Use HTTPS** (redirects the request),
+*Automatic HTTPS Rewrites* (only rewrites http links inside HTML) and
+*Opportunistic Encryption* (unrelated). Verify with a real `curl` against
+`http://`, not by trusting the dashboard.
+
+**HSTS is still OFF.** Without it the first request a browser makes still
+leaves over plaintext before being redirected. Enable it under the same screen.
+It is deliberately sticky — once a browser sees the header it refuses plain
+HTTP for `max-age`, and that cannot be recalled for browsers that cached it —
+which is safe here because certificates are Cloudflare's to manage, but start
+at a 6-month `max-age` if a cautious rollout is wanted.
+
+**Still open — defence in depth not yet added, and HSTS not yet on.** The app
+itself does not refuse plain HTTP; it relies entirely on the edge setting being right. A middleware
 check on `x-forwarded-proto` would make the app self-protecting if the tunnel
 is ever reconfigured or replaced. Not done here because a proto check behind a
 proxy can loop if the header is absent, and that deserves its own careful

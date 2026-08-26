@@ -42,6 +42,33 @@ interface MySlot {
 
 type Step = "shift" | "camera" | "confirm";
 
+function locationReasonMessage(reason: LocationReason): string {
+  switch (reason) {
+    case "denied":
+      return "Location permission was declined.";
+    case "timeout":
+      return "Location took too long to find (weak GPS/Wi-Fi signal).";
+    case "unsupported":
+      return "This browser does not support location.";
+    case "unavailable":
+    default:
+      return "Location could not be determined.";
+  }
+}
+
+/**
+ * Why no coordinates were sent — distinct from the boolean `locationDenied`
+ * flag the server stores, so the screen can tell the staff member what
+ * actually happened instead of one generic "unavailable" message. Never
+ * blocks the clock-in either way (§8.9).
+ */
+type LocationReason =
+  | null
+  | "denied"
+  | "timeout"
+  | "unavailable"
+  | "unsupported";
+
 export function ClockInFlow({
   shopName,
   shifts,
@@ -111,6 +138,7 @@ export function ClockInFlow({
     isLate: boolean;
     lateMinutes: number;
     locationDenied: boolean;
+    locationReason: LocationReason;
   } | null>(null);
 
   const stopCamera = useCallback(() => {
@@ -178,16 +206,59 @@ export function ClockInFlow({
     setStep("camera");
   }
 
-  /** Ask for location, resolving to null rather than rejecting on denial. */
-  function getPosition(): Promise<GeolocationPosition | null> {
-    if (!("geolocation" in navigator)) return Promise.resolve(null);
+  /**
+   * One `getCurrentPosition` attempt, translated into a reason rather than
+   * swallowed — a permission denial, a timeout and no signal are different
+   * situations and the UI should be able to say which one happened.
+   */
+  function getPositionOnce(
+    options: PositionOptions
+  ): Promise<{ position: GeolocationPosition } | { reason: LocationReason }> {
     return new Promise((resolve) => {
       navigator.geolocation.getCurrentPosition(
-        (pos) => resolve(pos),
-        () => resolve(null),
-        { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
+        (position) => resolve({ position }),
+        (error) => {
+          if (error.code === error.PERMISSION_DENIED) resolve({ reason: "denied" });
+          else if (error.code === error.TIMEOUT) resolve({ reason: "timeout" });
+          else resolve({ reason: "unavailable" });
+        },
+        options
       );
     });
+  }
+
+  /**
+   * Ask for location, resolving to null + a reason rather than rejecting.
+   * The first attempt asks for a GPS-grade fix; on a tablet indoors that can
+   * easily blow the timeout, so a timeout (or a plain "unavailable", e.g. no
+   * GPS/network fix at all) gets ONE retry at lower accuracy, which resolves
+   * off Wi-Fi/cell positioning and is both faster and more likely to succeed
+   * than waiting on GPS again. A denial is never retried — asking again
+   * after "no" would just be annoying.
+   */
+  async function getPosition(): Promise<{
+    position: GeolocationPosition | null;
+    reason: LocationReason;
+  }> {
+    if (!("geolocation" in navigator)) {
+      return { position: null, reason: "unsupported" };
+    }
+
+    const first = await getPositionOnce({
+      enableHighAccuracy: true,
+      timeout: 8000,
+      maximumAge: 0,
+    });
+    if ("position" in first) return { position: first.position, reason: null };
+    if (first.reason === "denied") return { position: null, reason: "denied" };
+
+    const retry = await getPositionOnce({
+      enableHighAccuracy: false,
+      timeout: 5000,
+      maximumAge: 0,
+    });
+    if ("position" in retry) return { position: retry.position, reason: null };
+    return { position: null, reason: retry.reason };
   }
 
   async function submit() {
@@ -195,7 +266,7 @@ export function ClockInFlow({
     setSubmitting(true);
 
     try {
-      const position = await getPosition();
+      const { position, reason: locationReason } = await getPosition();
 
       const form = new FormData();
       form.append("photo", shot, "clock-in.jpg");
@@ -229,7 +300,7 @@ export function ClockInFlow({
         return;
       }
 
-      setResult(body);
+      setResult({ ...body, locationReason });
       // Keep the app-wide attendance prompt in sync even before the user
       // leaves this confirmation page.
       window.dispatchEvent(new Event("attendance-changed"));
@@ -286,7 +357,8 @@ export function ClockInFlow({
           </p>
           {result.locationDenied && (
             <p className="mt-1 text-sm">
-              Location was unavailable, so this record is flagged for the owner.
+              {locationReasonMessage(result.locationReason)} This record is
+              flagged for the owner.
             </p>
           )}
         </div>

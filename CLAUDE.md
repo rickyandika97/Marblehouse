@@ -119,7 +119,9 @@ They still get `403` on profit, margin and all-shops endpoints.
 ## Commands
 
 Development is **native on macOS against Homebrew PostgreSQL 16** — no Docker
-in the dev loop. Docker is production only (Windows).
+in the dev loop. Docker is production only, running on Linux (the owner's
+laptop, lid-close suspend disabled via a `systemd-logind` drop-in so it stays
+up as a server).
 
 ```bash
 npm install

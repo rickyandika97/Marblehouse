@@ -5765,6 +5765,7 @@ unavailable server/browser boundary.
 | Existing usernames with a dash predate D-110 | The plugin now accepts dashes, matching our schema. Any account someone *tried* to create with a dash before today failed outright, so there is nothing to migrate — but if a future change touches `usernameValidator`, the service regex in `users.ts` must move with it. |
 | Date formatting has the same portability exposure as D-115 | Not fixed — found while diagnosing D-115 and deliberately left, since neither is today's bug. Two shapes. **(a)** Seven `toLocaleTimeString`/`toLocaleDateString("id-ID")` call sites pass no `timeZone`, so they format in the *viewer's* zone: a server on `Asia/Jakarta` and a branch tablet on `Asia/Makassar` render the same instant an hour apart, and any of these that are server-rendered will throw a hydration error exactly as the preset tiles did. Pass `timeZone: "Asia/Jakarta"` explicitly. **(b)** `settings/audit-log/page.tsx:93` passes `undefined` as the *locale*, which resolves to the viewer's — guaranteed to differ on any non-`en-US` browser. It is an owner-only screen, which is why this has not been reported. Verified harmless on the owner's own machine today (Node 26 and Chrome agreed on every timestamp tested, midnight rollover included), so this is latent, not live. `settings/backups/backup-screen.tsx` no longer has this shape — see D-169, which rewrote the file from scratch with an explicit `"id-ID"` locale throughout. |
 | Prisma deprecation | `package.json#prisma` moves to `prisma.config.ts` in Prisma 7. Not urgent. |
+| This session ran directly on the production box, with no native `npm`/`node` | D-171. CLAUDE.md's dev commands assume a separate macOS dev machine; this session's shell only had Docker. Verified typecheck/lint by building the `builder` Dockerfile stage from the working tree and running `tsc`/`next lint` inside it, then discarded the image — no source was baked into or left behind in the live `marblehouse-app-1` container. If a real dev machine exists for this project, prefer it; if this production box is now also the only place changes get made, this workaround is the repeatable pattern, not a one-off. |
 | ~~Dependency audit~~ | **Reassessed and hardened — D-162.** The current audit had grown to 17 findings. Stack-compatible upgrades removed every remotely reachable image-processing finding and every PostCSS/Effect/Nanoid finding. Three high findings remain only through Prisma CLI configuration's pinned `deepmerge-ts@7.1.5`; the app never passes request data into that loader. Do not force the incompatible `deepmerge-ts@8` override or downgrade Prisma merely to make the count say zero. |
 | Edge Runtime build warning | From `jose` inside Better Auth. Harmless — we do not use the Edge Runtime (§5.2 forbids it) and nothing enables it. |
 | Phases 1–3 have no unit tests | Vitest landed in Phase 4 (D-26), and `npm test` is a phase gate from Phase 4 onward (D-37). Phases 1–3 shipped before either existed and are covered only by the curl-based `verify-phase{1,2,3}.sh`. **§15's named unit tests are now all in place** — lateness (Phase 6), business-date boundaries and phone normalisation (D-91). What remains uncovered is Phases 1–3's *service* logic, not §15's list. |
@@ -5804,6 +5805,7 @@ unavailable server/browser boundary.
 | No automatic off-machine copy | **Owner decision, 8 Aug 2026 — D-72.** No USB copy and no rclone. The manual copy log plus the escalating alert are therefore the ONLY protection against total loss; treat them as load-bearing. |
 | Backup alerts have no email/Telegram | §13.4 mentions notification "if you later configure email or Telegram". Nothing is wired, and §5.4/D-1 keep every email path deliberately disabled. The dashboard alert is the whole channel. Worth revisiting only if the owner stops opening the dashboard daily. |
 | `verify-phase9.sh` restores locally, not to a second machine | The script proves the archive restores and matches its manifest, but into a scratch database on the SAME Mac. §16's rehearsal — and §15's manual checklist — want a second physical machine. That is the outstanding Phase 9 gate. |
+| Lid-close-suspend fix is host config, not in the repo | **D-170.** Two separate settings, both outside git and outside the Docker image, both required together or the machine still suspends: (1) `/etc/systemd/logind.conf.d/no-lid-suspend.conf` (`HandleLidSwitch=ignore`, `HandleLidSwitchExternalPower=ignore`) stops the lid switch itself from suspending; (2) `gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-{ac,battery}-type 'nothing'` stops GNOME's own 15-minute idle timer from suspending anyway once the lid is closed and nothing can touch the keyboard. A restore onto a second machine, or any full box/OS-user replacement, must recreate both — all five commands are in D-170. Apply the `logind` change via reboot, not a live `systemctl restart systemd-logind`, which crashes the GNOME/Wayland session on this box; the `gsettings` change is safe to apply live. |
 | ~~Void reason uses `window.prompt`~~ | **Fixed — D-79**, together with the transfer cancel. The minimum is now enforced before the round trip, including the trimmed-whitespace case. |
 | Transfers are single-line in the UI | The API accepts up to 100 lines per transfer and the service handles them; the dispatch form sends one prize at a time. Multi-line dispatch is a UI change only — no service or schema work. Worth doing in Phase 10 if branches move mixed boxes often. |
 | Opname counts every stocked item | `startOpname` accepts `prizeItemIds` to count a subset, but the screen always starts a full count. §8.7 says "select items or all". Partial counts are supported server-side; the picker is not built. |
@@ -7062,3 +7064,163 @@ came from.
 **Still outstanding, unchanged by this fix:** the §16 restore rehearsal onto
 a second physical machine (Phase 9's own row has said this since 8 Aug) — the
 owner's to do, not something a screen existing changes.
+
+### D-170 · Lid-close now stays up — host-level `systemd-logind` config, not part of the repo or Docker image
+
+**26 Aug 2026.** The production machine is a laptop (D-159/D-169 already
+establish this box as "production, Docker only, no native Node"). By
+default, closing the lid suspends it — which would take down Postgres, the
+app containers and the `cloudflared` tunnel every time the lid closes,
+cutting every branch off. The owner confirmed the intent: keep the desktop
+GUI (not comfortable with SSH-only headless), just stop the lid from
+suspending anything.
+
+**Fix — applied directly on the host, as root, outside git and outside
+Docker:**
+
+```bash
+sudo mkdir -p /etc/systemd/logind.conf.d
+echo -e '[Login]\nHandleLidSwitch=ignore\nHandleLidSwitchExternalPower=ignore' | \
+  sudo tee /etc/systemd/logind.conf.d/no-lid-suspend.conf
+sudo systemctl restart systemd-logind
+```
+
+This drops a config file that `systemd-logind` reads on every boot, on
+battery and on AC alike — lid close becomes a pure no-op at the OS level: no
+suspend, no hibernate, nothing pauses. The Docker stack, Postgres and the
+tunnel are completely unaffected either way (they don't look at the lid at
+all); this is purely about keeping the *host* awake so those containers keep
+running.
+
+**One sharp edge, confirmed against the journal, not guessed:** this machine
+runs GNOME on Wayland. Restarting the *live* `systemd-logind` process while
+already logged into a graphical session tears the session down —
+`journalctl` for the restart window shows `Connection to xwayland lost` and
+GDM spawning a brand-new session a few seconds later. On this machine the
+screen went black and needed a manual restart to get the GUI back; the new
+session came up cleanly in the logs, but the transition is visibly rough on
+real hardware. **Only the initial `systemctl restart systemd-logind` causes
+this** — because the config file itself is read at boot, before any session
+exists, a normal reboot or the next natural power-on never touches a live
+session and never has this problem. Do not restart `systemd-logind` live
+again for any future logind tweak; reboot instead.
+
+**Why this belongs in the build log and not just a chat:** none of this is
+in the git repo — it's host OS configuration on `/etc`, invisible to
+`git status`, `docker compose build`, and every phase gate. A restore onto a
+second machine (the still-outstanding §16 rehearsal) or a full box
+replacement will boot with the *default* lid-suspend behavior unless this
+drop-in is recreated by hand. See the matching row in "Known issues / debts".
+
+**Verification.** Confirmed live and after the fact: `systemctl status
+systemd-logind` showed `Active: active (running)` post-restart, and
+`cat /etc/systemd/logind.conf.d/no-lid-suspend.conf` showed both directives
+in place. `CLAUDE.md`'s "Docker is production only (Windows)" line was also
+corrected to Linux while this was fresh — that note had been stale since
+before this session and would have sent a future agent looking for
+Windows-specific service-restart commands on a Linux box.
+
+**Second, more serious gap found the same day, checking a follow-up question
+about backlight behavior:** the `logind` drop-in only disables the
+lid-*switch* action. GNOME has its own, entirely separate idle-based
+suspend, driven by `gnome-settings-daemon`'s power plugin, and it was live:
+
+```
+$ gsettings get org.gnome.settings-daemon.plugins.power sleep-inactive-ac-timeout
+900
+$ gsettings get org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type
+'suspend'
+$ gsettings get org.gnome.settings-daemon.plugins.power sleep-inactive-battery-timeout
+900
+$ gsettings get org.gnome.settings-daemon.plugins.power sleep-inactive-battery-type
+'suspend'
+```
+
+15 minutes of no keyboard/mouse input, on AC **or** battery, and GNOME
+suspends the machine itself — completely independent of the lid switch and
+untouched by D-170's `logind` config. Closing the lid is exactly the
+condition that produces 15 idle minutes with nobody able to touch the
+keyboard, so **this would have silently undone the whole fix** roughly a
+quarter of an hour after every lid-close, taking Postgres/the app
+containers/the tunnel down anyway. Confirmed the `sleep-inactive-ac-type`
+schema key exists and there is no separate lid-close screen-off action in
+this GNOME version (`gsettings list-keys
+org.gnome.settings-daemon.plugins.power` has no lid-specific key) — the idle
+timeout was the only remaining suspend path.
+
+**Fixed** by disabling both:
+
+```bash
+gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing'
+gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-battery-type 'nothing'
+```
+
+**This is per-user `dconf` state (`~/.config/dconf` for `delvino`), not
+system config** — a different persistence mechanism from the `logind`
+drop-in, and it needs its own note for a restore/new-device setup: it
+travels with the user's home directory / dconf database, not with `/etc`,
+and not with the git repo either. A fresh OS install or a different Linux
+user account will default back to `'suspend'` and reintroduce this exact
+gap. Re-run the two `gsettings set` commands above (no reboot or restart
+needed — they take effect immediately) any time this app is set up on a new
+machine or a new OS user.
+
+The screensaver's own idle blank (`org.gnome.desktop.session idle-delay`,
+300s) was left untouched — that only powers off the backlight via DPMS after
+5 minutes of inactivity, the same as it would with the lid open and nobody
+at the keyboard. It doesn't suspend anything, costs nothing, and is why the
+screen goes dark on its own even with the lid open: the backlight itself
+stays lit immediately on lid-close and only turns off later, on that normal
+5-minute idle timer — never as a direct reaction to the lid.
+
+### D-171 · Clock-in geolocation: timeout and denial were indistinguishable
+
+**Owner report, 26 Aug 2026:** location permission was granted in the
+browser, but a clock-in photo still came back `LOCATION UNAVAILABLE`. This is
+exactly the class of gap D-51 warned about — the only prior verification of
+this path used a **stubbed** `navigator.geolocation`, never a real permission
+prompt racing real GPS hardware.
+
+**Root cause**, `clock-in-flow.tsx`'s old `getPosition()`: the
+`getCurrentPosition` error callback was `() => resolve(null)` for every
+failure mode — permission denied, no fix available
+(`POSITION_UNAVAILABLE`), and a timed-out `enableHighAccuracy: true` request
+(8s) all collapsed to the same `null`, which the server stamps as
+`LOCATION UNAVAILABLE` regardless of which one actually happened. Confirmed
+against the live DB: one real check-in that day (`staff` Stevy, 06:37) has
+valid lat/long with `locationDenied: false` — so the capture path works when
+the GPS fix lands in time; it's a race against the timeout, not a permission
+problem, which matches the owner confirming the failing attempt was a
+*separate* try from the one that saved successfully.
+
+**Fixed**, three parts, all client-side in `clock-in-flow.tsx`:
+1. `getPositionOnce()` now reads `error.code` and returns a `LocationReason`
+   (`"denied" | "timeout" | "unavailable" | "unsupported"`) instead of
+   collapsing every failure to `null`.
+2. On a `timeout` or plain `unavailable` from the first (high-accuracy, 8s)
+   attempt, `getPosition()` retries **once** at `enableHighAccuracy: false`
+   (5s) — a Wi-Fi/cell-based fix, faster and more likely to land indoors. A
+   `denied` result is never retried.
+3. The clock-in confirmation screen now shows which reason actually applied
+   (`locationReasonMessage()`) instead of one generic sentence, so staff and
+   the owner can tell "you said no" apart from "the device couldn't get a
+   fix."
+
+**Explicitly preserved, per owner instruction:** a missing/failed location
+still never blocks the clock-in. `locationDenied` is still sent to the
+server exactly as before when no position was obtained — only the *client's
+own* reasoning about why is new; nothing changed in
+`src/server/services/attendance.ts` or the schema.
+
+**Verified:** `tsc --noEmit` and `next lint` both clean (run inside a
+throwaway image built from this source — this box has no native
+`npm`/`node`, only the Docker runtime; see the note this session left in
+*Known issues / debts*). `docker build --target builder` succeeds, which
+exercises `next build`'s own typecheck. No service-layer or schema change,
+so `npm test` and the existing Vitest suite are unaffected; not re-run for
+this fix.
+
+**Still open, unchanged from D-51:** this remains unverified against a real
+device's permission prompt end-to-end (this fix could only be typechecked
+and built, not clicked through, from this box). The next real check-in
+attempt on hardware is the actual test.

@@ -18,6 +18,7 @@ import { AttendanceBanner } from "@/components/attendance-banner";
 import { ShopHandoffBanner } from "@/components/shop-handoff-banner";
 import { ShopSwitcher, type ShopSwitcherOption } from "@/components/shop-switcher";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { PullToRefresh } from "@/components/pull-to-refresh";
 
 /**
  * Role-dependent bottom tab bar (§8.0).
@@ -151,7 +152,7 @@ export function AppShell({
       <AttendanceBanner />
 
       <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-6 pb-[calc(6rem+env(safe-area-inset-bottom))]">
-        {children}
+        <PullToRefresh>{children}</PullToRefresh>
       </main>
 
       {/*

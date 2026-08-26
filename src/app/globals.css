@@ -54,6 +54,10 @@ body {
 
 body {
   -webkit-tap-highlight-color: transparent;
+  /* Stops the browser's own overscroll bounce/refresh (Android Chrome, when
+     the app isn't running standalone) from fighting components/pull-to-refresh's
+     own gesture. */
+  overscroll-behavior-y: contain;
 }
 
 /* Touch targets are enforced by the size scale in components/ui/button.tsx

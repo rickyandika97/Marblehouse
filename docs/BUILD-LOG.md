@@ -5763,7 +5763,7 @@ unavailable server/browser boundary.
 | ~~Staff assignment is a separate journey~~ | **Fixed — D-107.** Settings → Shops → *shop* → Staff. It was not merely wayfinding: `PATCH /api/users/:id` had no UI caller at all. |
 | ~~Settings → Users is create-only~~ | **Fixed — D-109.** Rename, role, shops, Purchasing, deactivate and password reset all editable. |
 | Existing usernames with a dash predate D-110 | The plugin now accepts dashes, matching our schema. Any account someone *tried* to create with a dash before today failed outright, so there is nothing to migrate — but if a future change touches `usernameValidator`, the service regex in `users.ts` must move with it. |
-| Date formatting has the same portability exposure as D-115 | Not fixed — found while diagnosing D-115 and deliberately left, since neither is today's bug. Two shapes. **(a)** Seven `toLocaleTimeString`/`toLocaleDateString("id-ID")` call sites pass no `timeZone`, so they format in the *viewer's* zone: a server on `Asia/Jakarta` and a branch tablet on `Asia/Makassar` render the same instant an hour apart, and any of these that are server-rendered will throw a hydration error exactly as the preset tiles did. Pass `timeZone: "Asia/Jakarta"` explicitly. **(b)** `settings/audit-log/page.tsx:93` and `settings/backups/backup-screen.tsx:72` pass `undefined` as the *locale*, which resolves to the viewer's — guaranteed to differ on any non-`en-US` browser. Both are owner-only screens, which is why they have not been reported. Verified harmless on the owner's own machine today (Node 26 and Chrome agreed on every timestamp tested, midnight rollover included), so this is latent, not live. |
+| Date formatting has the same portability exposure as D-115 | Not fixed — found while diagnosing D-115 and deliberately left, since neither is today's bug. Two shapes. **(a)** Seven `toLocaleTimeString`/`toLocaleDateString("id-ID")` call sites pass no `timeZone`, so they format in the *viewer's* zone: a server on `Asia/Jakarta` and a branch tablet on `Asia/Makassar` render the same instant an hour apart, and any of these that are server-rendered will throw a hydration error exactly as the preset tiles did. Pass `timeZone: "Asia/Jakarta"` explicitly. **(b)** `settings/audit-log/page.tsx:93` passes `undefined` as the *locale*, which resolves to the viewer's — guaranteed to differ on any non-`en-US` browser. It is an owner-only screen, which is why this has not been reported. Verified harmless on the owner's own machine today (Node 26 and Chrome agreed on every timestamp tested, midnight rollover included), so this is latent, not live. `settings/backups/backup-screen.tsx` no longer has this shape — see D-169, which rewrote the file from scratch with an explicit `"id-ID"` locale throughout. |
 | Prisma deprecation | `package.json#prisma` moves to `prisma.config.ts` in Prisma 7. Not urgent. |
 | ~~Dependency audit~~ | **Reassessed and hardened — D-162.** The current audit had grown to 17 findings. Stack-compatible upgrades removed every remotely reachable image-processing finding and every PostCSS/Effect/Nanoid finding. Three high findings remain only through Prisma CLI configuration's pinned `deepmerge-ts@7.1.5`; the app never passes request data into that loader. Do not force the incompatible `deepmerge-ts@8` override or downgrade Prisma merely to make the count say zero. |
 | Edge Runtime build warning | From `jose` inside Better Auth. Harmless — we do not use the Edge Runtime (§5.2 forbids it) and nothing enables it. |
@@ -6959,3 +6959,106 @@ and the home-indicator gesture bar live.
 tab — Safari's own chrome already insets the page there, so `env()` returns 0
 and nothing above does anything. Test on-device with "Add to Home Screen",
 not just in Safari.
+
+### D-169 · Settings → Backups was a 404 — the screen and its three routes were never actually committed
+
+**Found by the owner, 26 Aug 2026.** Logging in and opening Settings →
+Backups returned "page not here." The backup *engine* was never in doubt —
+`backup.ts`, the 02:00 cron job, `restore.sh` and 278 lines of
+`backup.test.ts` are all real, committed in the Phase 9 commit
+(`b70e1af`), and were running nightly on this machine the whole time. What
+was missing was everything that lets the owner SEE or TRIGGER any of it from
+the website.
+
+`docs/BUILD-LOG.md`'s own "What Phase 9 built" section (above) has always
+listed `src/app/(app)/settings/backups/{page.tsx,backup-screen.tsx}` and
+`src/app/api/backups/{route.ts,download/route.ts,offsite-copy/route.ts}` as
+shipped, and `settings/page.tsx` has linked to `/settings/backups` since the
+same commit. None of those five files were ever in the repository —
+`git log --all --full-history` on every plausible path returns nothing, in
+any commit, ever. So this was not a regression (nothing deleted them) and not
+a divergence between docs and code that crept in over time — the Phase 9
+commit itself never contained them, despite the commit message and the build
+log both describing a finished screen.
+
+**It gets more specific than "never built," though.** The "Known issues /
+debts" table's D-115 follow-up entry cited `settings/backups/backup-screen.tsx:72`
+by name and line number, describing a real locale bug in a `.toLocaleString()`
+call. Nobody invents a line number for a file that was never written — so at
+some point a session had a working draft of this screen open and reviewed it
+closely enough to log a bug against a specific line.
+
+**Root cause found, not just guessed at:** `.gitignore` had a bare
+`backups/` entry (and a bare `data/`), meant only for the top-level runtime
+directories where archives and attendance photos actually live —
+`git check-ignore` confirms it also matches ANY directory named `backups`
+anywhere in the tree. `src/app/(app)/settings/backups/` and
+`src/app/api/backups/` both qualify. An ignored file is invisible to plain
+`git status`, `git add -A`, and `git diff` alike — the session that wrote
+this screen would have seen a clean working tree with nothing to commit,
+identically to how it looks right now if you run `git status` without
+`--ignored`. `git status --porcelain --ignored=matching` was run over the
+rest of `src/`, `scripts/`, `docs/`, `prisma/` and `public/` as a check for
+anything else this pattern might have swallowed the same way — nothing else
+matched. **Fixed** by anchoring both entries to the repo root (`/data/`,
+`/backups/`) so they only ever match the two real runtime directories.
+
+This is still worth filing next to D-25 (the Phase 3 migration that also sat
+uncommitted for a while) as the same underlying lesson: **a file existing on
+disk is not "done" until `git add`/`git commit` says so, and "done" is not
+provable by eye when the tool meant to show you the gap is the one silently
+hiding it.** The generalisable habit: an unanchored `.gitignore` pattern is
+a landmine anywhere the repo might later grow a same-named directory for a
+completely unrelated reason, which `src/.../settings/backups/` did the
+moment Phase 9 needed a URL segment matching the runtime folder's name.
+
+**Fix:** rewrote all five files from the existing, well-tested service
+contract in `backup.ts`, using `scripts/verify-phase9.sh`'s own 76 assertions
+as the spec — that script already pins down the exact JSON shapes
+(`GET /api/backups` → `{status, runs, archives}`, `POST /api/backups` →
+`{ok, fileName, sizeBytes, retention}` with `fileName` at the top level,
+`POST /api/backups/offsite-copy` → `{copiedAt, fileName}`), the permission
+matrix (OWNER only; MANAGER/STAFF 403 on every route and the page), the
+download route's traversal handling, and the no-word-"dismiss" requirement on
+the red banner. Two things worth a future reader knowing:
+
+- `runs[].sizeBytes` and `BackupRun.filePath` are not passed through as-is:
+  Prisma's `sizeBytes` is a `BigInt`, which `JSON.stringify`/`NextResponse.json`
+  throw on, so the route narrows it to `Number` (backup sizes are nowhere
+  near 2^53 bytes); `filePath` is a server-absolute path and is dropped from
+  every response — the client never needs more than the `fileName` it already
+  uses to build a download URL.
+- `POST /api/backups` and `POST /api/backups/offsite-copy` deliberately do
+  **not** take an `Idempotency-Key`, unlike every other mutation route in the
+  app. This matches the actual signatures `runBackupNow`/`recordOffsiteCopy`
+  already shipped with in Phase 9 (neither accepts a `tx`, which the
+  idempotency helper requires to commit the key with the work). A double-tap
+  on either is harmless — a repeat backup just creates a second archive
+  (wasteful, not corrupting) and a repeat copy-log just overwrites the same
+  `AppSetting` value — so this reproduces the original design rather than
+  patching around it.
+
+**Verification.** This machine has no native Node — it is production, Docker
+only — so all four gates ran in containers, never against the live
+`marblehouse` database. `docker compose build app` was run for real (it
+succeeded; `/settings/backups` appears in the route manifest at 5.01 kB, and
+typecheck runs inside `next build` per `next.config.ts`'s
+`typescript.ignoreBuildErrors: false`). `npm run lint` and `npm test` ran in
+a disposable `node:22-bookworm-slim` container against a fully disposable
+Postgres (`docker-compose.dev.yml`, project `marblehouse-verify`, its own
+network/volume, torn down afterward) — migrated and seeded exactly like a
+fresh dev machine would be, DATABASE_URL pointed at a `_test`-suffixed name
+so `setup.ts`'s guard would refuse anything else. Lint: clean. Full suite:
+**511/511 passing across all 28 files**, including the 13 in `backup.test.ts`
+this change did not touch. `scripts/verify-phase9.sh` was **not** run here — it needs the
+Phase 8 seeded fixture accounts (`owner`/`p8mgr`/`p8staff` with fixed
+passwords) and a native `psql`/`dropdb` on the host to build a scratch
+restore database, none of which exist on this production install, and
+running it would mean logging real backup archives and audit rows against a
+live business. Its assertions were instead read in full and matched against
+this code by hand, field by field, which is where the response shapes above
+came from.
+
+**Still outstanding, unchanged by this fix:** the §16 restore rehearsal onto
+a second physical machine (Phase 9's own row has said this since 8 Aug) — the
+owner's to do, not something a screen existing changes.

@@ -15,10 +15,15 @@ next-env.d.ts
 # Runtime data — attendance photos, receipts, database backups.
 # These contain customer names, phone numbers and staff photos. Keep them
 # out of GitHub entirely.
-data/
-backups/
-!data/.gitkeep
-!backups/.gitkeep
+#
+# Anchored to the repo root (leading /): an unanchored `data/`/`backups/`
+# matches a directory of that name ANYWHERE in the tree, which is exactly
+# what silently swallowed `src/app/(app)/settings/backups/` and
+# `src/app/api/backups/` before anyone noticed — see BUILD-LOG D-169.
+/data/
+/backups/
+!/data/.gitkeep
+!/backups/.gitkeep
 
 # Logs & OS noise
 *.log

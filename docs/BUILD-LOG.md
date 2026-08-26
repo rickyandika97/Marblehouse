@@ -6755,3 +6755,63 @@ fix is a strict improvement regardless of root cause, because it removes the
 soft-navigation path entirely and converts any residual failure from an
 infinite spinner into a visible page. If the spinner ever returns, that
 inference is what to re-examine first.
+
+---
+
+### D-165 · The site answers on plain HTTP, and a `Secure` cookie cannot survive that
+
+**Found by the owner, 25 Aug 2026**, after a long hunt through D-164: on iOS,
+signing in over `http://` fails and over `https://` succeeds.
+
+**Mechanism.** `useSecureCookies` resolves to true (`APP_URL` is https), so the
+session cookie is issued as:
+
+```
+__Secure-marblehouse.session_token=…; Path=/; Max-Age=43200; Secure; HttpOnly; SameSite=lax
+```
+
+That is correct. But **a browser will not store a `Secure` cookie delivered
+over plain HTTP.** Over `http://`, the login POST still succeeds — a real
+`session` row is written server-side — and the browser then silently discards
+the cookie. The next request arrives anonymous and `/` bounces to `/login`.
+The failure is invisible from the server: auth logs look perfect.
+
+**The actual defect is that plain HTTP is served at all.** Verified:
+
+```
+http://admin.redlight.click/login      -> 200   (not a redirect)
+http://admin.redlight.click/api/health -> 200
+Strict-Transport-Security               -> absent
+```
+
+Cloudflare was not configured to force HTTPS, so the origin answered both
+schemes. **This is a security defect before it is a login defect:** credentials
+and business data were transmittable in cleartext over shop wifi.
+
+**Why it took so long to see.** Every clue pointed away from it:
+
+- Chrome on the same iPhone worked — Chrome auto-upgrades typed URLs to HTTPS,
+  so it was never on HTTP. This looked like "Safari is broken", and burned
+  hours on Safari settings, content blockers, ITP and HTTP/3.
+- The home-screen PWA worked — it had saved the `https://` URL.
+- A wrong password failed correctly and instantly, because that path needs no
+  cookie. That made auth look healthy.
+- Sessions were created on every attempt, so the database "proved" login worked.
+- D-164's spinner masked it entirely until the hard navigation made the bounce
+  visible.
+
+**Lesson for the next session: check the scheme before suspecting the browser.**
+"Works in one browser, not another, on the same device" is a classic signature
+of one client silently upgrading to HTTPS while the other does not. Confirm
+what scheme is actually in the address bar first — it is one question, and it
+would have replaced a multi-hour elimination hunt.
+
+**Fix:** Cloudflare → SSL/TLS → Edge Certificates → **Always Use HTTPS**, plus
+**HSTS**. Edge-level, so it holds no matter what anyone types or bookmarks.
+
+**Still open — defence in depth not yet added.** The app itself does not refuse
+plain HTTP; it relies entirely on the edge setting being right. A middleware
+check on `x-forwarded-proto` would make the app self-protecting if the tunnel
+is ever reconfigured or replaced. Not done here because a proto check behind a
+proxy can loop if the header is absent, and that deserves its own careful
+change rather than being tacked onto an incident fix.

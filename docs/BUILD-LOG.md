@@ -6824,15 +6824,26 @@ and only one is right: **Always Use HTTPS** (redirects the request),
 *Opportunistic Encryption* (unrelated). Verify with a real `curl` against
 `http://`, not by trusting the dashboard.
 
-**HSTS is still OFF.** Without it the first request a browser makes still
-leaves over plaintext before being redirected. Enable it under the same screen.
-It is deliberately sticky — once a browser sees the header it refuses plain
-HTTP for `max-age`, and that cannot be recalled for browsers that cached it —
-which is safe here because certificates are Cloudflare's to manage, but start
-at a 6-month `max-age` if a cautious rollout is wanted.
+**HSTS is ON as of 26 Aug 2026**, `max-age=15552000` (6 months), verified on
+`/`, `/login`, `/api/health` and `/sale`. Without it the first request a
+browser makes still leaves over plaintext before being redirected.
 
-**Still open — defence in depth not yet added, and HSTS not yet on.** The app
-itself does not refuse plain HTTP; it relies entirely on the edge setting being right. A middleware
+Gotcha worth knowing: enabling HSTS in Cloudflare while leaving the **Max Age**
+dropdown at `0` emits `strict-transport-security: max-age=0`, which is the
+explicit *disable* value — it instructs browsers to forget any policy. The
+header being present proves nothing; check the value.
+
+`includeSubDomains` and `preload` are deliberately **off**. `includeSubDomains`
+would force HTTPS on every `*.redlight.click`, breaking any sibling subdomain
+still on plain HTTP; `preload` is baked into browser binaries and is very hard
+to reverse. Neither is needed for this app.
+
+No renewal is required — `max-age` is a rolling window refreshed on every
+response, not an expiry date. It only lapses for a device that does not visit
+for six months, which then simply receives the header again.
+
+**Still open — defence in depth not yet added.** The app itself does not refuse
+plain HTTP; it relies entirely on the edge setting being right. A middleware
 check on `x-forwarded-proto` would make the app self-protecting if the tunnel
 is ever reconfigured or replaced. Not done here because a proto check behind a
 proxy can loop if the header is absent, and that deserves its own careful

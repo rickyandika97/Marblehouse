@@ -6919,3 +6919,43 @@ white page instead of standing out.
 
 If the app ever grows an actual colored top app bar, `theme-color` should be
 revisited to match *that*, not the icon.
+
+### D-168 · Installed on the home screen, the app runs truly edge-to-edge — the bottom nav's outer labels clipped on the corner curve
+
+**Found by the owner, 26 Aug 2026**, immediately after D-167, on the same
+iPhone: with the app added to the home screen (no Safari chrome at all), the
+bottom tab bar's leftmost and rightmost labels ("Dashboard", "Settings") were
+partly cut off by the screen's rounded bottom corners.
+
+Cause: `display: standalone` + `statusBarStyle: "black-translucent"` (both
+already deliberate, D-167) mean the page occupies the *entire physical
+screen*, not a Safari-chrome-inset rectangle. `AppShell`'s bottom nav is
+`fixed inset-x-0 bottom-0` with no allowance for that — its content sat
+exactly at the true screen edges, which is precisely where the corner radius
+and the home-indicator gesture bar live.
+
+**Fix**, all in `AppShell` plus one viewport flag:
+
+- `viewport.viewportFit: "cover"` added in `layout.tsx`. Required for
+  `env(safe-area-inset-*)` to resolve to anything but `0` — without it every
+  fix below is a silent no-op.
+- Bottom `<nav>` gets `pb-[env(safe-area-inset-bottom)]` (clears the home
+  indicator) and its `<ul>` gets
+  `pl-/pr-[max(0.5rem, env(safe-area-inset-left/right))]` — the `max()` floor
+  is what actually fixes the reported bug, since the *left/right* inset is 0
+  on every current iPhone in portrait. It's a fixed 8px gutter dressed as a
+  safe-area rule so it still grows correctly in landscape on Dynamic Island
+  models.
+- `<main>`'s bottom padding grew from `pb-24` to
+  `pb-[calc(6rem+env(safe-area-inset-bottom))]` so page content clears the
+  now-taller nav.
+- Header gets `pt-[env(safe-area-inset-top)]` for the same reason on the
+  other edge, pre-emptively — not reported broken, but the same edge-to-edge
+  cause applies, and the header's white background already matches the
+  status bar (D-167), so pushing its content down costs nothing visually even
+  where the inset is 0.
+
+**Only reproduces installed to the home screen**, not in an ordinary Safari
+tab — Safari's own chrome already insets the page there, so `env()` returns 0
+and nothing above does anything. Test on-device with "Add to Home Screen",
+not just in Safari.

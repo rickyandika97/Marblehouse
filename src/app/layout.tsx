@@ -60,6 +60,10 @@ export const viewport: Viewport = {
   // throughout, so a red status bar/toolbar was the only red pixel on
   // screen (D-167).
   themeColor: "#ffffff",
+  // Required for `env(safe-area-inset-*)` to resolve to anything but 0 on
+  // iOS — without it the home-indicator/corner-curve padding in AppShell's
+  // header and bottom nav is a silent no-op (D-167 follow-up).
+  viewportFit: "cover",
 };
 
 export default function RootLayout({

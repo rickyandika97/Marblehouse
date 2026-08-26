@@ -105,7 +105,7 @@ export function AppShell({
   return (
     <div className="flex min-h-screen flex-col">
       {/* Top bar (§8.0): shop name, user, role chip, logout. */}
-      <header className="sticky top-0 z-40 border-b bg-background">
+      <header className="sticky top-0 z-40 border-b bg-background pt-[env(safe-area-inset-top)]">
         <div className="mx-auto flex h-14 w-full max-w-5xl items-center gap-3 px-4">
           {/*
             min-h-11 is §8.11's 44px floor, not decoration. This shipped at
@@ -150,12 +150,22 @@ export function AppShell({
       <ShopHandoffBanner />
       <AttendanceBanner />
 
-      <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-6 pb-24">
+      <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-6 pb-[calc(6rem+env(safe-area-inset-bottom))]">
         {children}
       </main>
 
-      <nav className="fixed inset-x-0 bottom-0 z-40 border-t bg-background">
-        <ul className="mx-auto flex w-full max-w-5xl">
+      {/*
+        Standalone iOS (display: standalone + statusBarStyle
+        black-translucent, layout.tsx) runs edge-to-edge, so this bar sits
+        right up against the home indicator and the screen's rounded bottom
+        corners. `env(safe-area-inset-*)` clears the home indicator; the
+        `max(0.5rem, …)` floor is what actually stops the outer tab labels
+        (e.g. Dashboard, Settings) getting clipped by the corner curve on
+        phones where the inset itself is 0 — reported by the owner on an
+        iPhone (D-167 follow-up).
+      */}
+      <nav className="fixed inset-x-0 bottom-0 z-40 border-t bg-background pb-[env(safe-area-inset-bottom)]">
+        <ul className="mx-auto flex w-full max-w-5xl pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))]">
           {tabs.map((tab) => {
             const active =
               pathname === tab.href || pathname.startsWith(`${tab.href}/`);

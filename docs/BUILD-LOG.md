@@ -6848,3 +6848,46 @@ check on `x-forwarded-proto` would make the app self-protecting if the tunnel
 is ever reconfigured or replaced. Not done here because a proto check behind a
 proxy can loop if the header is absent, and that deserves its own careful
 change rather than being tacked onto an incident fix.
+
+---
+
+### D-166 · The Apple touch icon pointed at an SVG, which iOS cannot use
+
+**Found 26 Aug 2026** while clearing the `404`s that surfaced during D-160's
+tunnel diagnosis. `/apple-touch-icon.png`, `/apple-touch-icon-precomposed.png`
+and `/favicon.ico` were all 404, and iOS requests them repeatedly.
+
+They were dismissed as cosmetic at the time. They were a symptom.
+
+`layout.tsx` declared `icons.apple = "/icon.svg"`, with a comment noting that
+iOS ignores the manifest's icons array and looks here instead — correct, but
+incomplete: **iOS cannot use an SVG for `apple-touch-icon`.** It silently
+discards a non-PNG link, falls back to probing `/apple-touch-icon.png` and
+`/apple-touch-icon-precomposed.png` at the root, and when those 404 it uses a
+screenshot of the page as the home-screen icon. So "Add to Home Screen"
+produced a blurry render of the login form rather than the marble.
+
+**Fix:** real PNGs, generated from the existing artwork so nothing new was
+invented — `public/apple-touch-icon.png` (180×180), the `-precomposed` twin
+older iOS probes first, and a multi-resolution `public/favicon.ico` (16/32/48)
+from `icon.svg`. `icons.apple` now points at the PNG.
+
+**Two properties of the Apple icon are deliberate and must not be "tidied":**
+
+- **Full-bleed, not rounded.** `icon.svg` has `rx="112"` with transparency
+  outside the corners. iOS applies its own mask and composites transparency
+  onto **black**, so shipping the rounded art would frame the icon in black
+  wedges. The generated PNG is edge-to-edge `#dc2626` and carries no alpha
+  channel at all (verified: `RGB`, corner pixel `(220,38,38)`).
+- **Sized from `icon.svg`, not `icon-maskable.svg`.** The maskable variant
+  shrinks its artwork into Android's 80% safe zone (see its own comment). iOS
+  crops far less, so reusing it would render a needlessly small marble adrift
+  in red. The Apple source therefore takes `icon.svg`'s geometry with
+  `icon-maskable.svg`'s full-bleed background — neither file on its own is
+  correct for iOS.
+
+Generated with `rsvg-convert` + `magick` from the committed SVGs, so the
+artwork remains drawn-not-imported per D-7 and no build-time download is
+involved. The PNGs are committed rather than generated at build time,
+deliberately: they are tiny, and a build step here would be a new failure mode
+for no benefit.

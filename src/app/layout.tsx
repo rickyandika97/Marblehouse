@@ -29,9 +29,23 @@ export const metadata: Metadata = {
     statusBarStyle: "black-translucent",
   },
   icons: {
+    // Modern browsers prefer the SVG. `public/favicon.ico` covers the legacy
+    // root-convention request that browsers and crawlers make regardless of
+    // what is declared here.
     icon: "/icon.svg",
-    // iOS ignores the manifest's icons array entirely and looks for this.
-    apple: "/icon.svg",
+    /**
+     * iOS ignores the manifest's icons array entirely and looks for this —
+     * but it CANNOT use an SVG. Pointing this at `/icon.svg` (as it did until
+     * D-166) meant iOS silently discarded the link, probed
+     * `/apple-touch-icon.png` and `/apple-touch-icon-precomposed.png`, got
+     * 404s for both, and fell back to a screenshot of the page as the
+     * home-screen icon.
+     *
+     * The PNG is deliberately full-bleed and un-rounded, unlike `icon.svg`:
+     * iOS applies its own corner mask, and composites any transparency onto
+     * black rather than honouring it.
+     */
+    apple: "/apple-touch-icon.png",
   },
 };
 

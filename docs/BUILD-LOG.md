@@ -6891,3 +6891,31 @@ artwork remains drawn-not-imported per D-7 and no build-time download is
 involved. The PNGs are committed rather than generated at build time,
 deliberately: they are tiny, and a build step here would be a new failure mode
 for no benefit.
+
+### D-167 · `theme_color` was the brand red, tinting the iOS status bar against an all-white app
+
+**Found by the owner, 26 Aug 2026**: on iOS the top bar (clock/battery/signal
+area) rendered red instead of white, standing out against the rest of the
+screen.
+
+`layout.tsx`'s `viewport.themeColor` and `manifest.ts`'s `theme_color` were
+both `#dc2626` — the same red as the app icon background (D-166). iOS uses
+`theme-color` to tint the system chrome around the status bar (in ordinary
+Safari tabs) and, via `statusBarStyle: "black-translucent"`, lets the
+translucent status bar reveal whatever's actually behind it once installed to
+the home screen. Either way, the color needs to match the app's own
+background, not the icon's.
+
+The in-app UI is entirely white/grayscale — `globals.css`'s `--background` is
+`oklch(1 0 0)` and nothing in `src/app` or `src/components` paints a red app
+bar or header. `--color-brand-600: #dc2626` is defined in the theme but is
+unused outside the icon SVGs. So the icon is red, the running app is not, and
+using the icon's red for `theme-color` was the bug, not a stray CSS rule.
+
+**Fix:** both values changed to `#ffffff`, matching `--background` and the
+manifest's existing `background_color`. `statusBarStyle` stays
+`black-translucent` — with a white theme color that now blends into the
+white page instead of standing out.
+
+If the app ever grows an actual colored top app bar, `theme-color` should be
+revisited to match *that*, not the icon.

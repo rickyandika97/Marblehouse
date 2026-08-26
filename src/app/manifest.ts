@@ -36,8 +36,11 @@ export default function manifest(): MetadataRoute.Manifest {
     // deliberately unlocked rather than pinned to portrait.
     orientation: "any",
     background_color: "#ffffff",
-    // Matches `viewport.themeColor` in layout.tsx. If one changes, change both.
-    theme_color: "#dc2626",
+    // Matches `viewport.themeColor` in layout.tsx (both white, matching the
+    // app's actual background) — if one changes, change both. Was the brand
+    // red `#dc2626` until D-167: that tinted the iOS status bar/toolbar red
+    // against an otherwise all-white, grayscale UI.
+    theme_color: "#ffffff",
     lang: "id",
     icons: [
       {

@@ -24,8 +24,8 @@ export const metadata: Metadata = {
   appleWebApp: {
     capable: true,
     title: "Marblehouse",
-    // Matches themeColor below, so the iOS status bar blends into the app bar
-    // instead of sitting in a black strip above it.
+    // Matches themeColor below, so the iOS status bar blends into the app's
+    // (white) background instead of sitting in a black strip above it.
     statusBarStyle: "black-translucent",
   },
   icons: {
@@ -55,7 +55,11 @@ export const viewport: Viewport = {
   // Tablet-first. Locked scale so the sale screen can't be pinch-zoomed
   // out of usability mid-shift.
   maximumScale: 1,
-  themeColor: "#dc2626",
+  // Matches the app's actual background (globals.css `--background`), not the
+  // brand red used for the icon — the in-app UI is white/grayscale
+  // throughout, so a red status bar/toolbar was the only red pixel on
+  // screen (D-167).
+  themeColor: "#ffffff",
 };
 
 export default function RootLayout({

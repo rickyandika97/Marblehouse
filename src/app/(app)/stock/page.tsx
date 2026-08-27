@@ -103,7 +103,9 @@ export default async function StockPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-3xl font-bold tabular-nums">{stocked.length}</p>
+            <p className="text-2xl font-bold tabular-nums break-all sm:text-3xl">
+              {stocked.length}
+            </p>
           </CardContent>
         </Card>
 
@@ -114,7 +116,7 @@ export default async function StockPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-3xl font-bold tabular-nums">
+            <p className="text-2xl font-bold tabular-nums break-all sm:text-3xl">
               {showCost && totalValuation !== null
                 ? formatMoney(totalValuation)
                 : lowStock.length}

@@ -95,7 +95,7 @@ export default async function StockPage() {
         </Link>
       )}
 
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-[2fr_3fr] gap-3">
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">
@@ -103,7 +103,7 @@ export default async function StockPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-2xl font-bold tabular-nums break-all sm:text-3xl">
+            <p className="text-2xl font-bold tabular-nums text-nowrap sm:text-3xl">
               {stocked.length}
             </p>
           </CardContent>
@@ -116,7 +116,7 @@ export default async function StockPage() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="text-2xl font-bold tabular-nums break-all sm:text-3xl">
+            <p className="text-xl font-bold tabular-nums text-nowrap sm:text-3xl">
               {showCost && totalValuation !== null
                 ? formatMoney(totalValuation)
                 : lowStock.length}

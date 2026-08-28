@@ -86,7 +86,11 @@ export function ShopPicker({
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-background">
-      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-5 py-8">
+      {/* This screen owns the whole viewport (no AppShell), so it clears the
+          iOS status bar / notch and home indicator itself — without the top
+          inset the heading collides with the clock and battery on a PWA
+          launch (D-167 pattern). */}
+      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col px-5 pt-[calc(2rem+env(safe-area-inset-top))] pb-[calc(2rem+env(safe-area-inset-bottom))]">
         <header className="shrink-0">
           <h1 className="text-2xl font-bold tracking-tight">
             Which shop are you working at today?

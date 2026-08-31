@@ -128,8 +128,11 @@ export function CustomerPicker({
               <Search className="absolute left-3 top-1/2 size-5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 autoFocus
-                // Staff type digits far more often than letters here.
-                inputMode="numeric"
+                // Matches on phone number OR name, so the alphabet keyboard is
+                // the only one that can type both — iOS gives no way to switch
+                // off the numeric keypad. Same fix as the Customers screen
+                // (0a988c2); digits stay reachable from the letter keyboard.
+                inputMode="text"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Phone or name"

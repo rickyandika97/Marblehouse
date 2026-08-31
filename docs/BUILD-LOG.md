@@ -7375,3 +7375,55 @@ here. **`docker compose build` not run** — no Docker daemon on this machine;
 no import paths changed, so the case-sensitivity failure that gate exists to
 catch is not in play, but the check is genuinely unrun rather than passed.
 
+### D-174 · Customers can be ranked by marble or ticket balance
+
+Owner request: "in customer tab i want an ability to sort the most number of
+marbles or tickets." §8.5 only ever specified a search-first screen ordered by
+recency, which answers "who was just here" — the counter case — but not "who is
+holding the most", which is an owner question.
+
+**Sorting happens in SQL, across every customer.** This was the one real
+decision, and the owner chose it explicitly over reordering the loaded rows.
+The list is capped at `PAGE_SIZE = 50` and ordered by `lastSeenAt desc`, so a
+browser-side sort would have ranked only the fifty most recent customers: the
+actual biggest marble holder is very likely someone who has NOT been in this
+week, and they would simply never appear. That failure is invisible — the list
+looks correctly sorted, it is just sorted over the wrong set — which is exactly
+why it is worth stating here.
+
+- `searchCustomersSchema` gains `sort: "recent" | "marbles" | "tickets"`.
+- `searchCustomers` maps it to `orderBy`, keeping `{ id: "asc" }` as the final
+  tiebreaker in every ordering. That matters for correctness, not tidiness:
+  pagination cursors from a row id, so without a unique last key two customers
+  on an equal balance could straddle a page boundary and be skipped or
+  repeated.
+- `GET /api/customers` forwards `sort`; an unrecognised value is a 422 from
+  Zod rather than a silent fallback to recency (verified).
+- The Customers screen gets a segmented Recent / 🔵 Marbles / 🎟 Tickets
+  control. Changing it refetches — the order cannot be applied client-side, per
+  the above.
+
+**`sort` is `.optional()`, deliberately not `.default("recent")`.**
+`SearchCustomersInput` is the schema's OUTPUT type, so a `.default()` makes the
+field REQUIRED for every internal caller — `customers/page.tsx` seeds the list
+with `searchCustomers(actor, {})` and stopped typechecking. The service applies
+`input.sort ?? "recent"` instead. Worth knowing before adding the next
+defaulted field to a service schema; `parseJson` types to output on purpose
+(so services get guaranteed-present defaults), and that is the tension.
+
+**New: `src/server/services/__tests__/customer-sort.test.ts`** (4 tests). The
+fixture is built so the three orderings are mutually distinct — recency
+low→mid→top, marbles top→mid→low, tickets mid→top→low — because the top holder
+being the LEAST recent customer is the entire property under test.
+
+Mutation-tested per CLAUDE.md: replacing `orderBy` with an unconditional
+`lastSeenAt desc` was tried on purpose. **The first version of the fixture was
+not good enough** — it had ticket order coinciding with recency, so the ticket
+case stayed green while the sort was broken, and only 2 of 4 tests failed. The
+fixture was rebuilt so all three balance assertions fail under that mutation
+(3 of 4, the fourth being the recency default, which correctly still passes).
+This is D-34's rule again: one branch passing says nothing about the other.
+
+Verified in a browser as STAFF: Recent / Marbles / Tickets each reorder the
+list, and the API was checked directly to confirm sort composes with a search
+query rather than replacing it.

@@ -18,6 +18,7 @@ export async function GET(req: Request) {
       q: searchParams.get("q") ?? undefined,
       cursor: searchParams.get("cursor") ?? undefined,
       shopId: searchParams.get("shopId") ?? undefined,
+      sort: searchParams.get("sort") ?? undefined,
     });
 
     // A shop filter must not become a way to read a branch you have no access

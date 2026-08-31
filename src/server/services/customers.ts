@@ -67,6 +67,19 @@ export const searchCustomersSchema = z.object({
    * screen's picker opens on (§8.2).
    */
   shopId: z.string().optional(),
+  /**
+   * Row order. `recent` is the §8.5 default — the counter case is "who was
+   * just here". `marbles`/`tickets` rank the biggest holders instead, which
+   * has to happen in SQL across the WHOLE table: sorting the 50-row page in
+   * the browser would rank only whoever happened to be recent, and the actual
+   * top holder would be missing from the list entirely (D-174).
+   *
+   * Optional rather than `.default()`: `SearchCustomersInput` is the schema's
+   * OUTPUT type, so a default would make this field mandatory for every
+   * internal caller — including the page that seeds the list with `{}`. The
+   * service applies the fallback instead.
+   */
+  sort: z.enum(["recent", "marbles", "tickets"]).optional(),
 });
 
 export const mergeCustomersSchema = z
@@ -91,6 +104,10 @@ export type MergeCustomersInput = z.infer<typeof mergeCustomersSchema>;
  * matched against the normalised number. Filtering happens in SQL (§5.6) —
  * never findMany-then-filter, which is what stops this staying fast at 50.000
  * customers (NF-2).
+ *
+ * `sort` orders in SQL for the same reason: ranking the biggest marble or
+ * ticket holders is a question about every customer, not about the page that
+ * happens to be loaded (D-174).
  */
 export async function searchCustomers(
   actor: Actor,
@@ -119,9 +136,22 @@ export async function searchCustomers(
         : { name: { contains: q, mode: "insensitive" } }),
   };
 
+  /**
+   * `id` stays the last tiebreaker in every ordering: cursor pagination walks
+   * from a row id, so without a unique final key two customers on the same
+   * balance could straddle a page boundary and be skipped or repeated.
+   */
+  const sort = input.sort ?? "recent";
+  const orderBy: Prisma.CustomerOrderByWithRelationInput[] =
+    sort === "marbles"
+      ? [{ marbleBalance: "desc" }, { id: "asc" }]
+      : sort === "tickets"
+        ? [{ ticketBalance: "desc" }, { id: "asc" }]
+        : [{ lastSeenAt: "desc" }, { id: "asc" }];
+
   const rows = await prisma.customer.findMany({
     where,
-    orderBy: [{ lastSeenAt: "desc" }, { id: "asc" }],
+    orderBy,
     take: PAGE_SIZE + 1,
     ...(input.cursor ? { cursor: { id: input.cursor }, skip: 1 } : {}),
   });

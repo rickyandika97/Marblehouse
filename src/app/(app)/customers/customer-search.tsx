@@ -31,6 +31,20 @@ interface CustomerRow {
   ticketBalance: number;
 }
 
+type Sort = "recent" | "marbles" | "tickets";
+
+/**
+ * "Recent" first because §8.5's counter case is "who was just here". The two
+ * balance orders answer a different question the owner asks — who is holding
+ * the most — and the server ranks the whole table for them, so the top holder
+ * cannot be hidden behind whoever happened to visit today (D-174).
+ */
+const SORTS: { value: Sort; label: string }[] = [
+  { value: "recent", label: "Recent" },
+  { value: "marbles", label: "🔵 Marbles" },
+  { value: "tickets", label: "🎟 Tickets" },
+];
+
 export function CustomerSearch({
   initial,
   whatsappReminderTemplate,
@@ -39,6 +53,7 @@ export function CustomerSearch({
   whatsappReminderTemplate: string;
 }) {
   const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<Sort>("recent");
   const [rows, setRows] = useState<CustomerRow[]>(initial);
   const [loading, setLoading] = useState(false);
 
@@ -49,7 +64,7 @@ export function CustomerSearch({
       setLoading(true);
       try {
         const res = await fetch(
-          `/api/customers?q=${encodeURIComponent(query)}`,
+          `/api/customers?q=${encodeURIComponent(query)}&sort=${sort}`,
           { cache: "no-store" }
         );
         if (!res.ok || cancelled) return;
@@ -66,7 +81,9 @@ export function CustomerSearch({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [query]);
+    // Changing the sort refetches: the order is decided in SQL over every
+    // customer, so it cannot be applied to `rows` here.
+  }, [query, sort]);
 
   return (
     <div className="space-y-4">
@@ -83,6 +100,30 @@ export function CustomerSearch({
         {loading && (
           <Loader2 className="absolute right-3 top-1/2 size-5 -translate-y-1/2 animate-spin text-muted-foreground" />
         )}
+      </div>
+
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 text-sm text-muted-foreground">Sort</span>
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Sort customers">
+          {SORTS.map((option) => {
+            const active = sort === option.value;
+            return (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => setSort(option.value)}
+                aria-pressed={active}
+                className={`inline-flex min-h-11 items-center rounded-md border px-3 text-sm font-medium ${
+                  active
+                    ? "border-foreground bg-foreground text-background"
+                    : "hover:bg-muted"
+                }`}
+              >
+                {option.label}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {rows.length === 0 ? (

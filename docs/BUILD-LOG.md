@@ -5743,6 +5743,7 @@ unavailable server/browser boundary.
 
 | Item | Detail |
 |---|---|
+| D-172's banner fix not run through `docker compose build` | The Docker daemon was not running on the dev machine when the end-of-shift clock-out banner was fixed. Typecheck, lint and the full 511-test suite pass, and the change was clicked through in a real browser (dialog opens from the deep link, overdue reason/time enforced, `hashchange` path confirmed). The gate is nevertheless unrun. Low risk — no import paths changed, and that gate exists to catch macOS-vs-Linux case-sensitive imports — but run it next time Docker is up. |
 | D-122's per-shop-role change not verified in a rendered browser page | Typecheck, lint, the full automated suite (405 tests), and `docker compose build` all pass — see D-122's "Verification run" for the full list. The mixed-role scenario itself (one account MANAGER at one shop, STAFF at another) was additionally smoke-tested against the real dev database outside the test suite: a real `User` + two `UserShop` rows were created, `getActor()`'s exact query shape was run by hand, and `canSeeCostForShop` was confirmed to return `true` for the Purchasing-granted shop and `false` for the other, then the rows were deleted. What is still missing is a **rendered page** — nobody has clicked through Settings → Employees, a cost-bearing report, and Purchasing stock entry in an actual browser as OWNER / MANAGER-at-one-shop / STAFF-at-another-shop / the mixed-role account, which CLAUDE.md and D-34's precedent call out as catching a class of bug a passing test suite does not. Blocked in this session on no browser-automation connection being available; also blocked on the same rotated seed-owner password as the row below for a manual login. Do this before the change is considered fully closed out. |
 | `verify-users.sh`/`verify-shops.sh` not updated for D-122's route rename | `/api/users*` moved to `/api/employees*` and gained a `shopRoles` request/response shape; these curl-based phase-verification scripts still reference the old paths/fields and were not in scope for this change (they test HTTP behavior the automated Vitest suite already covers at the service layer). Update them, or retire them in favor of `employees.test.ts`, before next relying on them. |
 | D-120's merged Settings → Shops, and D-121's owner reason exemption, not verified live as OWNER | The seeded owner password has rotated past `.env`'s `SEED_OWNER_PASSWORD` and re-deriving the current one has been out of scope for both of these small changes. Only the MANAGER view was checked in a real browser for D-120; D-121 rests entirely on `work-session.test.ts` against real database rows. Both are low-risk (D-120 moved unchanged code; D-121 is one role check with a mutation-tested proof), but the debt compounds — next time the owner is in the app, either confirm the current password and record it here (not in `.env`, which is seed-time only and already stale), or reset it via Settings → Users so future sessions can log in as owner without asking. |
@@ -7224,3 +7225,86 @@ this fix.
 device's permission prompt end-to-end (this fix could only be typechecked
 and built, not clicked through, from this box). The next real check-in
 attempt on hardware is the actual test.
+
+### D-172 · The end-of-shift banner's "Clock out" was a link to a page, not an action
+
+Reported from the shop floor: at 22:09, with the amber "YOUR SHIFT HAS ENDED
+— Evening ended at 22:00" banner up, tapping **Clock out** "doesn't do
+anything."
+
+**It was never a button.** The whole banner was a single
+`<Link href="/attendance">`, and the pill inside it was a `<span>` styled to
+look like a button. Tapping it navigated to Attendance and stopped there. The
+banner then *stayed on screen* — it clears only when the record is actually
+closed — so the obvious next move was to tap it again, which re-navigated to
+the same page. From the user's side that is indistinguishable from a dead
+control.
+
+Worth being precise about what was NOT broken, because the first instinct is
+to suspect the API: `POST /api/attendance/clock-out`, the `clockOut` service
+and `ClockOutCard` were all fine. Verified by logging in as `dewa` (who had a
+same-day open record), opening the card and submitting — "Clocked out at
+14.53." The defect was purely that the banner never reached that dialog.
+
+**Fixed by making the banner deep-link to the record**, not merely to the
+screen:
+
+- `attendanceStatus` now returns `clockOutPrompt.attendanceId`. It has to name
+  the *specific* row: a split-shift employee can hold two open records, and
+  "the open one" would open the wrong dialog.
+- The banner links to `/attendance#clock-out=<id>`.
+- `ClockOutCard` resolves that fragment **after** its fetch resolves (the hash
+  names a record it has not loaded yet), opens the confirm dialog for it, then
+  consumes the fragment via `replaceState` so a refresh or a Back does not
+  reopen a dialog the person deliberately cancelled. An id that no longer
+  matches an open row — already closed in another tab — opens nothing.
+- A second effect listens for `hashchange`. Tapping the banner while *already
+  on* `/attendance` changes only the hash, so the page never remounts and the
+  fetch effect never re-runs; without this the second tap stayed dead, which is
+  the same bug in a narrower case.
+
+**Why deep-link instead of making the pill POST directly.** A one-tap banner
+cannot serve the overdue path. Once a record has been open more than twelve
+hours past its scheduled end, the API requires both a reason and a confirmed
+finish time, and silently POSTing "now" would invent a shift length — exactly
+what the card's own header comment warns against. The dialog is where those
+two fields live, so the banner's job is to *open* it, not to bypass it.
+
+**Verified in the browser as BOTH roles**, not just typechecked. The fix is
+role-independent by construction — `ClockOutCard` renders outside every
+`canSeeTeam` / `showMyAttendance` conditional in `attendance-list.tsx`, and
+`clockOut` scopes on `actor.userId` with no role gate — but "by construction"
+is exactly the reasoning D-34 warns about, so both were actually clicked:
+
+- **MANAGER** (`manager`, overdue 2026-08-20 record): the deep link opened the
+  dialog showing "Overdue clock-out — reason and actual finish time required",
+  the datetime pre-filled, and **Confirm clock out** disabled until both were
+  supplied. Cancel left the URL clean at `/attendance`; a subsequent hash-only
+  change reopened it, confirming the `hashchange` path.
+- **STAFF** (`ratu`, STAFF at both branches, `isOwner: false`, no MANAGER row
+  anywhere): the same deep link opened the ordinary (non-overdue) dialog, and
+  submitting it emptied `openRecords` — a real clock-out, by a pure staff
+  account, reached from the banner's own URL. The temporary record used for
+  this was deleted afterwards along with its audit row; `ratu` is back to her
+  two pre-existing closed records.
+
+`attendanceStatus` was also probed directly for `ratu` before that: `required:
+true` with `clockOutPrompt: null` only because she held no open record at the
+time — role was never what suppressed it.
+
+The existing `clockOutPrompt` test asserted the object's exact shape and so
+failed the moment `attendanceId` was added — the suite caught the change
+rather than sleeping through it. It now asserts the id equals
+`openRecords[0].id`, which is the contract the banner actually depends on: if
+the prompt ever names a record the card is not offering, the tap opens nothing
+and the original bug is back.
+
+**Gate not run:** `docker compose build` — the Docker daemon is not running on
+this machine. No import paths changed (three existing files edited in place),
+so the case-sensitivity failure that gate exists to catch is not in play here,
+but the check is genuinely unrun rather than passed.
+
+**Left alone deliberately:** `manager`'s overdue 2026-08-20 record is still
+open. Closing it during testing would have written a fabricated ~260h shift
+into real data.
+

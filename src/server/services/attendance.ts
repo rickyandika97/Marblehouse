@@ -321,6 +321,10 @@ export async function attendanceStatus(actor: Actor, now = new Date()) {
       slots.some((slot) => !clockedShiftIds.has(slot.shiftId)),
     clockOutPrompt: clockOutPrompt
       ? {
+          // The banner deep-links to this exact row (D-172). A split-shift
+          // employee can have two open records, so "the open one" is not
+          // specific enough to open the right dialog.
+          attendanceId: clockOutPrompt.id,
           shopName: clockOutPrompt.shop.name,
           shiftName: clockOutPrompt.shift!.name,
           endTime: formatTime(clockOutPrompt.shift!.endTime),

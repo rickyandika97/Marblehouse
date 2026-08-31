@@ -40,6 +40,7 @@ export function AttendanceBanner() {
   const [state, setState] = useState<{
     prompt: boolean;
     clockOutPrompt: {
+      attendanceId: string;
       shopName: string;
       shiftName: string;
       endTime: string;
@@ -91,11 +92,16 @@ export function AttendanceBanner() {
 
   // An unclosed ended shift is more urgent than a later clock-in, and keeping
   // the priority here gives the shell one banner instead of overlapping bars.
+  //
+  // The pill is deliberately NOT a submit button (D-172). An overdue record
+  // requires a reason and a confirmed finish time, which a one-tap banner
+  // cannot collect — POSTing "now" on their behalf would invent a shift
+  // length. So it deep-links to the card, which opens its dialog on arrival.
   if (state.clockOutPrompt) {
     const reminder = state.clockOutPrompt;
     return (
       <Link
-        href="/attendance"
+        href={`/attendance#clock-out=${reminder.attendanceId}`}
         className="sticky top-14 z-30 border-b-4 border-amber-800 bg-amber-500 px-4 py-4 text-amber-950 shadow-sm hover:bg-amber-400"
       >
         <div className="mx-auto flex w-full max-w-5xl flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

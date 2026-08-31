@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2, LogOut } from "lucide-react";
 import { toast } from "sonner";
@@ -89,20 +89,66 @@ export function ClockOutCard() {
   // the number does not sit frozen at whatever it was when the page loaded.
   const [now, setNow] = useState(() => Date.now());
 
+  /** Open the confirm dialog for one record and consume the deep-link hash. */
+  const openFor = useCallback((row: ClockOutState["openRecords"][number]) => {
+    setRecord(row);
+    setConfirmedClockOutAt(toDateTimeLocal(new Date()));
+    // Consume the fragment so a refresh, or Back into this page, does not
+    // reopen a dialog the person deliberately cancelled.
+    window.history.replaceState(
+      null,
+      "",
+      window.location.pathname + window.location.search
+    );
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     fetch("/api/attendance/status")
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
-        if (!cancelled && data) {
-          setState({ openRecords: data.openRecords ?? [] });
-        }
+        if (cancelled || !data) return;
+        const openRecords: ClockOutState["openRecords"] = data.openRecords ?? [];
+        setState({ openRecords });
+
+        /**
+         * Opened from the §4.13 end-of-shift banner (D-172).
+         *
+         * The banner is a link, not a submitter, so without this the tap only
+         * lands on /attendance and the person still has to find the card —
+         * which read as "the button does nothing". Resolved here rather than
+         * on mount because the fragment names a record we have not fetched
+         * yet; an id that no longer matches an open row (already clocked out
+         * in another tab) simply opens nothing.
+         */
+        const match = /^#clock-out=(.+)$/.exec(window.location.hash);
+        if (!match) return;
+        const wanted = openRecords.find((row) => row.id === match[1]);
+        if (!wanted) return;
+
+        openFor(wanted);
       })
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [openFor]);
+
+  /**
+   * Tapping the banner while ALREADY on /attendance changes only the hash, so
+   * the page does not remount and the fetch effect above never re-runs. Without
+   * this the second tap is the dead one — the same symptom in a narrower case.
+   */
+  useEffect(() => {
+    const onHashChange = () => {
+      const match = /^#clock-out=(.+)$/.exec(window.location.hash);
+      if (!match) return;
+      const wanted = state?.openRecords.find((row) => row.id === match[1]);
+      if (wanted) openFor(wanted);
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, [state, openFor]);
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 60_000);

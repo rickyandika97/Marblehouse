@@ -442,6 +442,9 @@ describe("attendance status — the red banner (§4.13)", () => {
     // 18:00 in the fixture shop's Asia/Jakarta timezone, after 17:00.
     const status = await attendanceStatus(actor, new Date("2026-03-11T11:00:00.000Z"));
     expect(status.clockOutPrompt).toEqual({
+      // The banner deep-links to this id (D-172); it must name the record the
+      // clock-out card is offering, or the tap opens nothing.
+      attendanceId: status.openRecords[0]!.id,
       shopName: shop.name,
       shiftName: "Test shift",
       endTime: "17:00",

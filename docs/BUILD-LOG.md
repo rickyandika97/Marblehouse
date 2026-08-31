@@ -7308,3 +7308,70 @@ but the check is genuinely unrun rather than passed.
 open. Closing it during testing would have written a fabricated ~260h shift
 into real data.
 
+### D-173 · Clocking in as cover was impossible: the route dropped `coverReason` on the floor
+
+**Reported by the owner:** a staff member covering someone else's shift filled
+in "who are you covering for?" on the first screen — which is *mandatory* there,
+since the shift cards stay disabled until three characters are typed — took the
+photo, tapped **Clock in**, and was refused with *"You are not scheduled for
+this shift today. Say who you are covering for to continue."* They had already
+said. There was no way through: the screen demanded a reason it then threw away.
+
+**The cause was one missing line, and it was not in the gate.** §4.14.1's gate
+in `clockIn` is correct, and `clock-in-flow.tsx` was correct — it appends
+`coverReason` to the `FormData` whenever `covering` is set. What sat between
+them was `src/app/api/attendance/clock-in/route.ts`, which rebuilds an object
+out of the multipart form field by field before handing it to `clockInSchema`:
+
+```ts
+const input = clockInSchema.parse({
+  shiftId: form.get("shiftId") ?? undefined,
+  latitude: form.get("latitude") ?? undefined,
+  // ... coordinates, locationDenied — but never coverReason
+});
+```
+
+`coverReason` was never read. It arrived in the request, was parsed out of the
+body by `formData()`, and then simply was not copied across, so the service saw
+`input.coverReason === undefined` on every request and the gate fired exactly as
+designed. The fix is the one missing `form.get("coverReason")` line.
+
+**Why this was invisible to a suite of 519 passing tests, which is the part
+worth remembering.** `attendance.test.ts` covers this gate *properly* — both
+branches, per D-34: refused without a reason, allowed and flagged `COVER` with
+one, plus a third that a `SCHEDULED` row never stores a reason. All three
+passed throughout. They call `clockIn(actor, shopId, photo, { coverReason })`
+directly, so they prove the gate and say nothing whatever about whether the
+field survives the trip from the browser.
+
+A field-copying route handler is precisely the seam that kind of test cannot
+see, and until now **the project had no route-level test anywhere** — every test
+lived under `src/server/services/`, `src/lib/` or `src/server/dto/`. So this
+adds `src/app/api/attendance/clock-in/route.test.ts`, next to the route rather
+than in a `__tests__` directory (vitest's `include` is `src/**/*.test.ts`, so it
+is picked up either way; beside the route is where someone editing the route
+will see it). It mocks the guard and the service and asserts one thing only:
+every field the client puts in the form arrives in the parsed input. It uses the
+*real* `clockInSchema`, so a field forwarded under a wrong name fails there the
+same way it would in production.
+
+Per the "a test you have not seen fail proves nothing" rule, the new test was
+run against the unfixed route first: the cover-reason case failed, and passed
+once the line was restored. That run also corrected an assumption of mine —
+`VALIDATION_FAILED` is **422**, not 400 (`src/server/errors.ts`), which is what
+the no-photo case now asserts.
+
+**The other two multipart routes were checked and are fine.** `expenses/[id]/
+receipt` and `prizes/[id]/image` carry a file and nothing else — no side fields
+to drop — so this defect is not a pattern repeated elsewhere. It is worth
+knowing that any *future* side field added to a multipart route has this exact
+trap waiting, because the field must be added in two places.
+
+**Gates:** `typecheck`, `lint` and `npm test` (519 tests, 30 files, including
+the 4 new ones) all pass. `typecheck` was verified against this change in
+isolation — the working tree also holds unrelated in-progress customer-sort work
+whose three pre-existing type errors are not from this fix and are not addressed
+here. **`docker compose build` not run** — no Docker daemon on this machine;
+no import paths changed, so the case-sensitivity failure that gate exists to
+catch is not in play, but the check is genuinely unrun rather than passed.
+

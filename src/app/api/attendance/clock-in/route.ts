@@ -26,6 +26,7 @@ export async function POST(req: Request) {
 
     const input = clockInSchema.parse({
       shiftId: form.get("shiftId") ?? undefined,
+      coverReason: form.get("coverReason") ?? undefined,
       latitude: form.get("latitude") ?? undefined,
       longitude: form.get("longitude") ?? undefined,
       accuracyM: form.get("accuracyM") ?? undefined,

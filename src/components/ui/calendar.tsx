@@ -32,9 +32,9 @@ const DOW_LABELS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
 
 /**
  * One month's grid of day cells. Shared by the single-date and range pickers
- * — range mode passes `rangeStart`/`rangeEnd` (and a `hoverIso` preview while
- * the second endpoint is still pending) so both months in a range popup can
- * highlight the same in-progress selection.
+ * — range mode passes `rangeStart`/`rangeEnd` (and a hover preview while the
+ * second endpoint is still pending) so the grid highlights the in-progress
+ * selection, including the part of it that falls outside the month on screen.
  */
 function CalendarMonth({
   month,
@@ -223,9 +223,15 @@ function Calendar({
 }
 
 /**
- * Two-month range calendar — click a start date, then an end date (hovering
- * previews the range before the second click commits it). Both months share
- * one `left` anchor; the right month always follows one month after it.
+ * Range calendar — one month at a time. Click a start date, then an end date
+ * (hovering previews the range before the second click commits it).
+ *
+ * **One month, not two (D-175).** The two-month layout it replaces was 560px
+ * wide, which on a phone either overflowed the popup or squeezed both grids
+ * until the day cells were too small to hit. A range that spans a month
+ * boundary is picked by tapping the start, paging with the chevrons, then
+ * tapping the end — the pending selection survives navigation, so the
+ * highlight is still correct when the second click lands.
  */
 function RangeCalendar({
   start,
@@ -239,14 +245,11 @@ function RangeCalendar({
   maxIso?: string
 }) {
   const todayIso = maxIso ?? toIso(new Date())
-  const [left, setLeft] = React.useState(() =>
-    addMonths(startOfMonth(end ? fromIso(end) : fromIso(todayIso)), -1)
+  const [month, setMonth] = React.useState(() =>
+    startOfMonth(end ? fromIso(end) : fromIso(todayIso))
   )
   const [pending, setPending] = React.useState<string | null>(null)
   const [hover, setHover] = React.useState<string | null>(null)
-
-  const right = addMonths(left, 1)
-  const canNavRight = toIso(right) < todayIso
 
   function handleSelect(iso: string) {
     if (!pending) {
@@ -270,36 +273,21 @@ function RangeCalendar({
 
   return (
     <div>
-      <div className="flex gap-6">
-        <div>
-          <MonthHeader month={left} onPrev={() => setLeft((m) => addMonths(m, -1))} />
-          <CalendarMonth
-            month={left}
-            todayIso={todayIso}
-            rangeStart={rangeStart}
-            rangeEnd={rangeEnd}
-            disabled={maxIso ? (iso) => iso > maxIso : undefined}
-            onSelect={handleSelect}
-            onHover={(iso) => pending && setHover(iso)}
-          />
-        </div>
-        <div>
-          <MonthHeader
-            month={right}
-            onNext={() => setLeft((m) => addMonths(m, 1))}
-            canNext={canNavRight}
-          />
-          <CalendarMonth
-            month={right}
-            todayIso={todayIso}
-            rangeStart={rangeStart}
-            rangeEnd={rangeEnd}
-            disabled={maxIso ? (iso) => iso > maxIso : undefined}
-            onSelect={handleSelect}
-            onHover={(iso) => pending && setHover(iso)}
-          />
-        </div>
-      </div>
+      <MonthHeader
+        month={month}
+        onPrev={() => setMonth((m) => addMonths(m, -1))}
+        onNext={() => setMonth((m) => addMonths(m, 1))}
+        canNext={toIso(startOfMonth(addMonths(month, 1))) <= todayIso}
+      />
+      <CalendarMonth
+        month={month}
+        todayIso={todayIso}
+        rangeStart={rangeStart}
+        rangeEnd={rangeEnd}
+        disabled={maxIso ? (iso) => iso > maxIso : undefined}
+        onSelect={handleSelect}
+        onHover={(iso) => pending && setHover(iso)}
+      />
       <div className="mt-3 flex items-center justify-between border-t pt-3 text-xs text-muted-foreground">
         <span>{pending ? "Select end date" : "Select start date"}</span>
         {(start || pending) && (

@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import { requireManagerOrOwnerPage, asPageError } from "@/server/auth/page-guard";
-import { selectableShops } from "@/server/auth/context";
+import { reportableShops } from "@/server/auth/context";
 import { getDashboard } from "@/server/services/dashboard";
 import { resolveScope } from "@/server/services/reports";
 import { ReportSkeleton } from "@/components/skeleton";
@@ -56,7 +56,10 @@ export default async function DashboardPage({
 
   // Only an owner gets the picker (§8.3). A manager is locked to one shop
   // (§3.4), so fetching options for them would be work with nothing to show.
-  const shops = (await selectableShops(actor)).map((s) => ({
+  // `reportableShops`, not `selectableShops`: the same question `resolveScope`
+  // asks above, so the picker cannot offer a branch the guard then rejects
+  // (D-177).
+  const shops = (await reportableShops(actor)).map((s) => ({
     id: s.id,
     name: s.name,
   }));

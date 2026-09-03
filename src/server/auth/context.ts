@@ -208,6 +208,44 @@ export async function selectableShops(actor: Actor): Promise<Shop[]> {
 }
 
 /**
+ * Shops this actor may pick in a REPORT or DASHBOARD filter (§9, §8.3).
+ *
+ * **Assignment is not enough here — the role has to be MANAGER (D-177).**
+ * `selectableShops` answers "which shops do you work at?", which is right for
+ * the day-start picker and the sale screen. A report filter is asking a
+ * different question: "whose numbers may you read?" — and §3.4 gives that to a
+ * manager, not to staff. Feeding the picker from the wider set offered a
+ * mixed-role actor (MANAGER at one branch, STAFF at another) a shop whose
+ * report `resolveScope` then refused, so the control named one branch while
+ * the figures on screen were another's.
+ *
+ * This never widened access: `resolveScope(…, { requireManagerAt: true })` is
+ * the permission and it always refused those rows. What was wrong was the
+ * control, and a picker that offers something the server will reject is a bug
+ * even when the rejection is correct.
+ *
+ * A second function rather than a flag on `selectableShops`, for the same
+ * reason `expenseShops` is one: an option would put a single `if` between the
+ * sale flow and a shop list built for a different question. Two callers, two
+ * questions, two functions — neither can leak into the other.
+ *
+ * OWNER still sees every active branch. HQ is excluded, as it records no sales
+ * (§4.12, D-54). Filtered in SQL, never in JavaScript (§5.6).
+ */
+export async function reportableShops(actor: Actor): Promise<Shop[]> {
+  return prisma.shop.findMany({
+    where: {
+      isActive: true,
+      isHqPseudoShop: false,
+      ...(actor.isOwner
+        ? {}
+        : { userShops: { some: { userId: actor.userId, role: "MANAGER" } } }),
+    },
+    orderBy: [{ name: "asc" }],
+  });
+}
+
+/**
  * Shops this actor may record an EXPENSE against (§4.12).
  *
  * Identical to `selectableShops` except that it **includes HQ**, which is the

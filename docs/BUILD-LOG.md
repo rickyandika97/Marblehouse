@@ -5743,6 +5743,8 @@ unavailable server/browser boundary.
 
 | Item | Detail |
 |---|---|
+| ~~Report shop picker offers shops where the actor is only STAFF~~ | **Fixed — D-177.** `reportableShops` adds `role: "MANAGER"` to the assignment clause, and the report filter bar plus the dashboard picker now read from it. Found while verifying D-176; no data was ever exposed, the control simply named a shop the server would refuse. |
+| D-175–D-179 not run through `docker compose build` | Same gate, same cause as the row below: the Docker daemon was not running on the dev machine. Typecheck, lint and the full 543-test suite pass, and all five changes were clicked through in a real browser as OWNER and as the mixed-role `budi` account. The new files are the five report drill-down pages, `reports/sales-detail-table.tsx` and `reportable-shops.test.ts`; their imports are relative `../../report-shell` / `../../sales-detail-table` paths plus existing `@/`-aliased modules, so the macOS-vs-Linux case-sensitivity class this gate catches is unlikely but unproven. Run it next time Docker is up. |
 | D-172's banner fix not run through `docker compose build` | The Docker daemon was not running on the dev machine when the end-of-shift clock-out banner was fixed. Typecheck, lint and the full 511-test suite pass, and the change was clicked through in a real browser (dialog opens from the deep link, overdue reason/time enforced, `hashchange` path confirmed). The gate is nevertheless unrun. Low risk — no import paths changed, and that gate exists to catch macOS-vs-Linux case-sensitive imports — but run it next time Docker is up. |
 | D-122's per-shop-role change not verified in a rendered browser page | Typecheck, lint, the full automated suite (405 tests), and `docker compose build` all pass — see D-122's "Verification run" for the full list. The mixed-role scenario itself (one account MANAGER at one shop, STAFF at another) was additionally smoke-tested against the real dev database outside the test suite: a real `User` + two `UserShop` rows were created, `getActor()`'s exact query shape was run by hand, and `canSeeCostForShop` was confirmed to return `true` for the Purchasing-granted shop and `false` for the other, then the rows were deleted. What is still missing is a **rendered page** — nobody has clicked through Settings → Employees, a cost-bearing report, and Purchasing stock entry in an actual browser as OWNER / MANAGER-at-one-shop / STAFF-at-another-shop / the mixed-role account, which CLAUDE.md and D-34's precedent call out as catching a class of bug a passing test suite does not. Blocked in this session on no browser-automation connection being available; also blocked on the same rotated seed-owner password as the row below for a manual login. Do this before the change is considered fully closed out. |
 | `verify-users.sh`/`verify-shops.sh` not updated for D-122's route rename | `/api/users*` moved to `/api/employees*` and gained a `shopRoles` request/response shape; these curl-based phase-verification scripts still reference the old paths/fields and were not in scope for this change (they test HTTP behavior the automated Vitest suite already covers at the service layer). Update them, or retire them in favor of `employees.test.ts`, before next relying on them. |
@@ -7427,3 +7429,385 @@ This is D-34's rule again: one branch passing says nothing about the other.
 Verified in a browser as STAFF: Recent / Marbles / Tickets each reorder the
 list, and the API was checked directly to confirm sort composes with a search
 query rather than replacing it.
+
+---
+
+### D-175 · Range calendars show one month at a time, not two
+
+Owner request, from a phone screenshot of the report filter bar: "change this
+calendar to just one month at a time, in mobile it can be too compact, change
+all calendar like this to one month at a time."
+
+`RangeCalendar` rendered two `CalendarMonth` grids side by side (`flex gap-6`,
+two `w-64` columns ≈ 560px). On a phone that popup either overflowed or forced
+the day cells down to a size that is unpleasant to tap — the exact complaint.
+
+**Fixed in `RangeCalendar` alone, not in the four call sites.** Every range
+filter in the app — reports, attendance, expenses, the audit log, and the
+`DateRangeField` form adapter on Tickets Awarded — goes through
+`DateRangePicker` → `RangeCalendar`, so one change covers all of them and they
+cannot drift apart later. `PopoverContent` is `w-fit`, so the popup resized
+itself with no CSS change.
+
+Two behavioural details worth knowing before touching this again:
+
+- **The anchor month changed meaning.** The two-month version set `left` to one
+  month BEFORE the end date, so the right-hand grid held the end. With one
+  grid, the anchor is now the month CONTAINING the end date — otherwise opening
+  the picker on a 30-day range would land you on August while the highlighted
+  selection sits in September, off screen.
+- **A cross-month range is still selectable.** `pending`/`hover` live above the
+  grid, so tapping a start, paging with the chevrons and tapping an end works,
+  and the partial range stays correctly shaded up to the month edge (verified in
+  a browser on both August and September of an Aug 5 – Sep 3 range).
+
+`CalendarMonth` itself was not touched — it always rendered exactly one month;
+only its doc comment, which referred to "both months in a range popup", was
+corrected.
+
+### D-176 · Sales by Staff drills into the individual sales
+
+Owner request: "i want a more detailed view of sales… so let say i click
+puspita, it will open the sales that, that person input."
+
+Staff names on Sales by Staff are now links to
+`/reports/sales-by-staff/[userId]`, which lists that person's individual
+transactions — date, time, customer (or Walk-in), shop, entry type, payment
+method and amount — under the same four headline figures, plus a cash/card
+split.
+
+**New service `staffSalesDetail` in `reports.ts`, not a call to
+`listSales`.** `listSales` already filters by `userId`, and reusing it was the
+obvious first move, but it is the SALE SCREEN's list and its scoping rules are
+deliberately different: it collapses a STAFF actor to their own rows, falls
+back to the work-session shop, and pages at 50. A report drill-down needs the
+REPORT's scope (`resolveScope` with `requireManagerAt: true`) so that the
+figures reconcile with the row that was clicked. Two different questions, two
+functions — sharing one would have meant a flag deciding which permission model
+applies, which is the D-34 shape.
+
+Consequences of that choice, each a deliberate decision:
+
+- **`COMPLETED` only**, via the same `completedSalesWhere` the aggregate uses.
+  Listing voided sales here would make the detail page disagree with the report
+  that linked to it — 77 in the table, 80 on the drill-down, with nothing on
+  screen explaining which is right. Covered by a test.
+- **The filter is on the SALE's shop, not the seller's assignments.** So what
+  comes back is exactly the subset of the aggregate the caller could already
+  see; a manager does not need to share a shop with the person they are
+  inspecting.
+- **An unknown `userId` is a `NOT_FOUND`**, which `asPageError` turns into the
+  404 page. Returning an empty report would read as "this person sold nothing"
+  rather than "no such person".
+- **Capped at `DETAIL_PAGE_SIZE = 500`** with an on-screen note when it bites,
+  rather than cursor pagination. A drill-down is read, not browsed; 500 covers a
+  month at a busy shop, and the honest note beats a silently truncated list.
+- The range and `shopId` are carried into the link and back out of the "Sales by
+  staff" back button, so navigating in and out does not reset the filter to the
+  default 30 days.
+
+**The "Entry" column shows Preset/Custom, not the preset's label.** Presets are
+labelled with their own amount ("Rp 50.000"), so a Type column showing
+`presetLabel` repeated the Amount column on every ordinary row. What is actually
+worth seeing is the exception — a keyed-in amount, which §4.3 also flags to the
+audit log. `presetLabel` is still on the DTO for a future caller.
+
+**New: 6 tests in `reports.test.ts`.** Mutation-tested per CLAUDE.md, both
+invariants broken on purpose and confirmed caught: dropping
+`requireManagerAt: true` failed the STAFF-403 test (without it, a staff member
+could read a colleague's sales), and swapping `completedSalesWhere` for a
+status-blind filter failed the voided-sales test. The reconciliation test
+asserts the detail header equals `salesByStaff`'s row for the same person —
+tying the two together so they cannot drift.
+
+Verified in a browser as OWNER (drill-down matches the row: Rp 950.000 / 4
+sales / Rp 237.500) and as **budi — MANAGER at PIK, STAFF at BR-1**, the D-138
+mixed-role account. Budi loading another user's drill-down gets Rp 0 and no
+rows, because that person's sales were all at the shop where Budi is only
+staff.
+
+**Pre-existing bug found while verifying.** The report shop picker offered
+Budi a shop where he is only STAFF, because `selectableShops` filters on
+assignment with no role condition. Data was not exposed — `resolveScope` still
+refused it — but the screen showed a shop name that did not match the numbers.
+Logged as a debt at the time and **fixed immediately after, in D-177.**
+
+Files, for D-175 and D-176 together:
+
+```
+src/components/ui/calendar.tsx        RangeCalendar rewritten to one month
+                                      (D-175). CalendarMonth untouched.
+src/app/(app)/reports/sales-by-staff/[userId]/page.tsx    NEW — the drill-down.
+src/app/(app)/reports/sales-by-staff/page.tsx   TOUCHED: staff name is now a
+                                      link carrying from/to/shopId.
+src/server/services/reports.ts        + staffSalesDetail, StaffSaleRow,
+                                      StaffSalesDetail, DETAIL_PAGE_SIZE.
+src/server/services/__tests__/reports.test.ts   + 6 tests, mutation-tested.
+```
+
+No schema change, so no migration and no PRD §6 reconciliation needed.
+
+### D-177 · Report and dashboard shop pickers ask "manage?", not "assigned?"
+
+Found while verifying D-176 in a browser as `budi` (MANAGER at PIK, STAFF at
+BR-1), reported as a debt, then fixed on the owner's instruction.
+
+The §9 filter bar and the §8.3 dashboard picker were populated from
+`selectableShops`, which asks **"which shops are you assigned to?"**. The data
+behind them is gated by `resolveScope(…, { requireManagerAt: true })`, which
+asks **"which shops do you MANAGE?"**. For anyone whose role is uniform the two
+agree, which is why this survived since Phase 8 — but a mixed-role actor was
+offered a branch whose report the server then refused. On screen: the picker
+read "MKG" while the figures were PIK's.
+
+**No data was ever exposed.** `resolveScope` is the permission and it always
+refused those rows. What was wrong was the *control*. Worth stating plainly,
+because a picker that offers something the server rejects is still a bug — the
+user cannot tell a permission boundary from a branch that genuinely sold
+nothing, and the two look identical.
+
+**New `reportableShops` in `context.ts`, a sibling not a flag.** Same reasoning
+`expenseShops` is a separate function: an option parameter would put one `if`
+between the sale flow and a shop list built to answer a different question. The
+only difference from `selectableShops` is `role: "MANAGER"` inside the
+`userShops.some` clause. OWNER still skips the clause entirely and sees every
+active branch; HQ and retired branches stay excluded.
+
+**`selectableShops` was deliberately NOT changed**, and its other callers were
+checked one by one. The day-start picker, the sale screen and Settings → Shops
+all genuinely want every assigned branch — a staff member has to be able to
+declare the shop they are working at today. Narrowing the shared function would
+have locked staff out of the app at their own branch.
+
+**Attendance was checked and deliberately left on `selectableShops`.**
+`/attendance` shows an actor their own history as well as the team's, and
+`listAttendance` degrades to `scope.userId = actor.userId` at a shop where the
+caller is STAFF rather than refusing. So a staff-only branch in that picker
+shows data the user is entitled to, and narrowing it would have hidden their own
+attendance from them. Different service contract, different correct answer —
+the reason this is one shared helper for reports and dashboards but not for
+everything.
+
+**New: `src/server/services/__tests__/reportable-shops.test.ts`** (4 tests),
+against real rows, because the filtering is a SQL `where` clause and a
+hand-built `shopRoles` map would prove nothing about it. The fixture is the
+mixed-role account on purpose: an actor who manages everywhere passes under
+either implementation, so a test built on one would have stayed green
+throughout the bug (D-34 again).
+
+Mutation-tested per CLAUDE.md: reverting the clause to the original
+assignment-only form fails 3 of the 4 — and the fourth, the OWNER case,
+correctly still passes, since an owner holds no `UserShop` rows and never
+reached the role clause either way. That split is the proof the test is
+measuring the role condition specifically.
+
+Verified in rendered pages, both branches: as `budi` the report picker now
+reads PIK and offers only PIK (it read MKG before); as OWNER it still offers
+All shops, Branch 2, MKG and PIK. The dashboard picker is owner-only by §8.3,
+so that half of the fix is latent correctness rather than a visible change.
+
+```
+src/server/auth/context.ts            + reportableShops.
+src/app/(app)/reports/report-shell.tsx   TOUCHED: filterPropsFor reads it.
+src/app/(app)/dashboard/page.tsx         TOUCHED: same.
+src/server/services/__tests__/reportable-shops.test.ts   NEW — 4 tests.
+```
+
+### D-178 · Sales by Shop, Payment Methods and Prize Redemption drill down too
+
+Owner request, straight after D-176: "also in sales by shop, payment method
+breakdown, prize redemption i want them all to be clickable similar to sales by
+staff."
+
+Every row on those three reports is now a link to the transactions behind it,
+following D-176's pattern — range and shop carried in the URL, a back button
+that returns to the report as it was left, and totals that reconcile with the
+row that was tapped.
+
+**D-176's `staffSalesDetail` was generalised into `salesDetail`, not copied.**
+Sales by Staff, by Shop and by Payment Method aggregate the *same* `Sale` rows
+along three different axes, so the drill-down is one query with the axis passed
+in (`SalesDetailFilter`: `userId` and/or `paymentMethod`, with `shopId` already
+handled by `resolveScope`). Three near-copies would have been three chances for
+the permission reasoning — which is the whole substance of a drill-down — to
+drift apart. `staffSalesDetail` survives as a thin wrapper, because it alone
+needs a name lookup: an unknown `userId` must be a `NOT_FOUND` rather than an
+empty report reading as "this person sold nothing".
+
+The axes compose rather than replace: a payment-method page still honours the
+page's `shopId`, so "PIK's cash" is a real question the URL can ask. There is a
+test whose fixture holds every shop × method combination, so dropping *either*
+filter fails it — an earlier fixture only caught the method (see the mutation
+notes below).
+
+**`SalesDetailTable` (new, `reports/sales-detail-table.tsx`)** renders the row
+list for all three, with an `omit` prop for the column that would merely repeat
+what you drilled into — Staff on a staff page, Shop on a shop page, Paid on a
+method page. One table means the three screens cannot start showing different
+facts about the same sale.
+
+**Prize Redemption is a different query and a different gate.** It drills into
+`RedemptionLine`, not `Sale`, so it gets its own `prizeRedemptionDetail`. Two
+things worth knowing:
+
+- **`cogsTotal` is OWNER-ONLY** (schema comment, §7.5), so the restricted
+  branch is a *separate select that does not name the column* — not one select
+  whose result is nulled afterwards, which is what CLAUDE.md's cost rule
+  forbids. The page renders no Cost column at all when the figure is null, and
+  branches on the data rather than re-deriving the role (D-63).
+- **Totals are aggregated over the whole matching set, not the returned page**,
+  so a truncated list still reconciles with the report row. The one exception
+  is `totalCost`, which is summed from the rows and therefore returns `null`
+  when the list is truncated — a page-sized subtotal presented as the period's
+  cost would be a wrong number that looks right, which is worse than no number.
+
+**Payment method comes off a fixed map, never into the query.** The URL segment
+is lowercase (`/payment-methods/cash`); anything unrecognised is `notFound()`
+rather than a value handed to Prisma. Verified with `/payment-methods/bitcoin`,
+which renders the 404 page. The empty-state string is a hand-written word per
+method rather than `label.toLowerCase()`, which mangled "Card / QRIS" into
+"card / qris".
+
+**New: 12 tests in `reports.test.ts`** (6 for the new sales axes, 6 for prize
+redemption). Mutation-tested per CLAUDE.md, three broken on purpose and
+confirmed caught:
+
+1. Restricted branch selecting `cogsTotal` anyway — caught, but *only* by the
+   per-row assertion. The total-only check stayed green, since `withCost` still
+   nulls the total on the way out. That is D-62's shape exactly: a guard
+   downstream hiding a broken guard upstream, which is why the test asserts
+   `rows[0].cost` and not just `totalCost`.
+2. Dropping the `paymentMethod` filter — caught.
+3. Dropping the shop scope — caught. **The composition test initially survived
+   mutation 2**, because its fixture had only one cash sale at the shop under
+   test, so removing the method filter changed nothing. The fixture now holds
+   all four shop × method combinations and fails under either mutation. Same
+   lesson as D-174: a fixture that only exercises one branch proves one branch.
+
+Verified in a browser as OWNER — shop drill-down Rp 1.570.000 / 8 matching its
+row, cash Rp 2.570.000 / 11 matching the breakdown, Bouncy Ball 3 given / 240
+tickets / Rp 15.000 with three rows summing to it — and as `budi`, a plain
+MANAGER: the Cost column and the Prize cost tile are **absent**, and he sees 1
+of the 3 redemptions because the other two were at a shop he does not manage.
+
+```
+src/server/services/reports.ts        staffSalesDetail → salesDetail (+ wrapper),
+                                      + prizeRedemptionDetail, DetailSaleRow,
+                                      SalesDetail, SalesDetailFilter,
+                                      PrizeRedemptionRow/Detail.
+src/app/(app)/reports/sales-detail-table.tsx           NEW — shared row list.
+src/app/(app)/reports/sales-by-shop/[shopId]/page.tsx  NEW.
+src/app/(app)/reports/payment-methods/[method]/page.tsx NEW.
+src/app/(app)/reports/prize-redemption/[prizeItemId]/page.tsx NEW.
+src/app/(app)/reports/sales-by-staff/[userId]/page.tsx TOUCHED: uses the
+                                      shared table.
+src/app/(app)/reports/{sales-by-shop,payment-methods,prize-redemption}/page.tsx
+                                      TOUCHED: first column is now a link.
+src/server/services/__tests__/reports.test.ts   + 12 tests.
+```
+
+No schema change, so no migration and no PRD §6 reconciliation needed.
+
+### D-179 · Daily Sales Summary drills into a single business day
+
+Owner request: "how about the daily sales summary, when i click on a date i
+want to see the daily sales too."
+
+Every row of all three tables on that screen is now a link. The By day table
+goes to `/reports/sales/[date]`; By shop and By staff reuse D-178's existing
+drill-downs, so a figure means the same thing wherever it is tapped rather than
+being live on one screen and inert on another.
+
+**No service change was needed.** A day is just `salesDetail` with the range
+collapsed — `from === to` — and `resolveScope` already accepted that. The day
+is the fourth axis of the same drill-down and required no fourth query.
+
+**`businessDate`, not the clock date — the one thing this page can get wrong
+while still looking right.** A sale rung up at 01:00 is filed under the
+PREVIOUS business day (§4.2, D-18), so the drill-down has to filter the same
+column the summary row was grouped by. Filter on `occurredAt` instead and a
+sale silently moves between two days that both still look plausible. There is a
+test with a sale at 01:00 the following calendar morning asserting it appears on
+the earlier day's page with its real clock time intact; both day tests fail if
+the query is switched to `occurredAt` (mutation-tested).
+
+**This page deliberately has NO date filter bar**, unlike every other
+drill-down. The others inherit the report's range picker harmlessly, but this
+page IS a date selection — a range control here could be set to contradict the
+date in the URL, and the reader would have no way to tell which one the figures
+came from. Paging is Previous day / Next day instead, and Next day is hidden
+once it would point past the actor's business date, since no row can be filed
+there yet.
+
+**The date is a path segment, so it is validated, not coerced.** `rangeFrom`'s
+forgiving fallback (D-54: a bad query string quietly becomes the default
+window) is wrong here — silently showing a different day than the URL names is
+worse than a 404. `isIsoDate` was exported from `report-shell.tsx` for this
+rather than duplicated; it already rejects `2026-02-31`, which is well-formed
+but not a real date. Verified: that URL renders the 404 page.
+
+**New: 2 tests.** Mutation-tested per CLAUDE.md — switching the filter to
+`occurredAt` fails both, which is the §4.2 boundary genuinely pinned rather
+than assumed.
+
+Verified in a browser as `budi` (plain MANAGER): 2026-08-20 shows Rp 800.000 /
+2 transactions, matching its summary row exactly and scoped to PIK; Next day
+lands on 2026-08-21 matching that row; the back link returns to the summary on
+its original 30-day range; today's page correctly offers no Next day.
+
+```
+src/app/(app)/reports/sales/[date]/page.tsx   NEW — the day drill-down.
+src/app/(app)/reports/sales/page.tsx          TOUCHED: all three tables link.
+src/app/(app)/reports/report-shell.tsx        TOUCHED: isIsoDate exported.
+src/server/services/__tests__/reports.test.ts + 2 tests.
+```
+
+No schema change, and no new service function.
+
+### D-180 · The day drill-down gets a shop filter back
+
+Owner request against a screenshot of the day page: "in the daily sales
+summary, can we add like a filter of the shops."
+
+**This is a correction to D-179, not a new feature.** That entry justified
+dropping the filter bar from the day page — a range control could be set to
+contradict the date in the URL — and it is still right about the DATE controls.
+But the bar is one component, so suppressing it threw out the SHOP picker as
+well, and that was never the thing at risk of contradicting anything. The
+result was the screenshot the owner sent: an "All shops" day with PIK and MKG
+rows interleaved and no way to narrow it, which is a question an owner
+obviously asks of a multi-branch day.
+
+`ReportFilters` gains `hideDateControls`, threaded through `ReportShell`. It
+drops the presets row and the range picker and keeps the shop picker; the day
+page passes it and otherwise spreads `filterPropsFor` like every other report.
+Nothing else changes, so the seven full report screens render exactly as before
+— verified.
+
+Two details:
+
+- **The picker's `ml-auto` is now conditional.** It exists to push the shop
+  control away from the range picker; alone in the row it left the control
+  floating at the right of an otherwise empty bordered box. It now sits left
+  when the date controls are hidden.
+- **Day paging already carried `shopId`** (`dayHref` in D-179), so selecting a
+  shop and then stepping to the previous day keeps the filter rather than
+  silently widening back to all shops. Verified rather than assumed — this is
+  the obvious way a filter of this shape leaks.
+
+No service change: `salesDetail` already took `shopId`, and the picker composes
+with the fixed date exactly as the payment-method drill-down composes with it
+(D-178). No new tests — the composition of `shopId` with the other axes is
+already covered, and the change is which control is rendered.
+
+Verified in a browser as OWNER on the screenshot's own page (2026-09-03): the
+picker appears with the date controls gone, "All shops" gives Rp 520.000 / 2
+across PIK and MKG, MKG alone gives Rp 500.000 / 1 with the totals recomputed
+and the "All shops" description correctly dropped, and Previous day holds the
+MKG filter. Also checked as `budi`, whose picker offers only PIK (D-177).
+
+```
+src/app/(app)/reports/report-filters.tsx  + hideDateControls; conditional ml-auto.
+src/app/(app)/reports/report-shell.tsx    TOUCHED: threads the flag.
+src/app/(app)/reports/sales/[date]/page.tsx  TOUCHED: full filter props + flag.
+```

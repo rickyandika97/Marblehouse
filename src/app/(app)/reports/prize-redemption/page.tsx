@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { requireManagerOrOwnerPage, asPageError } from "@/server/auth/page-guard";
 import { prizeRedemptionReport } from "@/server/services/reports";
 import {
@@ -44,6 +45,12 @@ export default async function PrizeRedemptionReportPage({
   // One source of truth for "may this viewer see cost", taken from the data.
   const showCost = report.totalCogs !== null;
 
+  const detailHref = (prizeItemId: string) => {
+    const params = new URLSearchParams({ from, to });
+    if (sp.shopId) params.set("shopId", sp.shopId);
+    return `/reports/prize-redemption/${prizeItemId}?${params.toString()}`;
+  };
+
   return (
     <ReportShell
       title="Prize Redemption"
@@ -77,7 +84,17 @@ export default async function PrizeRedemptionReportPage({
         getKey={(r) => r.prizeItemId}
         empty="No prizes were redeemed in this period."
         columns={[
-          { header: "Prize", cell: (r) => r.prizeName },
+          {
+            header: "Prize",
+            cell: (r) => (
+              <Link
+                href={detailHref(r.prizeItemId)}
+                className="font-medium hover:underline"
+              >
+                {r.prizeName}
+              </Link>
+            ),
+          },
           {
             header: "Given",
             cell: (r) => formatAmount(r.qty),

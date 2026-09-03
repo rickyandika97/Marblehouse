@@ -3,7 +3,7 @@ import { Download } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatAmount, formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
-import { selectableShops, type Actor } from "@/server/auth/context";
+import { reportableShops, type Actor } from "@/server/auth/context";
 import { ReportFilters, type ShopOption } from "./report-filters";
 
 /**
@@ -30,6 +30,7 @@ export function ReportShell({
   businessDate,
   outsideSchedule,
   showOutsideSchedule,
+  hideDateControls,
   children,
 }: {
   title: string;
@@ -46,6 +47,11 @@ export function ReportShell({
   outsideSchedule?: boolean;
   /** Attendance reports only: clock-ins made while covering an unrostered shift. */
   showOutsideSchedule?: boolean;
+  /**
+   * Keep the shop picker but drop the date controls, for a screen whose date
+   * comes from its own URL rather than the filter bar (D-180).
+   */
+  hideDateControls?: boolean;
   children: React.ReactNode;
 }) {
   const params = new URLSearchParams({ from, to });
@@ -88,6 +94,7 @@ export function ReportShell({
           businessDate={businessDate}
           outsideSchedule={outsideSchedule}
           showOutsideSchedule={showOutsideSchedule ?? false}
+          hideDateControls={hideDateControls ?? false}
         />
       )}
 
@@ -221,8 +228,15 @@ export function rangeFrom(
   return { from, to };
 }
 
-/** `YYYY-MM-DD`, and a real calendar date — `2026-02-31` is neither. */
-function isIsoDate(value: string | undefined): boolean {
+/**
+ * `YYYY-MM-DD`, and a real calendar date — `2026-02-31` is neither.
+ *
+ * Exported for the day drill-down, whose date arrives as a URL PATH segment
+ * rather than a query param: `rangeFrom` can quietly fall back to a default
+ * window for a bad query string, but a bad path segment is a 404, so that page
+ * has to make the check itself.
+ */
+export function isIsoDate(value: string | undefined): boolean {
   if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const d = new Date(`${value}T00:00:00.000Z`);
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value;
@@ -232,9 +246,13 @@ function isIsoDate(value: string | undefined): boolean {
  * Everything `ReportShell` needs for its filter bar, resolved for one actor.
  *
  * A single helper so all seven report pages populate the picker identically —
- * `selectableShops` already scopes to assignments for a manager and excludes
- * the HQ pseudo-shop, which records no sales and so has no place in a reports
- * picker (§4.12, D-54).
+ * `reportableShops` scopes to the shops this actor MANAGES and excludes the HQ
+ * pseudo-shop, which records no sales and so has no place in a reports picker
+ * (§4.12, D-54).
+ *
+ * Manager, not merely assigned (D-177): the picker has to ask the same question
+ * `resolveScope` asks, or a mixed-role actor is offered a branch whose report
+ * the server then refuses.
  */
 export async function filterPropsFor(
   actor: Actor
@@ -243,7 +261,7 @@ export async function filterPropsFor(
   canSeeAllShops: boolean;
   businessDate: string;
 }> {
-  const shops = await selectableShops(actor);
+  const shops = await reportableShops(actor);
   return {
     shops: shops.map((s) => ({ id: s.id, name: s.name })),
     canSeeAllShops: actor.isOwner,

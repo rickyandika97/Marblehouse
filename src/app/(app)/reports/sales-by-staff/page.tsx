@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Prisma } from "@prisma/client";
 import { requireManagerOrOwnerPage, asPageError } from "@/server/auth/page-guard";
 import { salesByStaff, salesSummary } from "@/server/services/reports";
@@ -45,6 +46,15 @@ export default async function SalesByStaffPage({
     salesByStaff(actor, input),
   ]).catch(asPageError);
 
+  // The drill-down carries the range and shop through, so the detail page's
+  // totals reconcile with the row that was tapped rather than resetting to the
+  // default 30-day window.
+  const detailHref = (userId: string) => {
+    const params = new URLSearchParams({ from, to });
+    if (sp.shopId) params.set("shopId", sp.shopId);
+    return `/reports/sales-by-staff/${userId}?${params.toString()}`;
+  };
+
   const average = (revenue: string, transactions: number) =>
     transactions === 0
       ? "—"
@@ -77,7 +87,14 @@ export default async function SalesByStaffPage({
         getKey={(r) => r.userId}
         empty="Nobody recorded a sale in this period."
         columns={[
-          { header: "Staff", cell: (r) => r.displayName },
+          {
+            header: "Staff",
+            cell: (r) => (
+              <Link href={detailHref(r.userId)} className="font-medium hover:underline">
+                {r.displayName}
+              </Link>
+            ),
+          },
           {
             header: "Sales",
             cell: (r) => formatAmount(r.transactions),

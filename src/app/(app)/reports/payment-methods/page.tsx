@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Prisma } from "@prisma/client";
 import { requireManagerOrOwnerPage, asPageError } from "@/server/auth/page-guard";
 import { salesSummary } from "@/server/services/reports";
@@ -48,9 +49,15 @@ export default async function PaymentMethodsPage({
       : `${new Prisma.Decimal(amount).div(total).mul(100).toFixed(1)}%`;
 
   const rows = [
-    { method: "Cash", amount: summary.cash },
-    { method: "Card / QRIS", amount: summary.edc },
+    { method: "Cash", slug: "cash", amount: summary.cash },
+    { method: "Card / QRIS", slug: "edc", amount: summary.edc },
   ];
+
+  const detailHref = (slug: string) => {
+    const params = new URLSearchParams({ from, to });
+    if (sp.shopId) params.set("shopId", sp.shopId);
+    return `/reports/payment-methods/${slug}?${params.toString()}`;
+  };
 
   return (
     <ReportShell
@@ -84,7 +91,14 @@ export default async function PaymentMethodsPage({
         getKey={(r) => r.method}
         empty="No sales in this period."
         columns={[
-          { header: "Method", cell: (r) => r.method },
+          {
+            header: "Method",
+            cell: (r) => (
+              <Link href={detailHref(r.slug)} className="font-medium hover:underline">
+                {r.method}
+              </Link>
+            ),
+          },
           { header: "Share", cell: (r) => share(r.amount), numeric: true },
           { header: "Amount", cell: (r) => formatMoney(r.amount), numeric: true },
         ]}

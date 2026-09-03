@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { requireManagerOrOwnerPage, asPageError } from "@/server/auth/page-guard";
 import { dailySales, salesByShop, salesByStaff, salesSummary } from "@/server/services/reports";
 import {
@@ -40,6 +41,16 @@ export default async function SalesReportPage({
     salesByStaff(actor, input),
   ]).catch(asPageError);
 
+  // Each table drills into the same detail its own standalone report does, so
+  // a figure means the same thing wherever it is tapped. The current range and
+  // shop ride along, and the day link additionally carries the range so its
+  // back button returns to this screen rather than resetting it.
+  const withFilters = (base: string, extra?: Record<string, string>) => {
+    const params = new URLSearchParams({ from, to, ...extra });
+    if (sp.shopId) params.set("shopId", sp.shopId);
+    return `${base}?${params.toString()}`;
+  };
+
   return (
     <ReportShell
       title="Daily Sales Summary"
@@ -73,7 +84,19 @@ export default async function SalesReportPage({
             rows={byShop.rows}
             getKey={(r) => r.shopId}
             columns={[
-              { header: "Shop", cell: (r) => r.shopName },
+              {
+                header: "Shop",
+                // The shop drill-down scopes BY the shop, so it takes only the
+                // range — a shopId as well would be the same filter twice.
+                cell: (r) => (
+                  <Link
+                    href={`/reports/sales-by-shop/${r.shopId}?${new URLSearchParams({ from, to }).toString()}`}
+                    className="font-medium hover:underline"
+                  >
+                    {r.shopName}
+                  </Link>
+                ),
+              },
               { header: "Sales", cell: (r) => formatAmount(r.transactions), numeric: true },
               { header: "Revenue", cell: (r) => formatMoney(r.revenue), numeric: true },
             ]}
@@ -86,7 +109,17 @@ export default async function SalesReportPage({
             rows={byStaff.rows}
             getKey={(r) => r.userId}
             columns={[
-              { header: "Staff", cell: (r) => r.displayName },
+              {
+                header: "Staff",
+                cell: (r) => (
+                  <Link
+                    href={withFilters(`/reports/sales-by-staff/${r.userId}`)}
+                    className="font-medium hover:underline"
+                  >
+                    {r.displayName}
+                  </Link>
+                ),
+              },
               { header: "Sales", cell: (r) => formatAmount(r.transactions), numeric: true },
               { header: "Revenue", cell: (r) => formatMoney(r.revenue), numeric: true },
             ]}
@@ -100,7 +133,17 @@ export default async function SalesReportPage({
           rows={[...daily.rows].reverse()}
           getKey={(r) => r.businessDate}
           columns={[
-            { header: "Business date", cell: (r) => r.businessDate },
+            {
+              header: "Business date",
+              cell: (r) => (
+                <Link
+                  href={withFilters(`/reports/sales/${r.businessDate}`)}
+                  className="font-medium hover:underline"
+                >
+                  {r.businessDate}
+                </Link>
+              ),
+            },
             { header: "Sales", cell: (r) => formatAmount(r.transactions), numeric: true },
             { header: "Revenue", cell: (r) => formatMoney(r.revenue), numeric: true },
           ]}

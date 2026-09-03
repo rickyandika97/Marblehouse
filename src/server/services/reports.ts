@@ -370,6 +370,336 @@ export async function salesByStaff(
   };
 }
 
+/**
+ * §9 sales drill-down — the individual sales behind ONE ROW of a sales report.
+ *
+ * Three report screens aggregate the same `Sale` rows along different axes —
+ * by staff, by shop, by payment method — and each wants the same question
+ * answered when a row is tapped: "what did these 77 transactions actually
+ * consist of?". This is that query, once, with the axis passed in.
+ *
+ * **One function, not three near-copies.** The permission reasoning below is
+ * the whole substance of a drill-down, and three pages each re-deriving it is
+ * three chances to get it subtly different. What varies between them is a
+ * single `where` clause; what must not vary is any of the rest.
+ *
+ * **It re-derives scope rather than trusting the caller.** `resolveScope` runs
+ * with the same `requireManagerAt` flag the aggregates use, so a manager who
+ * reaches this by editing the URL gets the same shop restriction they get on
+ * the report itself (D-138). For the staff axis, the person being inspected
+ * does NOT need to be a colleague at a shared shop — the filter is on the
+ * SALE's shop, not on the seller's assignments, so what comes back is exactly
+ * the subset of the aggregate the caller was already allowed to see.
+ *
+ * **`COMPLETED` only, matching `completedSalesWhere`.** Listing voided sales
+ * here would make the row count disagree with the report that linked to it —
+ * the user would count 77 in the table and find 80 on the detail page, with no
+ * way to tell which figure was wrong.
+ *
+ * Money stays `Decimal` to the edge and leaves as a string (rule 3 above); the
+ * per-payment-method split is aggregated in SQL rather than summed in JS.
+ */
+export interface DetailSaleRow {
+  id: string;
+  amount: string;
+  paymentMethod: string;
+  businessDate: string;
+  occurredAt: string;
+  isCustomAmount: boolean;
+  shopName: string;
+  presetLabel: string | null;
+  staffName: string;
+  customer: { id: string; name: string } | null;
+}
+
+export interface SalesDetail {
+  revenue: string;
+  transactions: number;
+  averageTransactionValue: string;
+  cash: string;
+  edc: string;
+  rows: DetailSaleRow[];
+  /** True when the period holds more sales than `DETAIL_PAGE_SIZE` returned. */
+  truncated: boolean;
+  scope: ResolvedScope;
+}
+
+/** One period of one row's sales. Long enough for a month of a busy shop. */
+const DETAIL_PAGE_SIZE = 500;
+
+/**
+ * Which slice of the report is being drilled into. Exactly one axis is set by
+ * each caller; they are separate optional fields rather than a discriminated
+ * union because they compose — a shop drill-down still honours the page's own
+ * `shopId` filter, and a payment-method one narrows within it.
+ */
+export interface SalesDetailFilter {
+  /** Sales RECORDED BY this user (Sales by Staff). */
+  userId?: string;
+  /** Sales paid this way (Payment Method Breakdown). */
+  paymentMethod?: "CASH" | "EDC";
+}
+
+export async function salesDetail(
+  actor: Actor,
+  input: ReportRangeInput & SalesDetailFilter
+): Promise<SalesDetail> {
+  const scope = await resolveScope(actor, input, { requireManagerAt: true });
+  const where = {
+    ...completedSalesWhere(scope),
+    ...(input.userId ? { recordedById: input.userId } : {}),
+    ...(input.paymentMethod ? { paymentMethod: input.paymentMethod } : {}),
+  };
+
+  const [agg, byMethod, rows, shops] = await Promise.all([
+    prisma.sale.aggregate({ where, _sum: { amount: true }, _count: true }),
+    prisma.sale.groupBy({ by: ["paymentMethod"], where, _sum: { amount: true } }),
+    prisma.sale.findMany({
+      where,
+      orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
+      take: DETAIL_PAGE_SIZE + 1,
+      select: {
+        id: true,
+        amount: true,
+        paymentMethod: true,
+        businessDate: true,
+        occurredAt: true,
+        isCustomAmount: true,
+        shopId: true,
+        preset: { select: { label: true } },
+        recordedBy: { select: { displayName: true } },
+        customer: { select: { id: true, name: true } },
+      },
+    }),
+    prisma.shop.findMany({
+      where: { id: { in: scope.shopIds } },
+      select: { id: true, name: true },
+    }),
+  ]);
+
+  const nameById = new Map(shops.map((sh) => [sh.id, sh.name]));
+  const revenue = agg._sum.amount ?? ZERO;
+  const transactions = agg._count;
+
+  return {
+    scope,
+    revenue: revenue.toString(),
+    transactions,
+    averageTransactionValue:
+      transactions > 0
+        ? revenue.div(transactions).toDecimalPlaces(2).toString()
+        : "0",
+    cash: sumFor(byMethod, "CASH").toString(),
+    edc: sumFor(byMethod, "EDC").toString(),
+    truncated: rows.length > DETAIL_PAGE_SIZE,
+    rows: rows.slice(0, DETAIL_PAGE_SIZE).map((r) => ({
+      id: r.id,
+      amount: r.amount.toString(),
+      paymentMethod: r.paymentMethod,
+      businessDate: isoDate(r.businessDate),
+      occurredAt: r.occurredAt.toISOString(),
+      isCustomAmount: r.isCustomAmount,
+      shopName: nameById.get(r.shopId) ?? "Unknown shop",
+      presetLabel: r.preset?.label ?? null,
+      staffName: r.recordedBy.displayName,
+      customer: r.customer ? { id: r.customer.id, name: r.customer.name } : null,
+    })),
+  };
+}
+
+/**
+ * `salesDetail` for one staff member, plus the name to title the page with.
+ *
+ * The name lookup is what makes this a separate function: an unknown `userId`
+ * has to be a `NOT_FOUND` (a typo in the URL) rather than an empty report,
+ * which would read as "this person sold nothing".
+ */
+export async function staffSalesDetail(
+  actor: Actor,
+  input: ReportRangeInput & { userId: string }
+): Promise<SalesDetail & { staff: { id: string; displayName: string } }> {
+  const [detail, staff] = await Promise.all([
+    salesDetail(actor, input),
+    prisma.user.findUnique({
+      where: { id: input.userId },
+      select: { id: true, displayName: true },
+    }),
+  ]);
+
+  if (!staff) {
+    throw new AppError("NOT_FOUND", "That staff member does not exist.");
+  }
+
+  return { ...detail, staff };
+}
+
+/**
+ * §9 Prize Redemption — the individual redemptions behind one prize row.
+ *
+ * "Who took this prize home, and when." The aggregate says a prize moved 40
+ * units; this says which 40 redemptions those were, so a suspicious number has
+ * somewhere to be checked rather than just noticed.
+ *
+ * **The cost gate is the same shape as the aggregate's, and for the same
+ * reason.** `cogsTotal` on `RedemptionLine` is OWNER-ONLY (schema comment,
+ * §7.5). A restricted viewer's query physically does not select the column —
+ * it is not selected and then blanked, which is what CLAUDE.md's cost-DTO rule
+ * forbids. `unitCost` therefore comes back `null` for them by construction,
+ * and the page renders no cost column at all rather than an empty one.
+ *
+ * **Voided redemptions are excluded**, matching `prizeRedemptionReport`: their
+ * stock and tickets went back, so counting them would make the detail disagree
+ * with the row that linked here.
+ *
+ * The prize NAME comes from `RedemptionLine.prizeName`, the immutable copy
+ * taken at redemption time — not from the live catalog. A prize renamed since
+ * is shown as it was when the customer took it (schema comment on that field).
+ */
+export interface PrizeRedemptionRow {
+  redemptionId: string;
+  qty: number;
+  tickets: number;
+  businessDate: string;
+  occurredAt: string;
+  shopName: string;
+  staffName: string;
+  customer: { id: string; name: string };
+  /** OWNER / Purchasing only — `null` means the column was never read. */
+  cost: string | null;
+}
+
+export interface PrizeRedemptionDetail {
+  prize: { id: string; name: string };
+  qty: number;
+  tickets: number;
+  redemptions: number;
+  /** OWNER / Purchasing only — `null` means the column was never read. */
+  totalCost: string | null;
+  rows: PrizeRedemptionRow[];
+  truncated: boolean;
+  scope: ResolvedScope;
+}
+
+export async function prizeRedemptionDetail(
+  actor: Actor,
+  input: ReportRangeInput & { prizeItemId: string }
+): Promise<PrizeRedemptionDetail> {
+  const scope = await resolveScope(actor, input, { requireManagerAt: true });
+  const withCost = canSeeCostForScope(actor, scope);
+
+  const where = {
+    prizeItemId: input.prizeItemId,
+    redemption: {
+      shopId: { in: scope.shopIds },
+      businessDate: { gte: scope.from, lte: scope.to },
+      isVoided: false,
+    },
+  };
+
+  // Two selects, not one with a conditional spread: the restricted branch must
+  // be a query that cannot return the cost column, not a query that returns it
+  // and is trusted to drop it later.
+  const redemptionSelect = {
+    id: true,
+    businessDate: true,
+    occurredAt: true,
+    shopId: true,
+    user: { select: { displayName: true } },
+    customer: { select: { id: true, name: true } },
+  } as const;
+
+  const [lines, prize, shops] = await Promise.all([
+    withCost
+      ? prisma.redemptionLine.findMany({
+          where,
+          orderBy: [{ redemption: { occurredAt: "desc" } }, { id: "desc" }],
+          take: DETAIL_PAGE_SIZE + 1,
+          select: {
+            id: true,
+            qty: true,
+            ticketCostTotal: true,
+            prizeName: true,
+            cogsTotal: true,
+            redemption: { select: redemptionSelect },
+          },
+        })
+      : prisma.redemptionLine
+          .findMany({
+            where,
+            orderBy: [{ redemption: { occurredAt: "desc" } }, { id: "desc" }],
+            take: DETAIL_PAGE_SIZE + 1,
+            select: {
+              id: true,
+              qty: true,
+              ticketCostTotal: true,
+              prizeName: true,
+              redemption: { select: redemptionSelect },
+            },
+          })
+          .then((rows) => rows.map((r) => ({ ...r, cogsTotal: null }))),
+    prisma.prizeItem.findUnique({
+      where: { id: input.prizeItemId },
+      select: { id: true, name: true },
+    }),
+    prisma.shop.findMany({
+      where: { id: { in: scope.shopIds } },
+      select: { id: true, name: true },
+    }),
+  ]);
+
+  // A prize id that matches nothing is a typo in the URL, not an empty report.
+  if (!prize) {
+    throw new AppError("NOT_FOUND", "That prize does not exist.");
+  }
+
+  const nameById = new Map(shops.map((sh) => [sh.id, sh.name]));
+  const page = lines.slice(0, DETAIL_PAGE_SIZE);
+
+  // Totals come from the full matching set, not the page, so a truncated list
+  // still reconciles with the report row that linked here.
+  const totals = await prisma.redemptionLine.aggregate({
+    where,
+    _sum: { qty: true, ticketCostTotal: true },
+    _count: true,
+  });
+
+  const totalCost = withCost
+    ? lines.reduce(
+        (sum, l) => sum.add(l.cogsTotal ?? ZERO),
+        ZERO
+      )
+    : null;
+
+  return {
+    scope,
+    prize,
+    qty: totals._sum.qty ?? 0,
+    tickets: totals._sum.ticketCostTotal ?? 0,
+    redemptions: totals._count,
+    // Only meaningful when the whole set fits on the page — say so rather than
+    // presenting a page-sized subtotal as if it were the period's cost.
+    totalCost:
+      totalCost !== null && lines.length <= DETAIL_PAGE_SIZE
+        ? totalCost.toString()
+        : null,
+    truncated: lines.length > DETAIL_PAGE_SIZE,
+    rows: page.map((l) => ({
+      redemptionId: l.redemption.id,
+      qty: l.qty,
+      tickets: l.ticketCostTotal,
+      businessDate: isoDate(l.redemption.businessDate),
+      occurredAt: l.redemption.occurredAt.toISOString(),
+      shopName: nameById.get(l.redemption.shopId) ?? "Unknown shop",
+      staffName: l.redemption.user.displayName,
+      customer: {
+        id: l.redemption.customer.id,
+        name: l.redemption.customer.name,
+      },
+      cost: l.cogsTotal ? l.cogsTotal.toString() : null,
+    })),
+  };
+}
+
 // ─────────────────────────── TICKETS & LIABILITY ───────────────────────────
 
 /**

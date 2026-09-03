@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Prisma } from "@prisma/client";
 import { requireManagerOrOwnerPage, asPageError } from "@/server/auth/page-guard";
 import { salesByShop, salesSummary } from "@/server/services/reports";
@@ -42,6 +43,11 @@ export default async function SalesByShopPage({
     salesByShop(actor, input),
   ]).catch(asPageError);
 
+  // The drill-down scopes BY the shop, so it carries only the range — a
+  // shopId in the query string would be the same filter twice.
+  const detailHref = (shopId: string) =>
+    `/reports/sales-by-shop/${shopId}?${new URLSearchParams({ from, to }).toString()}`;
+
   const total = new Prisma.Decimal(summary.revenue);
   const share = (revenue: string) =>
     total.isZero()
@@ -75,7 +81,14 @@ export default async function SalesByShopPage({
         getKey={(r) => r.shopId}
         empty="No sales at any branch in this period."
         columns={[
-          { header: "Shop", cell: (r) => r.shopName },
+          {
+            header: "Shop",
+            cell: (r) => (
+              <Link href={detailHref(r.shopId)} className="font-medium hover:underline">
+                {r.shopName}
+              </Link>
+            ),
+          },
           {
             header: "Sales",
             cell: (r) => formatAmount(r.transactions),

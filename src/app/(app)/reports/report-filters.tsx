@@ -36,6 +36,7 @@ export function ReportFilters({
   businessDate,
   outsideSchedule,
   showOutsideSchedule,
+  hideDateControls,
 }: {
   from: string;
   to: string;
@@ -46,6 +47,14 @@ export function ReportFilters({
   businessDate: string;
   outsideSchedule?: boolean;
   showOutsideSchedule?: boolean;
+  /**
+   * Drop the presets and the range picker, keeping the shop picker (D-180).
+   *
+   * For a screen whose date is fixed by its own URL — the day drill-down —
+   * where a range control could be set to disagree with the date in the path,
+   * leaving the reader no way to tell which one the figures came from.
+   */
+  hideDateControls?: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -77,44 +86,56 @@ export function ReportFilters({
   return (
     <div className="space-y-3 rounded-lg border p-3">
       {/* ── Presets: the questions actually asked daily, one tap each ── */}
-      <div className="flex flex-wrap gap-2">
-        {presets.map((p) => (
-          <Button
-            key={p.label}
-            size="sm"
-            variant={activePreset?.label === p.label ? "default" : "outline"}
-            onClick={() => apply({ from: p.from, to: p.to })}
-            disabled={pending}
-          >
-            {p.label}
-          </Button>
-        ))}
-        {showOutsideSchedule && (
-          <Button
-            size="sm"
-            variant={outsideSchedule ? "default" : "outline"}
-            onClick={() => apply({ outsideSchedule: !outsideSchedule })}
-            disabled={pending}
-          >
-            Outside schedule
-          </Button>
-        )}
-      </div>
+      {!hideDateControls && (
+        <div className="flex flex-wrap gap-2">
+          {presets.map((p) => (
+            <Button
+              key={p.label}
+              size="sm"
+              variant={activePreset?.label === p.label ? "default" : "outline"}
+              onClick={() => apply({ from: p.from, to: p.to })}
+              disabled={pending}
+            >
+              {p.label}
+            </Button>
+          ))}
+          {showOutsideSchedule && (
+            <Button
+              size="sm"
+              variant={outsideSchedule ? "default" : "outline"}
+              onClick={() => apply({ outsideSchedule: !outsideSchedule })}
+              disabled={pending}
+            >
+              Outside schedule
+            </Button>
+          )}
+        </div>
+      )}
 
       <div className="flex flex-wrap items-end gap-3">
         {/* ── Custom range ── */}
-        <DateRangePicker
-          from={from}
-          to={to}
-          max={businessDate}
-          onChange={(nextFrom, nextTo) => {
-            if (nextFrom && nextTo) apply({ from: nextFrom, to: nextTo });
-          }}
-        />
+        {!hideDateControls && (
+          <DateRangePicker
+            from={from}
+            to={to}
+            max={businessDate}
+            onChange={(nextFrom, nextTo) => {
+              if (nextFrom && nextTo) apply({ from: nextFrom, to: nextTo });
+            }}
+          />
+        )}
 
         {/* ── Shop ── */}
         {shops.length > 0 && (
-          <label className="ml-auto flex flex-col gap-1 text-xs font-medium text-muted-foreground">
+          <label
+            className={cn(
+              "flex flex-col gap-1 text-xs font-medium text-muted-foreground",
+              // Pushed right only when there is a range picker to be pushed
+              // away FROM; alone in the row it reads as a stray control
+              // floating in an empty box.
+              !hideDateControls && "ml-auto"
+            )}
+          >
             Shop
             <select
               value={shopId ?? ""}

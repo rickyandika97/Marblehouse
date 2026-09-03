@@ -23,6 +23,10 @@ import {
   salesSummary,
   dailySales,
   salesByShop,
+  salesByStaff,
+  staffSalesDetail,
+  salesDetail,
+  prizeRedemptionDetail,
   liabilityReport,
   prizeExpenseReport,
   stockValuation,
@@ -334,6 +338,384 @@ describe("dailySales / salesByShop", () => {
     expect(mine[0]!.shopId).toBe(shopB);
     expect(mine[0]!.revenue).toBe("90000");
     expect(mine[1]!.revenue).toBe("10000");
+  });
+});
+
+describe("staffSalesDetail (§9 Sales by Staff drill-down)", () => {
+  it("reconciles exactly with the aggregate row it drills into", async () => {
+    // 3 sales for staff, 1 for the manager. Revenue by hand: 10+20+30 = 60.000,
+    // ATV 20.000, and the manager's 99.000 must not leak into either.
+    await makeSale({ shopId: shopA, amount: 10_000, userId: staffId });
+    await makeSale({ shopId: shopA, amount: 20_000, userId: staffId });
+    await makeSale({ shopId: shopA, amount: 30_000, userId: staffId, paymentMethod: "EDC" });
+    await makeSale({ shopId: shopA, amount: 99_000, userId: managerId });
+
+    const owner = actorFor("OWNER");
+    const input = { shopId: shopA, ...range };
+
+    const aggregate = await salesByStaff(owner, input);
+    const row = aggregate.rows.find((r) => r.userId === staffId)!;
+    const detail = await staffSalesDetail(owner, { ...input, userId: staffId });
+
+    // The point of the drill-down: the header must equal the row tapped.
+    expect(detail.revenue).toBe(row.revenue);
+    expect(detail.transactions).toBe(row.transactions);
+    expect(detail.revenue).toBe("60000");
+    expect(detail.transactions).toBe(3);
+    expect(detail.averageTransactionValue).toBe("20000");
+    expect(detail.cash).toBe("30000");
+    expect(detail.edc).toBe("30000");
+
+    expect(detail.staff.id).toBe(staffId);
+    expect(detail.rows).toHaveLength(3);
+    expect(detail.rows.every((r) => r.shopName.includes("Report A"))).toBe(true);
+    // Nobody else's sale is in the list.
+    expect(detail.rows.map((r) => r.amount).sort()).toEqual([
+      "10000",
+      "20000",
+      "30000",
+    ]);
+  });
+
+  it("excludes voided sales, so the count cannot disagree with the report", async () => {
+    await makeSale({ shopId: shopA, amount: 10_000, userId: staffId });
+    await makeSale({ shopId: shopA, amount: 50_000, userId: staffId, status: "VOIDED" });
+
+    const detail = await staffSalesDetail(actorFor("OWNER"), {
+      shopId: shopA,
+      ...range,
+      userId: staffId,
+    });
+
+    expect(detail.transactions).toBe(1);
+    expect(detail.revenue).toBe("10000");
+    expect(detail.rows).toHaveLength(1);
+  });
+
+  it("never shows a manager a sale from a shop they are not assigned to", async () => {
+    await makeSale({ shopId: shopA, amount: 10_000, userId: staffId });
+    await makeSale({ shopId: shopB, amount: 70_000, userId: staffId });
+
+    // Manager at A only. The same staff member sold at both branches.
+    const mgr = actorFor("MANAGER", { shopIds: [shopA] });
+    const detail = await staffSalesDetail(mgr, { ...range, userId: staffId });
+
+    expect(detail.revenue).toBe("10000");
+    expect(detail.rows).toHaveLength(1);
+    expect(detail.rows[0]!.amount).toBe("10000");
+
+    // And asking for B by id is a 403, not a silent empty list (R-4).
+    await expect(
+      staffSalesDetail(mgr, { ...range, shopId: shopB, userId: staffId })
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("403s a STAFF actor rather than exposing a colleague's sales (D-138)", async () => {
+    await makeSale({ shopId: shopA, amount: 10_000, userId: managerId });
+
+    await expect(
+      staffSalesDetail(actorFor("STAFF", { userId: staffId, shopIds: [shopA] }), {
+        shopId: shopA,
+        ...range,
+        userId: managerId,
+      })
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("404s an unknown user id instead of rendering an empty report", async () => {
+    await expect(
+      staffSalesDetail(actorFor("OWNER"), {
+        shopId: shopA,
+        ...range,
+        userId: "nope-not-a-user",
+      })
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("returns walk-ins as a null customer, not a crash", async () => {
+    await makeSale({ shopId: shopA, amount: 15_000, userId: staffId, customerId: null });
+
+    const detail = await staffSalesDetail(actorFor("OWNER"), {
+      shopId: shopA,
+      ...range,
+      userId: staffId,
+    });
+
+    expect(detail.rows).toHaveLength(1);
+    expect(detail.rows[0]!.customer).toBeNull();
+  });
+});
+
+describe("salesDetail — the shop and payment-method axes (§9 drill-downs)", () => {
+  it("scopes to one shop and reconciles with that shop's aggregate row", async () => {
+    await makeSale({ shopId: shopA, amount: 10_000 });
+    await makeSale({ shopId: shopA, amount: 20_000 });
+    await makeSale({ shopId: shopB, amount: 90_000 });
+
+    const owner = actorFor("OWNER", { shopIds: [shopA, shopB] });
+    const aggregate = await salesByShop(owner, { ...range });
+    const row = aggregate.rows.find((r) => r.shopId === shopA)!;
+    const detail = await salesDetail(owner, { ...range, shopId: shopA });
+
+    expect(detail.revenue).toBe(row.revenue);
+    expect(detail.transactions).toBe(row.transactions);
+    expect(detail.revenue).toBe("30000");
+    expect(detail.rows).toHaveLength(2);
+    // shopB's 90.000 must not appear on shopA's page.
+    expect(detail.rows.map((r) => r.amount)).not.toContain("90000");
+  });
+
+  it("scopes to one payment method and reconciles with the summary split", async () => {
+    await makeSale({ shopId: shopA, amount: 10_000, paymentMethod: "CASH" });
+    await makeSale({ shopId: shopA, amount: 25_000, paymentMethod: "CASH" });
+    await makeSale({ shopId: shopA, amount: 40_000, paymentMethod: "EDC" });
+
+    const owner = actorFor("OWNER");
+    const input = { shopId: shopA, ...range };
+    const summary = await salesSummary(owner, input);
+
+    const cash = await salesDetail(owner, { ...input, paymentMethod: "CASH" });
+    const edc = await salesDetail(owner, { ...input, paymentMethod: "EDC" });
+
+    // The drill-down total IS the figure on the breakdown screen.
+    expect(cash.revenue).toBe(summary.cash);
+    expect(edc.revenue).toBe(summary.edc);
+    expect(cash.revenue).toBe("35000");
+    expect(cash.rows).toHaveLength(2);
+    expect(cash.rows.every((r) => r.paymentMethod === "CASH")).toBe(true);
+    expect(edc.rows).toHaveLength(1);
+  });
+
+  it("composes the method filter with the shop filter rather than replacing it", async () => {
+    // Every combination is present, so dropping EITHER filter changes the
+    // answer. A fixture where only one of them bites would stay green while
+    // the other was broken (D-34).
+    await makeSale({ shopId: shopA, amount: 10_000, paymentMethod: "CASH" });
+    await makeSale({ shopId: shopA, amount: 5_000, paymentMethod: "EDC" });
+    await makeSale({ shopId: shopB, amount: 70_000, paymentMethod: "CASH" });
+    await makeSale({ shopId: shopB, amount: 3_000, paymentMethod: "EDC" });
+
+    const detail = await salesDetail(actorFor("OWNER", { shopIds: [shopA, shopB] }), {
+      ...range,
+      shopId: shopA,
+      paymentMethod: "CASH",
+    });
+
+    expect(detail.revenue).toBe("10000");
+    expect(detail.rows).toHaveLength(1);
+  });
+
+  it("excludes voided sales on every axis", async () => {
+    await makeSale({ shopId: shopA, amount: 10_000, paymentMethod: "CASH" });
+    await makeSale({
+      shopId: shopA,
+      amount: 50_000,
+      paymentMethod: "CASH",
+      status: "VOIDED",
+    });
+
+    const detail = await salesDetail(actorFor("OWNER"), {
+      shopId: shopA,
+      ...range,
+      paymentMethod: "CASH",
+    });
+
+    expect(detail.transactions).toBe(1);
+    expect(detail.revenue).toBe("10000");
+  });
+
+  it("403s a manager asking for a branch they do not manage (R-4)", async () => {
+    await makeSale({ shopId: shopB, amount: 70_000 });
+
+    await expect(
+      salesDetail(actorFor("MANAGER", { shopIds: [shopA] }), {
+        ...range,
+        shopId: shopB,
+      })
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("names the seller on each row, so a shop page can show who sold it", async () => {
+    await makeSale({ shopId: shopA, amount: 10_000, userId: managerId });
+
+    const detail = await salesDetail(actorFor("OWNER"), { ...range, shopId: shopA });
+
+    expect(detail.rows[0]!.staffName).toContain("R8 mgr");
+  });
+});
+
+describe("salesDetail — the day axis (Daily Sales Summary drill-down)", () => {
+  it("returns one business day and reconciles with that day's aggregate row", async () => {
+    await makeSale({ shopId: shopA, amount: 5_000, businessDate: YESTERDAY });
+    await makeSale({ shopId: shopA, amount: 7_000, businessDate: DAY });
+    await makeSale({ shopId: shopA, amount: 3_000, businessDate: DAY });
+
+    const owner = actorFor("OWNER");
+    const span = { shopId: shopA, from: iso(YESTERDAY), to: iso(DAY) };
+
+    const aggregate = await dailySales(owner, span);
+    const row = aggregate.rows.find((r) => r.businessDate === iso(DAY))!;
+    // A day page is the same query with the range collapsed to one date.
+    const detail = await salesDetail(owner, {
+      shopId: shopA,
+      from: iso(DAY),
+      to: iso(DAY),
+    });
+
+    expect(detail.revenue).toBe(row.revenue);
+    expect(detail.transactions).toBe(row.transactions);
+    expect(detail.revenue).toBe("10000");
+    expect(detail.rows).toHaveLength(2);
+    // Yesterday's 5.000 belongs to yesterday's page, not this one.
+    expect(detail.rows.map((r) => r.amount)).not.toContain("5000");
+    expect(detail.rows.every((r) => r.businessDate === iso(DAY))).toBe(true);
+  });
+
+  /**
+   * The §4.2 boundary, which is the one thing a day page can get wrong in a way
+   * that looks right.
+   *
+   * A sale recorded at 01:00 is filed under the PREVIOUS business day (D-18).
+   * The drill-down filters on `businessDate`, so it must follow the row it
+   * links from — not the calendar date of `occurredAt`. Getting this wrong
+   * moves a sale between two days that both still look plausible.
+   */
+  it("follows businessDate, not the clock date of the sale", async () => {
+    // Filed under DAY, but rung up at 01:00 on the following calendar date.
+    const afterMidnight = new Date(`${iso(DAY)}T18:00:00.000Z`);
+    afterMidnight.setUTCDate(afterMidnight.getUTCDate() + 1);
+    afterMidnight.setUTCHours(1, 0, 0, 0);
+
+    await prisma.sale.create({
+      data: {
+        shopId: shopA,
+        recordedById: staffId,
+        customerId,
+        amount: new Prisma.Decimal(12_000),
+        paymentMethod: "CASH",
+        status: "COMPLETED",
+        businessDate: DAY,
+        occurredAt: afterMidnight,
+      },
+    });
+
+    const detail = await salesDetail(actorFor("OWNER"), {
+      shopId: shopA,
+      from: iso(DAY),
+      to: iso(DAY),
+    });
+
+    expect(detail.transactions).toBe(1);
+    expect(detail.rows[0]!.businessDate).toBe(iso(DAY));
+    // The clock time is preserved as it happened — the row is on DAY's page
+    // while reading 01:00, which is correct, not a formatting bug.
+    expect(detail.rows[0]!.occurredAt).toBe(afterMidnight.toISOString());
+  });
+});
+
+describe("prizeRedemptionDetail (§9 Prize Redemption drill-down)", () => {
+  it("reconciles with the aggregate row it drills into", async () => {
+    await makeRedemption({ shopId: shopA, qty: 2, ticketCostTotal: 200, cogsTotal: 3_000 });
+    await makeRedemption({ shopId: shopA, qty: 1, ticketCostTotal: 100, cogsTotal: 1_000 });
+
+    const owner = actorFor("OWNER");
+    const input = { shopId: shopA, ...range };
+
+    const aggregate = await prizeRedemptionReport(owner, input);
+    const row = aggregate.byItem.find((r) => r.prizeItemId === prizeId)!;
+    const detail = await prizeRedemptionDetail(owner, { ...input, prizeItemId: prizeId });
+
+    expect(detail.qty).toBe(row.qty);
+    expect(detail.tickets).toBe(row.tickets);
+    expect(detail.totalCost).toBe(row.cogs);
+    expect(detail.qty).toBe(3);
+    expect(detail.tickets).toBe(300);
+    expect(detail.totalCost).toBe("4000");
+    expect(detail.redemptions).toBe(2);
+    expect(detail.rows).toHaveLength(2);
+    expect(detail.prize.id).toBe(prizeId);
+  });
+
+  it("excludes voided redemptions — their stock and tickets went back", async () => {
+    await makeRedemption({ shopId: shopA, qty: 2, ticketCostTotal: 200, cogsTotal: 3_000 });
+    await makeRedemption({
+      shopId: shopA,
+      qty: 9,
+      ticketCostTotal: 9_999,
+      cogsTotal: 99_999,
+      isVoided: true,
+    });
+
+    const detail = await prizeRedemptionDetail(actorFor("OWNER"), {
+      shopId: shopA,
+      ...range,
+      prizeItemId: prizeId,
+    });
+
+    expect(detail.qty).toBe(2);
+    expect(detail.redemptions).toBe(1);
+    expect(detail.rows).toHaveLength(1);
+  });
+
+  /**
+   * The §7.5 check, asserted on the ROW rather than only the total.
+   *
+   * A restricted viewer must not merely see a nulled total — the per-row cost
+   * must be absent too, because the query on that branch does not select the
+   * column. A mutation that selected `cogsTotal` anyway and nulled it on the
+   * way out would pass a total-only assertion (D-62's shape).
+   */
+  it("gives a plain MANAGER the activity but no cost, per row and in total", async () => {
+    await makeRedemption({ shopId: shopA, qty: 2, ticketCostTotal: 200, cogsTotal: 3_000 });
+
+    const detail = await prizeRedemptionDetail(actorFor("MANAGER"), {
+      shopId: shopA,
+      ...range,
+      prizeItemId: prizeId,
+    });
+
+    expect(detail.qty).toBe(2);
+    expect(detail.tickets).toBe(200);
+    expect(detail.totalCost).toBeNull();
+    expect(detail.rows).toHaveLength(1);
+    expect(detail.rows[0]!.cost).toBeNull();
+  });
+
+  it("gives a Purchasing manager the cost at their own shop", async () => {
+    await makeRedemption({ shopId: shopA, qty: 1, ticketCostTotal: 100, cogsTotal: 2_500 });
+
+    const detail = await prizeRedemptionDetail(
+      actorFor("MANAGER", { shopIds: [shopA], canEnterCost: true }),
+      { shopId: shopA, ...range, prizeItemId: prizeId }
+    );
+
+    expect(detail.totalCost).toBe("2500");
+    expect(detail.rows[0]!.cost).toBe("2500");
+  });
+
+  it("404s an unknown prize id instead of rendering an empty report", async () => {
+    await expect(
+      prizeRedemptionDetail(actorFor("OWNER"), {
+        shopId: shopA,
+        ...range,
+        prizeItemId: "nope-not-a-prize",
+      })
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("never shows a manager a redemption from a shop they do not manage", async () => {
+    await makeRedemption({ shopId: shopA, qty: 1, ticketCostTotal: 100, cogsTotal: 500 });
+    await makeRedemption({ shopId: shopB, qty: 7, ticketCostTotal: 700, cogsTotal: 900 });
+
+    const mgr = actorFor("MANAGER", { shopIds: [shopA] });
+    const detail = await prizeRedemptionDetail(mgr, { ...range, prizeItemId: prizeId });
+
+    expect(detail.qty).toBe(1);
+    expect(detail.rows).toHaveLength(1);
+
+    await expect(
+      prizeRedemptionDetail(mgr, { ...range, shopId: shopB, prizeItemId: prizeId })
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 });
 

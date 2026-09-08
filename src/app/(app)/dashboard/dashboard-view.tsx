@@ -12,6 +12,7 @@ import { formatAmount, formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import type { Dashboard } from "@/server/services/dashboard";
 import { DashboardShopPicker } from "./shop-picker";
+import { ManagerSalesPerformance } from "./manager-sales-performance";
 import { OwnerRevenueByShop } from "./owner-revenue-by-shop";
 import { OwnerSalesPerformance } from "./owner-sales-performance";
 
@@ -249,18 +250,7 @@ function ManagerSalesOverview({
       </section>
 
       <section className="grid gap-3 lg:grid-cols-2">
-        <Card>
-          <CardHeader className="border-b pb-3">
-            <div className="flex flex-wrap items-center justify-between gap-x-5 gap-y-2">
-              <CardTitle>Sales performance</CardTitle>
-              <ChartLegend />
-            </div>
-            <p className="text-xs text-muted-foreground">Last 30 days</p>
-          </CardHeader>
-          <CardContent className="pt-4">
-            <SalesPerformanceChart points={dashboard.trend30d} />
-          </CardContent>
-        </Card>
+        <ManagerSalesPerformance points={dashboard.trend180d} />
 
         <Card>
           <CardHeader className="border-b pb-3">
@@ -311,20 +301,6 @@ function Figure({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ChartLegend() {
-  return (
-    <div className="flex items-center gap-4 text-xs text-muted-foreground" aria-label="Chart legend">
-      <span className="flex items-center gap-1.5">
-        <i className="size-2 rounded-sm bg-stone-300" aria-hidden />
-        Revenue
-      </span>
-      <span className="flex items-center gap-1.5">
-        <i className="h-0.5 w-3 rounded bg-blue-500" aria-hidden />
-        Orders
-      </span>
-    </div>
-  );
-}
 
 /**
  * A server-rendered revenue-and-orders chart. Unlike the old sparkline, it
@@ -332,98 +308,6 @@ function ChartLegend() {
  * and order volume their own scales — the compact visual hierarchy used by the
  * sales-performance reference without adding a client-side chart library.
  */
-function SalesPerformanceChart({
-  points,
-}: {
-  points: { businessDate: string; revenue: string; transactions: number }[];
-}) {
-  if (points.length === 0) {
-    return <p className="text-sm text-muted-foreground">No sales in this period yet.</p>;
-  }
-
-  const revenues = points.map((p) => Number(p.revenue));
-  const orders = points.map((p) => p.transactions);
-  const total = revenues.reduce((sum, value) => sum + value, 0);
-  const maxRevenue = Math.max(...revenues, 1);
-  const maxOrders = Math.max(...orders, 1);
-  const left = 8;
-  const right = 96;
-  const top = 5;
-  const bottom = 39;
-  const width = right - left;
-  const height = bottom - top;
-  const step = points.length > 1 ? width / (points.length - 1) : width;
-  const barWidth = Math.min(step * 0.58, 2.2);
-  const orderPath = orders
-    .map((value, index) => {
-      const x = left + index * step;
-      const y = bottom - (value / maxOrders) * height;
-      return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
-    })
-    .join(" ");
-  const dateLabel = (index: number) =>
-    new Intl.DateTimeFormat("id-ID", {
-      day: "numeric",
-      month: "short",
-      timeZone: "UTC",
-    }).format(new Date(`${points[index]!.businessDate}T00:00:00.000Z`));
-
-  return (
-    <div>
-      <svg
-        viewBox="0 0 100 48"
-        preserveAspectRatio="none"
-        className="h-52 w-full"
-        role="img"
-        aria-label={`Revenue and orders over the last ${points.length} days`}
-      >
-        {[top, top + height / 3, top + (height * 2) / 3, bottom].map((y) => (
-          <line
-            key={y}
-            x1={left}
-            x2={right}
-            y1={y}
-            y2={y}
-            className="stroke-border"
-            strokeWidth="0.25"
-            vectorEffect="non-scaling-stroke"
-          />
-        ))}
-        {revenues.map((value, index) => {
-          const barHeight = (value / maxRevenue) * height;
-          const x = left + index * step - barWidth / 2;
-          return (
-            <rect
-              key={points[index]!.businessDate}
-              x={x}
-              y={bottom - barHeight}
-              width={barWidth}
-              height={barHeight}
-              rx="0.35"
-              className="fill-stone-300 dark:fill-stone-700"
-            />
-          );
-        })}
-        <path
-          d={orderPath}
-          fill="none"
-          className="stroke-blue-500"
-          strokeWidth="1.25"
-          strokeDasharray="2 1.3"
-          vectorEffect="non-scaling-stroke"
-        />
-      </svg>
-      <div className="-mt-2 flex justify-between pl-[8%] pr-[4%] text-[11px] text-muted-foreground">
-        <span>{dateLabel(0)}</span>
-        <span>{dateLabel(Math.floor((points.length - 1) / 2))}</span>
-        <span>{dateLabel(points.length - 1)}</span>
-      </div>
-      <p className="mt-3 text-sm text-muted-foreground">
-        {formatMoney(total)} across {formatAmount(orders.reduce((sum, value) => sum + value, 0))} orders
-      </p>
-    </div>
-  );
-}
 
 
 function PaymentSplit({ split }: { split: { cash: string; edc: string } }) {

@@ -1012,6 +1012,53 @@ describe("cost gating (§7.5, §15)", () => {
   });
 });
 
+describe("manager sales trend (D-183 period switcher)", () => {
+  it("carries 180 daily points so the switcher can reach 90 days", async () => {
+    const result = await getDashboard(actorFor("MANAGER", { shopIds: [shopA] }), {
+      shopId: shopA,
+    });
+
+    if (result.role !== "MANAGER") throw new Error("expected the manager payload");
+    expect(result.trend180d).toHaveLength(180);
+    // Contiguous calendar days ending on the business date — gaps are zeroed,
+    // never omitted, or the chart would compress a quiet week.
+    expect(result.trend180d.at(-1)!.businessDate).toBe(iso(DAY));
+  });
+
+  /**
+   * §8.4 — THE COST BOUNDARY. A manager gets their branch's takings and no
+   * profit. Widening the window (D-183) must never widen the COLUMNS, so this
+   * asserts the absence of the field rather than trusting the type alone.
+   */
+  it("never puts grossProfit on a manager's trend point", async () => {
+    await makeSale({ shopId: shopA, amount: 10_000 });
+
+    const result = await getDashboard(actorFor("MANAGER", { shopIds: [shopA] }), {
+      shopId: shopA,
+    });
+
+    if (result.role !== "MANAGER") throw new Error("expected the manager payload");
+    for (const point of result.trend180d) {
+      expect(point).not.toHaveProperty("grossProfit");
+    }
+    expect(result).not.toHaveProperty("revenueByShopDaily");
+  });
+
+  it("still reports the shop's own revenue on the widened window", async () => {
+    await makeSale({ shopId: shopA, amount: 10_000 });
+    await makeSale({ shopId: shopB, amount: 90_000 });
+
+    const result = await getDashboard(actorFor("MANAGER", { shopIds: [shopA] }), {
+      shopId: shopA,
+    });
+
+    if (result.role !== "MANAGER") throw new Error("expected the manager payload");
+    const today = result.trend180d.find((p) => p.businessDate === iso(DAY))!;
+    // shopB's 90.000 must not appear — one branch, not the group.
+    expect(today.revenue).toBe("10000");
+  });
+});
+
 // ─────────────────────────── COST METRICS ───────────────────────────
 
 describe("prize expense vs shrinkage (§9 — mixing them hides theft)", () => {

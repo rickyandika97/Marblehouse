@@ -94,7 +94,8 @@ export interface ManagerDashboard {
   shopId: string;
   shopName: string;
   today: TodayRow;
-  trend30d: TrendPoint[];
+  /** 180 days of REVENUE ONLY — see `managerTrend180d` on the cost boundary. */
+  trend180d: TrendPoint[];
   paymentSplit: { cash: string; edc: string };
   alerts: AlertsPanel;
   /** Quantities only — §8.4 strips every liability VALUE. */
@@ -373,7 +374,7 @@ async function managerDashboard(
         select: { id: true, name: true },
       }),
       todayFigures(actor, todayInput, scope),
-      trend30d(actor, { ...input, shopId }, actor.businessDate),
+      managerTrend180d(actor, { ...input, shopId }, actor.businessDate),
       salesSummary(actor, todayInput),
       sharedAlerts(actor, scope),
       liabilityReport(actor, { ...input, shopId }),
@@ -385,7 +386,7 @@ async function managerDashboard(
     shopId,
     shopName: shop?.name ?? "Unknown shop",
     today: todayRow,
-    trend30d: trend,
+    trend180d: trend,
     paymentSplit: { cash: todaySummaryRow.cash, edc: todaySummaryRow.edc },
     alerts,
     // Quantities only. `liabilityReport` already returns null for the valued
@@ -435,22 +436,33 @@ async function todayFigures(
   };
 }
 
-async function trend30d(
+/**
+ * A manager's daily revenue series.
+ *
+ * 180 days, matching `ownerTrend180d`'s window, so the manager's chart can
+ * offer the same period switcher (D-183). **The POINT SHAPE stays
+ * `TrendPoint` — revenue and transactions only, never `grossProfit`.** That is
+ * the whole cost boundary on this path: §8.4 gives a manager their branch's
+ * takings and withholds profit, so widening the window must not quietly widen
+ * the columns. If you ever need profit here, that is a §8.4 change, not a
+ * tweak to this function.
+ */
+async function managerTrend180d(
   actor: Actor,
   input: ReportRangeInput,
   businessDate: Date
 ): Promise<TrendPoint[]> {
   const { rows } = await dailySales(actor, {
     ...input,
-    from: isoDate(addDays(businessDate, -29)),
+    from: isoDate(addDays(businessDate, -179)),
     to: isoDate(businessDate),
   });
   // `groupBy` omits days with no completed sale. A chart whose points are only
   // sale days makes a quiet week look like a compressed busy one, so preserve
-  // each of the 30 calendar slots and explicitly represent the gaps as zero.
+  // each calendar slot and explicitly represent the gaps as zero.
   const byDate = new Map(rows.map((row) => [row.businessDate, row]));
-  const firstDay = addDays(businessDate, -29);
-  return Array.from({ length: 30 }, (_, offset) => {
+  const firstDay = addDays(businessDate, -179);
+  return Array.from({ length: 180 }, (_, offset) => {
     const businessDate = isoDate(addDays(firstDay, offset));
     return byDate.get(businessDate) ?? { businessDate, revenue: "0", transactions: 0 };
   });

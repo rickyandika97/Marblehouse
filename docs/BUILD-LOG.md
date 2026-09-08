@@ -7898,3 +7898,72 @@ src/app/(app)/dashboard/owner-revenue-by-shop.tsx    NEW: period switcher + bars
 src/app/(app)/dashboard/dashboard-view.tsx           TOUCHED: swaps the card; old ShopBars removed.
 src/server/services/__tests__/reports.test.ts        + 4 tests incl. reconciliation with salesByShop.
 ```
+
+### D-183 · The manager gets the period switcher too
+
+The owner asked why the two roles saw different controls. They should not —
+that was an inconsistency introduced by D-181/D-182 touching only the owner's
+cards, not a deliberate split. A manager runs one branch day to day, so "how
+did last week go" is exactly their question, and the switcher reslices only
+their own shop's revenue, which §8.4 already shows them. No new information is
+exposed.
+
+**The window widened; the COLUMNS did not.** `trend30d` became
+`managerTrend180d` (180 days, matching `ownerTrend180d`) so the switcher can
+reach 90 days — the old payload simply had no data past 30. The point shape
+stays `TrendPoint`: revenue and transactions, **never `grossProfit`**. That is
+the entire cost boundary on this path, and it is asserted in a test rather than
+left to the type — a cast defeats the type, and did: sabotaging the function to
+attach `grossProfit` compiled clean and was caught only by the test.
+
+The manager payload's field was renamed `trend30d` → `trend180d` to stop the
+name lying about its length. The OWNER payload keeps both: `trend30d` there is
+a genuine 30-point slice used by other tiles.
+
+**A render-prop cost a broken page, and the role sweep is what caught it.**
+The first attempt passed the chart into the card as `children={(series) => …}`.
+`dashboard-view.tsx` is a SERVER component, so a function child cannot cross
+the boundary: React threw "Functions are not valid as a child of Client
+Components" and the manager dashboard rendered the error screen. **`typecheck`
+and `lint` both passed on it.** Fixed by moving `SalesPerformanceChart` and
+`ChartLegend` into the client component, so the whole card sits on one side of
+the boundary. This is D-33/D-34's lesson again: load the page as each role.
+
+Verified as MANAGER: This month Rp 500.000 / 1 order, 90 days Rp 2.070.000 / 9
+orders reaching back to 11 Jun (impossible on the old 30-day payload), and a
+1–8 Sep custom range reproducing This month exactly. Revenue and orders only —
+no profit series.
+
+```
+src/server/services/dashboard.ts                       trend30d → managerTrend180d; MANAGER field renamed.
+src/app/(app)/dashboard/manager-sales-performance.tsx  NEW: switcher + the chart and legend, lifted.
+src/app/(app)/dashboard/dashboard-view.tsx             TOUCHED: chart/legend moved out to the client.
+src/server/services/__tests__/reports.test.ts          + 3 tests incl. the grossProfit boundary.
+```
+
+### D-184 · One period switcher, identical on all three dashboard cards
+
+Sales Performance still offered a rolling "30 days" while the two cards built in
+D-182/D-183 offered "This month". The owner asked for them to match. All three
+now carry **Today · 7 days · This month · 90 days · Custom** and default to
+This month.
+
+This forced the owner chart off a day-count model. It had selected periods with
+`points.slice(-days)`, which cannot express a calendar month, so period windows
+are now resolved by DATE (`windowFor`) like the other two cards.
+
+**The prior-period comparison needed a decision.** That card shows "vs prev"
+deltas on every KPI, and the previous window used to be the preceding `days`
+points. For a part-finished month, comparing 8 days of September against all 31
+of August would have shown a collapse in revenue that is purely an artefact of
+the month being young. The comparison is therefore the **same length** window
+immediately before the selected one — 8 days against the 8 days prior. Reading
+"vs prev" as "vs last month" would be wrong; it is "vs the equivalent stretch
+just before".
+
+Verified as OWNER: both cards show the identical tab set, and they reconcile —
+Sales Performance Rp 520rb against Revenue by shop's 500.000 + 20.000.
+
+```
+src/app/(app)/dashboard/owner-sales-performance.tsx  day counts → date windows; 30 days → This month.
+```

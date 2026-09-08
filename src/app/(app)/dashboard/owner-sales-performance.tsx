@@ -7,15 +7,41 @@ import { DateRangePicker } from "@/components/ui/date-range-picker";
 import { formatAmount, formatMoney } from "@/lib/money";
 import type { OwnerTrendPoint } from "@/server/services/dashboard";
 
-type Period = "today" | "7d" | "30d" | "90d" | "custom";
+type Period = "today" | "7d" | "month" | "90d" | "custom";
 type Point = OwnerTrendPoint;
 
-const PERIODS: Array<{ key: Exclude<Period, "custom">; label: string; days: number }> = [
-  { key: "today", label: "Today", days: 1 },
-  { key: "7d", label: "7 days", days: 7 },
-  { key: "30d", label: "30 days", days: 30 },
-  { key: "90d", label: "90 days", days: 90 },
+/**
+ * "This month" replaced a rolling "30 days" at the owner's request (D-182), and
+ * all three dashboard cards now carry the SAME set (D-184). A calendar month
+ * and a rolling 30-day window answer different questions; the one asked of this
+ * card has to agree with the monthly figures elsewhere.
+ */
+const PERIODS: Array<{ key: Exclude<Period, "custom">; label: string }> = [
+  { key: "today", label: "Today" },
+  { key: "7d", label: "7 days" },
+  { key: "month", label: "This month" },
+  { key: "90d", label: "90 days" },
 ];
+
+function shiftIso(iso: string, days: number): string {
+  const date = new Date(`${iso}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+/** The inclusive window a period covers, relative to the server's business date. */
+function windowFor(period: Exclude<Period, "custom">, today: string): { from: string; to: string } {
+  switch (period) {
+    case "today":
+      return { from: today, to: today };
+    case "7d":
+      return { from: shiftIso(today, -6), to: today };
+    case "month":
+      return { from: `${today.slice(0, 7)}-01`, to: today };
+    case "90d":
+      return { from: shiftIso(today, -89), to: today };
+  }
+}
 
 /**
  * The owner-only, interactive equivalent of BisMan's Sales Performance card.
@@ -23,7 +49,7 @@ const PERIODS: Array<{ key: Exclude<Period, "custom">; label: string; days: numb
  * component; the client only changes which already-authorized period is drawn.
  */
 export function OwnerSalesPerformance({ points }: { points: Point[] }) {
-  const [period, setPeriod] = useState<Period>("30d");
+  const [period, setPeriod] = useState<Period>("month");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
 
@@ -36,10 +62,18 @@ export function OwnerSalesPerformance({ points }: { points: Point[] }) {
       );
       return { series: filtered, previous: [] as Point[] };
     }
-    const days = PERIODS.find((item) => item.key === period)!.days;
+    // Date-based rather than a day count, so "This month" is a real calendar
+    // month. The comparison window is the SAME LENGTH immediately before it,
+    // which keeps the KPI delta meaningful for a part-finished month: 8 days
+    // of September against the 8 days before it, not against all of August.
+    const today = points.at(-1)?.businessDate ?? "";
+    const { from, to } = windowFor(period, today);
+    const filtered = points.filter((p) => p.businessDate >= from && p.businessDate <= to);
+    const priorTo = shiftIso(from, -1);
+    const priorFrom = shiftIso(priorTo, -(filtered.length - 1));
     return {
-      series: points.slice(-days),
-      previous: points.slice(-(days * 2), -days),
+      series: filtered,
+      previous: points.filter((p) => p.businessDate >= priorFrom && p.businessDate <= priorTo),
     };
   }, [customFrom, customTo, period, points]);
 

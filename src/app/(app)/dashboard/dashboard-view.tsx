@@ -12,6 +12,7 @@ import { formatAmount, formatMoney } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import type { Dashboard } from "@/server/services/dashboard";
 import { DashboardShopPicker } from "./shop-picker";
+import { OwnerRevenueByShop } from "./owner-revenue-by-shop";
 import { OwnerSalesPerformance } from "./owner-sales-performance";
 
 /**
@@ -222,15 +223,10 @@ function OwnerSalesOverview({
       <section className="grid gap-3 lg:grid-cols-[minmax(0,2fr)_minmax(17rem,1fr)]">
         <OwnerSalesPerformance points={dashboard.trend180d} />
 
-        <Card>
-          <CardHeader className="border-b pb-3">
-            <CardTitle>Revenue by shop</CardTitle>
-            <p className="text-xs text-muted-foreground">Month to date</p>
-          </CardHeader>
-          <CardContent className="pt-4">
-            <ShopBars rows={dashboard.revenueByShop} />
-          </CardContent>
-        </Card>
+        <OwnerRevenueByShop
+          daily={dashboard.revenueByShopDaily}
+          businessDate={dashboard.trend180d.at(-1)!.businessDate}
+        />
       </section>
     </>
   );
@@ -429,30 +425,6 @@ function SalesPerformanceChart({
   );
 }
 
-function ShopBars({ rows }: { rows: { shopId: string; shopName: string; revenue: string }[] }) {
-  if (rows.length === 0) {
-    return <p className="text-sm text-muted-foreground">No sales in this period yet.</p>;
-  }
-  const max = Math.max(...rows.map((r) => Number(r.revenue)), 1);
-  return (
-    <ul className="space-y-2">
-      {rows.map((r) => (
-        <li key={r.shopId}>
-          <div className="flex justify-between text-sm">
-            <span className="truncate">{r.shopName}</span>
-            <span className="ml-2 shrink-0 tabular-nums">{formatMoney(r.revenue)}</span>
-          </div>
-          <div className="mt-1 h-1.5 w-full rounded bg-muted">
-            <div
-              className="h-1.5 rounded bg-foreground/70"
-              style={{ width: `${Math.max((Number(r.revenue) / max) * 100, 1)}%` }}
-            />
-          </div>
-        </li>
-      ))}
-    </ul>
-  );
-}
 
 function PaymentSplit({ split }: { split: { cash: string; edc: string } }) {
   const cash = Number(split.cash);

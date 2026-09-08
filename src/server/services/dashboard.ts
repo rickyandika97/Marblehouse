@@ -23,6 +23,7 @@ import {
   addDays,
   attendanceReport,
   dailySales,
+  dailySalesByShop,
   isoDate,
   liabilityReport,
   lowStockRowsForScope,
@@ -33,6 +34,7 @@ import {
   stockValuation,
   type ReportRangeInput,
   type ResolvedScope,
+  type ShopDailySalesRow,
 } from "./reports";
 
 /** §5.6: charts become unreadable past ~8 series, so the rest is an "Others" bucket. */
@@ -110,6 +112,14 @@ export interface OwnerDashboard {
   trend180d: OwnerTrendPoint[];
   paymentSplit: { cash: string; edc: string };
   revenueByShop: ShopRevenueSlice[];
+  /**
+   * Daily per-shop revenue over the same 180-day window as `trend180d`, so the
+   * revenue-by-shop card can reslice by period client-side. The top-8 + Others
+   * rollup is applied in the component, AFTER the period filter — ranking by a
+   * month's revenue and then showing a week's would put the wrong shops in the
+   * top 8.
+   */
+  revenueByShopDaily: ShopDailySalesRow[];
   monthToDate: {
     revenue: string;
     previousMonthRevenue: string;
@@ -169,6 +179,7 @@ async function ownerDashboard(
     trend,
     todaySummaryRow,
     byShop,
+    byShopDaily,
     mtd,
     todayProfit,
     alerts,
@@ -180,6 +191,11 @@ async function ownerDashboard(
     ownerTrend180d(actor, input, scope, actor.businessDate),
     salesSummary(actor, todayInput),
     salesByShop(actor, input),
+    dailySalesByShop(actor, {
+      ...input,
+      from: isoDate(addDays(actor.businessDate, -179)),
+      to: today,
+    }),
     monthToDate(actor, actor.businessDate, input, scope),
     profitReport(actor, todayInput),
     ownerAlerts(actor, scope),
@@ -200,6 +216,7 @@ async function ownerDashboard(
     trend180d: trend,
     paymentSplit: { cash: todaySummaryRow.cash, edc: todaySummaryRow.edc },
     revenueByShop: topShopsWithOthers(byShop.rows),
+    revenueByShopDaily: byShopDaily.rows,
     monthToDate: mtd,
     alerts,
     liability: {

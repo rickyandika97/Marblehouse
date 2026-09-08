@@ -332,6 +332,55 @@ export async function salesByShop(
   };
 }
 
+/**
+ * Daily revenue per shop — the owner dashboard's "revenue by shop" card, which
+ * lets the owner reslice by period (today / this month / 7 / 90 days / custom)
+ * without a round-trip.
+ *
+ * Grouped by `(businessDate, shopId)` rather than by `shopId` alone because the
+ * card's period switcher filters CLIENT-side, the same way the sales chart
+ * filters `trend180d`. One query over the widest window beats one query per
+ * period, and the totals stay consistent with `salesByShop` because both read
+ * `completedSalesWhere(scope)` — a period covering the whole range sums to
+ * exactly what `salesByShop` returns for it.
+ */
+export interface ShopDailySalesRow {
+  businessDate: string;
+  shopId: string;
+  shopName: string;
+  revenue: string;
+}
+
+export async function dailySalesByShop(
+  actor: Actor,
+  input: ReportRangeInput
+): Promise<{ rows: ShopDailySalesRow[]; scope: ResolvedScope }> {
+  const scope = await resolveScope(actor, input, { requireManagerAt: true });
+  const [groups, shops] = await Promise.all([
+    prisma.sale.groupBy({
+      by: ["businessDate", "shopId"],
+      where: completedSalesWhere(scope),
+      _sum: { amount: true },
+      orderBy: { businessDate: "asc" },
+    }),
+    prisma.shop.findMany({
+      where: { id: { in: scope.shopIds } },
+      select: { id: true, name: true },
+    }),
+  ]);
+  const nameById = new Map(shops.map((s) => [s.id, s.name]));
+
+  return {
+    scope,
+    rows: groups.map((g) => ({
+      businessDate: isoDate(g.businessDate),
+      shopId: g.shopId,
+      shopName: nameById.get(g.shopId) ?? "Unknown shop",
+      revenue: (g._sum.amount ?? ZERO).toString(),
+    })),
+  };
+}
+
 /** §9 Sales by Staff. */
 export interface StaffSalesRow {
   userId: string;

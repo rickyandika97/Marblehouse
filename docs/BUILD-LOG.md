@@ -7811,3 +7811,90 @@ src/app/(app)/reports/report-filters.tsx  + hideDateControls; conditional ml-aut
 src/app/(app)/reports/report-shell.tsx    TOUCHED: threads the flag.
 src/app/(app)/reports/sales/[date]/page.tsx  TOUCHED: full filter props + flag.
 ```
+
+### D-181 · The dashboard's custom range is one calendar, not two date inputs
+
+The Sales Performance "Custom" period used two native `<input type="date">`
+fields. The owner reported that picking a range meant opening one picker for
+the start, closing it, then opening a second for the end — "very tiring". On
+iOS each native input is a full-screen wheel, so a two-field range is two
+modal round-trips for what is one decision.
+
+Replaced both with the existing `DateRangePicker` (`src/components/ui/`) — the
+same dual-click calendar the reports, expenses, attendance and audit-log
+screens have used since D-175. **No new component was written**, and that is
+the point: the dashboard was the last screen still on raw date inputs, so this
+is the range picker converging on one control rather than a sixth variant.
+
+The popup fires `onChange` only on the second click, with both bounds
+(`RangeCalendar` holds the first click as `pending` and previews the range on
+hover), so there is no half-applied state to guard against. Its "Clear" fires
+`("", "")`, which falls through the existing filter as "no bound" and restores
+the unfiltered 180-day series — the behaviour the empty inputs had.
+
+Verified in a browser as OWNER: 1 Sep → 8 Sep in one popup, two clicks, popup
+closes on the second, chart and totals reslice to Rp 520rb across 2 orders.
+
+```
+src/app/(app)/dashboard/owner-sales-performance.tsx  two date inputs → DateRangePicker.
+```
+
+### D-182 · Revenue by shop gets its own period switcher, and "30 days" became "This month"
+
+The card was hard-labelled "Month to date" but actually rendered whatever range
+the PAGE was loaded with — the label was a lie the moment a range was applied.
+The owner asked for the same switcher the sales chart has, with one change:
+**drop "30 days", add "This month"**. A rolling 30-day window and a calendar
+month answer different questions, and the question this card is asked is "how
+are the branches doing this month", which has to agree with the monthly figures
+elsewhere. The tab set here is therefore deliberately NOT the same as the sales
+chart's — do not "fix" the inconsistency by putting 30 days back.
+
+**Why a new query rather than reusing `trend180d`.** The sales chart filters
+client-side because it ships 180 daily points. `revenueByShop` shipped a single
+pre-aggregated array with no per-day breakdown, and `trend180d` has no per-shop
+breakdown — neither could be resliced without a round-trip. Since the dashboard
+is fully server-rendered with **no API route** (D-158: the payload TYPE differs
+per role, deliberately, so a client fetch would ship a manager whatever the
+endpoint returned), a switcher that re-fetched would have meant either a new
+endpoint re-deriving the cost gate, or a full page reload per tab.
+
+So `dailySalesByShop` groups by `(businessDate, shopId)` over the same 180-day
+window, and the card filters it client-side exactly as the chart does. One
+query, instant switching, no new endpoint, and the cost gate stays where it is.
+
+**The top-8 + Others rollup moved into the component, and the order matters.**
+It is applied AFTER the period filter, not before: ranking shops by the month's
+revenue and then displaying a single day's would put the wrong shops in the top
+8. `topShopsWithOthers` still guards the server payload for every other
+consumer; the component mirrors it for the sliced view.
+
+Two consequences worth knowing:
+
+- **The window is 180 days.** A custom range reaching further back shows only
+  the days the payload carries rather than erroring. `DateRangePicker` has no
+  `min` prop, and adding one would have touched five other screens for a bound
+  no owner realistically picks, so it was left off.
+- **The business date comes from `trend180d.at(-1)`, never `new Date()`.** The
+  browser can sit in a different timezone, which would shift every branch's
+  takings by a day. That value is server-computed.
+
+Tests: four in `reports.test.ts`, including one asserting `dailySalesByShop`
+sums **exactly** to `salesByShop` over the same window — if those ever diverge
+the dashboard silently contradicts the Sales by Shop report. Each was seen to
+fail before being kept (per the gate): dropping `completedSalesWhere(scope)`
+broke the R-4 scope test and the range test; doubling the summed amount broke
+the reconciliation test. Reverted, 547 green.
+
+Verified in a browser as OWNER — Today (empty, matching "Revenue today Rp 0"),
+This month and 1–8 Sep custom agreeing at Rp 500.000 / Rp 20.000 (they are the
+same window on 8 Sep), 90 days at Rp 2.070.000 / Rp 1.020.000 — and as MANAGER,
+whose dashboard correctly has no such card at all.
+
+```
+src/server/services/reports.ts                       + dailySalesByShop, ShopDailySalesRow.
+src/server/services/dashboard.ts                     + revenueByShopDaily on the OWNER payload.
+src/app/(app)/dashboard/owner-revenue-by-shop.tsx    NEW: period switcher + bars.
+src/app/(app)/dashboard/dashboard-view.tsx           TOUCHED: swaps the card; old ShopBars removed.
+src/server/services/__tests__/reports.test.ts        + 4 tests incl. reconciliation with salesByShop.
+```

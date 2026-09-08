@@ -23,6 +23,7 @@ import {
   salesSummary,
   dailySales,
   salesByShop,
+  dailySalesByShop,
   salesByStaff,
   staffSalesDetail,
   salesDetail,
@@ -338,6 +339,83 @@ describe("dailySales / salesByShop", () => {
     expect(mine[0]!.shopId).toBe(shopB);
     expect(mine[0]!.revenue).toBe("90000");
     expect(mine[1]!.revenue).toBe("10000");
+  });
+});
+
+describe("dailySalesByShop (owner revenue-by-shop card)", () => {
+  it("splits revenue by day AND shop", async () => {
+    await makeSale({ shopId: shopA, amount: 5_000, businessDate: YESTERDAY });
+    await makeSale({ shopId: shopA, amount: 7_000, businessDate: DAY });
+    await makeSale({ shopId: shopB, amount: 3_000, businessDate: DAY });
+
+    const { rows } = await dailySalesByShop(
+      actorFor("OWNER", { shopIds: [shopA, shopB] }),
+      { from: iso(YESTERDAY), to: iso(DAY) }
+    );
+    const mine = rows.filter((r) => r.shopId === shopA || r.shopId === shopB);
+
+    expect(mine).toHaveLength(3);
+    expect(
+      mine.find((r) => r.shopId === shopA && r.businessDate === iso(YESTERDAY))!.revenue
+    ).toBe("5000");
+    expect(
+      mine.find((r) => r.shopId === shopA && r.businessDate === iso(DAY))!.revenue
+    ).toBe("7000");
+    expect(
+      mine.find((r) => r.shopId === shopB && r.businessDate === iso(DAY))!.revenue
+    ).toBe("3000");
+  });
+
+  /**
+   * The card sums these rows client-side and shows the result as a shop's
+   * takings. If that sum ever disagreed with `salesByShop` over the same
+   * window, the dashboard would contradict the Sales by Shop report.
+   */
+  it("reconciles exactly with salesByShop over the same window", async () => {
+    await makeSale({ shopId: shopA, amount: 10_000, businessDate: YESTERDAY });
+    await makeSale({ shopId: shopA, amount: 1_500, businessDate: DAY });
+    await makeSale({ shopId: shopB, amount: 90_000, businessDate: DAY });
+
+    const owner = actorFor("OWNER", { shopIds: [shopA, shopB] });
+    const span = { from: iso(YESTERDAY), to: iso(DAY) };
+
+    const daily = await dailySalesByShop(owner, span);
+    const aggregate = await salesByShop(owner, span);
+
+    for (const shopId of [shopA, shopB]) {
+      const summed = daily.rows
+        .filter((r) => r.shopId === shopId)
+        .reduce((total, r) => total.add(r.revenue), new Prisma.Decimal(0));
+      const expected = aggregate.rows.find((r) => r.shopId === shopId)!.revenue;
+      expect(summed.toString()).toBe(expected);
+    }
+  });
+
+  it("excludes days outside the requested range", async () => {
+    await makeSale({ shopId: shopA, amount: 5_000, businessDate: YESTERDAY });
+    await makeSale({ shopId: shopA, amount: 7_000, businessDate: DAY });
+
+    const { rows } = await dailySalesByShop(actorFor("OWNER", { shopIds: [shopA] }), {
+      from: iso(DAY),
+      to: iso(DAY),
+    });
+
+    const mine = rows.filter((r) => r.shopId === shopA);
+    expect(mine).toHaveLength(1);
+    expect(mine[0]!.revenue).toBe("7000");
+  });
+
+  /** R-4: a manager must not read a branch they do not manage. */
+  it("never returns a shop outside the actor's scope", async () => {
+    await makeSale({ shopId: shopA, amount: 10_000 });
+    await makeSale({ shopId: shopB, amount: 90_000 });
+
+    const { rows } = await dailySalesByShop(
+      actorFor("MANAGER", { shopIds: [shopA] }),
+      { ...range }
+    );
+
+    expect(rows.some((r) => r.shopId === shopB)).toBe(false);
   });
 });
 

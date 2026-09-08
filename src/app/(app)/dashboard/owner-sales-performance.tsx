@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { DateRangePicker } from "@/components/ui/date-range-picker";
 import { formatAmount, formatMoney } from "@/lib/money";
 import type { OwnerTrendPoint } from "@/server/services/dashboard";
 
@@ -102,29 +103,17 @@ export function OwnerSalesPerformance({ points }: { points: Point[] }) {
           </div>
         </div>
         {period === "custom" && (
-          <div className="flex flex-wrap items-center gap-2 pt-2 text-xs text-muted-foreground">
-            <label>
-              <span className="sr-only">From date</span>
-              <input
-                type="date"
-                value={customFrom}
-                max={customTo || points.at(-1)?.businessDate}
-                onChange={(event) => setCustomFrom(event.target.value)}
-                className="rounded border bg-background px-2 py-1.5"
-              />
-            </label>
-            <span>to</span>
-            <label>
-              <span className="sr-only">To date</span>
-              <input
-                type="date"
-                value={customTo}
-                min={customFrom}
-                max={points.at(-1)?.businessDate}
-                onChange={(event) => setCustomTo(event.target.value)}
-                className="rounded border bg-background px-2 py-1.5"
-              />
-            </label>
+          <div className="pt-2">
+            <DateRangePicker
+              from={customFrom || undefined}
+              to={customTo || undefined}
+              max={points.at(-1)?.businessDate}
+              className="h-9 text-xs"
+              onChange={(nextFrom, nextTo) => {
+                setCustomFrom(nextFrom);
+                setCustomTo(nextTo);
+              }}
+            />
           </div>
         )}
       </CardHeader>

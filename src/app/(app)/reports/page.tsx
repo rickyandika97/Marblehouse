@@ -29,6 +29,15 @@ const REPORTS: {
   costOnly?: boolean;
 }[] = [
   {
+    // Not a report: the register of individual transactions, and the only
+    // route to a sale old enough to have left the recent strip (D-181).
+    href: "/sales",
+    title: "All Sales",
+    description:
+      "Every transaction, searchable — and where the owner edits or restores one.",
+    ownerOnly: true,
+  },
+  {
     href: "/reports/sales",
     title: "Daily Sales Summary",
     description: "Revenue, transactions and customers by day, shop and staff.",

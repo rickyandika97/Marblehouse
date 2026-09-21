@@ -1,7 +1,11 @@
 import { redirect } from "next/navigation";
 import { requireActorPage } from "@/server/auth/page-guard";
 import { resolveWorkSession } from "@/server/services/work-session";
-import { listPresets, todaySummary } from "@/server/services/sales";
+import {
+  listPresets,
+  saleEditOptions,
+  todaySummary,
+} from "@/server/services/sales";
 import { SaleForm } from "./sale-form";
 
 export const metadata = { title: "Sale · Marblehouse" };
@@ -30,9 +34,13 @@ export default async function SalePage() {
 
   const working = { ...actor, workSession: session };
 
-  const [presets, summary] = await Promise.all([
+  const [presets, summary, editOptions] = await Promise.all([
     listPresets(session.shopId),
     todaySummary(working),
+    // Only the owner may edit (D-181), and only the owner is sent the branch
+    // roster and every shop's price list that the edit form needs. A manager
+    // or staff member receives null and never renders the button.
+    actor.isOwner ? saleEditOptions(actor) : Promise.resolve(null),
   ]);
 
   return (
@@ -54,6 +62,7 @@ export default async function SalePage() {
           presets={presets}
           allowCustomAmount={session.shop.allowCustomAmount}
           initialSummary={summary}
+          editOptions={editOptions}
         />
       )}
     </div>

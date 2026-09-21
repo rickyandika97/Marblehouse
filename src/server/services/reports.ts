@@ -459,6 +459,21 @@ export interface DetailSaleRow {
   presetLabel: string | null;
   staffName: string;
   customer: { id: string; name: string } | null;
+
+  /**
+   * The identifiers the owner's edit dialog needs (D-181), alongside the names
+   * the table itself renders.
+   *
+   * Carried on every row rather than fetched when the dialog opens: the rows
+   * are already in hand, and a second round trip per row on shop wifi is
+   * exactly the lag the sale screen's design target exists to avoid. They are
+   * ids, not cost figures — §7.5's restricted-DTO rule is untouched.
+   */
+  shopId: string;
+  presetId: string | null;
+  staffId: string;
+  status: "COMPLETED" | "VOIDED";
+  note: string | null;
 }
 
 export interface SalesDetail {
@@ -515,8 +530,10 @@ export async function salesDetail(
         occurredAt: true,
         isCustomAmount: true,
         shopId: true,
-        preset: { select: { label: true } },
-        recordedBy: { select: { displayName: true } },
+        status: true,
+        note: true,
+        preset: { select: { id: true, label: true } },
+        recordedBy: { select: { id: true, displayName: true } },
         customer: { select: { id: true, name: true } },
       },
     }),
@@ -552,6 +569,11 @@ export async function salesDetail(
       presetLabel: r.preset?.label ?? null,
       staffName: r.recordedBy.displayName,
       customer: r.customer ? { id: r.customer.id, name: r.customer.name } : null,
+      shopId: r.shopId,
+      presetId: r.preset?.id ?? null,
+      staffId: r.recordedBy.id,
+      status: r.status,
+      note: r.note,
     })),
   };
 }

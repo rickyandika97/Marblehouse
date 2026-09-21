@@ -195,7 +195,8 @@ These are the rules the agent must get right. Everything else is UI.
 - A preset that has been used in a sale can be **deactivated but never deleted or edited in a way that changes its amount**. Editing an amount creates a *new* preset version and deactivates the old one. This keeps historical sales accurate.
 - Optional "custom amount" toggle per shop (default off). When on, staff may enter a free amount; every custom sale is flagged in the audit log.
 - The sale is attributed to: the **logged-in user** (`recordedByUserId`) and the **shop from their active work session** (§4.7). Neither is selectable on the sale form.
-- Sales cannot be edited. They can be **voided** by an owner (any time) or a manager (same business day only), with a mandatory reason. A void creates a reversing record; the original row is never deleted.
+- Sales can be **voided** by an owner (any time) or a manager (same business day only), with a mandatory reason. A void creates a reversing record; the original row is never deleted.
+- **Staff and managers cannot edit a sale.** *(Amended 21 Sep 2026 — BUILD-LOG D-185.)* This clause originally read "sales cannot be edited" full stop. The **owner** may now edit any sale of any age — amount, payment method, customer, the staff member it is attributed to, the shop, the date and time, and the note — with a **mandatory reason** and a full before/after snapshot written to the audit log. The owner may also **restore a voided sale**; the original `VOID` audit row is kept and an `UNVOID` row written beside it. `businessDate` is still never sent by the client: it is recomputed server-side from the edited `occurredAt` in the target shop's timezone (§4.2). A **voided** sale cannot be edited — it must be restored first. Read D-185 before narrowing this.
 
 ### 4.4 Customers
 - A customer is identified by **phone number**, which is unique and is the login-free lookup key. Normalize to E.164-ish on save (strip spaces/dashes, convert leading `0` to `+62`), store both `phoneRaw` and `phoneNormalized`.
@@ -1613,8 +1614,10 @@ Error codes to define: `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `VALIDATION_
 |---|---|---|---|
 | GET | `/api/shops/:id/presets` | any | Active presets for the sale screen. |
 | POST | `/api/sales` | any | `{ presetId \| amount, paymentMethod, customerId?, note? }`. Shop and user come from the work session — **the client cannot set them**. |
-| GET | `/api/sales` | O/M/S | Filters: `shopId`, `from`, `to`, `userId`, `customerId`, `paymentMethod`. Scoped by role. |
+| GET | `/api/sales` | O/M/S | Filters: `shopId`, `from`, `to`, `userId`, `customerId`, `paymentMethod`, `status`. Scoped by role. Unset `status` returns completed **and** voided rows. |
 | POST | `/api/sales/:id/void` | O / M(same day) | `{ reason }`. |
+| PATCH | `/api/sales/:id` | **O only** | `{ shopId?, presetId? \| amount?, paymentMethod?, customerId?, recordedById?, occurredAt?, note?, reason }`. `reason` is mandatory. `businessDate` is **derived** from `occurredAt`, never accepted. Refuses a voided sale with `SALE_NOT_EDITABLE`. (D-185) |
+| POST | `/api/sales/:id/unvoid` | **O only** | `{ reason }`. Restores a voided sale to `COMPLETED`; keeps the `VOID` audit row. (D-185) |
 | GET | `/api/sales/today-summary` | any | Count, total, split by payment method, for the current work-session shop. |
 
 ### 7.3 Customers, marbles, tickets

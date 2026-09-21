@@ -92,6 +92,8 @@ ever genuinely needed.
 | `username` can't be edited anywhere | Immutable by design — it seeds the synthetic email | D-3 |
 | User creation bypasses `auth.api.createUser` | That endpoint is plugin-gated and 403s for us | D-4 |
 | A void writes no reversing row | The reversal IS `status = VOIDED` + void metadata + audit | D-11 |
+| `updateSale` exists, though §4.3 says sales cannot be edited | Relaxed for the OWNER only on 21 Sep 2026, with a mandatory reason and a before/after audit row. Managers and staff still cannot. | D-185 |
+| A sale can be un-voided | Deliberate. The `VOID` audit row is kept and an `UNVOID` row written beside it | D-185 |
 | `createSale` takes a `tx` it did not open | Deliberate: the sale and its idempotency key must commit together | D-10 |
 | Sale amounts are strings in JSON | `Decimal` → JSON number is the float bug §4.1 forbids | D-13 |
 | `Shop` has no day-start hour, but branches open at different times | Correct. Opening hours are per-shop (`Shift`); the *reporting-day cutoff* is global at 04:00. Different things. | D-18 |
@@ -5743,6 +5745,9 @@ unavailable server/browser boundary.
 
 | Item | Detail |
 |---|---|
+| Sale edit (D-185) not clicked through in a real browser | The gate CLAUDE.md asks for is a rendered page loaded as every role that can reach it. Every screen was loaded over HTTP as OWNER and as MANAGER and the right things rendered — Edit present for the owner on the strip, on `/sales` and on all four report drill-downs; absent for the manager, who also gets a real 403 on `/sales` and on `PATCH /api/sales/:id` — and every mutation was exercised end to end against the live dev app (edit, date move, shop move, staff re-attribution, void, refuse-to-edit, restore, audit trail). What nobody has done is **open the dialog and click through it**: the amount/preset toggle, the datetime field, the "this moves the money" warnings, the customer picker inside the dialog, and the 44px floor on a tablet. Do that before the pilot. |
+| Sale edit has no idempotency key | Every mutation is supposed to be idempotent against a double-tap (`Idempotency-Key`, NF-5). `PATCH /api/sales/:id` and the unvoid are not, unlike `POST /api/sales`. The consequence is far milder than on create — a repeated edit writes the same values and is a no-op on the row — but it does write a **second audit row**, so a double-tap on shop wifi leaves two identical UPDATE entries. Worth closing with the same `runIdempotent` wrapper the create path uses. |
+| `/sales` paginates but has no "load more" | `listSales` returns a cursor and the screen says "showing the most recent 50, narrow the dates" rather than following it. Fine for a branch's daily volume; it will bite on a wide date range. The cursor is already in the response — only the button is missing. |
 | ~~Report shop picker offers shops where the actor is only STAFF~~ | **Fixed — D-177.** `reportableShops` adds `role: "MANAGER"` to the assignment clause, and the report filter bar plus the dashboard picker now read from it. Found while verifying D-176; no data was ever exposed, the control simply named a shop the server would refuse. |
 | D-175–D-179 not run through `docker compose build` | Same gate, same cause as the row below: the Docker daemon was not running on the dev machine. Typecheck, lint and the full 543-test suite pass, and all five changes were clicked through in a real browser as OWNER and as the mixed-role `budi` account. The new files are the five report drill-down pages, `reports/sales-detail-table.tsx` and `reportable-shops.test.ts`; their imports are relative `../../report-shell` / `../../sales-detail-table` paths plus existing `@/`-aliased modules, so the macOS-vs-Linux case-sensitivity class this gate catches is unlikely but unproven. Run it next time Docker is up. |
 | D-172's banner fix not run through `docker compose build` | The Docker daemon was not running on the dev machine when the end-of-shift clock-out banner was fixed. Typecheck, lint and the full 511-test suite pass, and the change was clicked through in a real browser (dialog opens from the deep link, overdue reason/time enforced, `hashchange` path confirmed). The gate is nevertheless unrun. Low risk — no import paths changed, and that gate exists to catch macOS-vs-Linux case-sensitive imports — but run it next time Docker is up. |
@@ -7966,4 +7971,143 @@ Sales Performance Rp 520rb against Revenue by shop's 500.000 + 20.000.
 
 ```
 src/app/(app)/dashboard/owner-sales-performance.tsx  day counts → date windows; 30 days → This month.
+```
+
+### D-185 · The owner can EDIT a sale, not only void it — §4.3 relaxed
+
+**Owner decision, 21 Sep 2026.** This reverses, for the owner alone, one of the
+rules the PRD states flatly:
+
+> §4.3 — "Sales cannot be edited. They can be **voided** by an owner (any time)
+> or a manager (same business day only), with a mandatory reason."
+
+**Read this before you "restore" that rule.** The sentence is still in §6's
+neighbourhood and still true of managers and staff. It is no longer true of the
+owner, and the code that lets the owner through is deliberate.
+
+#### Why it was relaxed
+
+Void-and-re-record was the only correction available, and it is lossy in three
+ways the owner actually hit:
+
+1. **The transaction count goes up by one, permanently.** A shop that rang up
+   40 sales and corrected one reports 41 transactions forever. Average
+   transaction value is computed from that count, so it is wrong too.
+2. **The original time of day is lost.** The re-recorded sale lands at the time
+   of the correction, which moves it on every hourly view and can move it across
+   the 04:00 business-day boundary (§4.2) into the wrong reporting day entirely.
+3. **A sale voided by mistake had no way back.** Nothing in the product could
+   turn `VOIDED` into `COMPLETED`, so the only recovery was a re-record, which
+   is failure 1 again.
+
+Against that, the reason the PRD banned editing in the first place — an
+unexplained figure that changes after someone read it — is answered by making
+the explanation mandatory rather than by banning the change: **every edit
+carries a reason and writes a full before/after snapshot to the audit log.**
+
+#### What the owner chose, option by option
+
+| Question | Chosen | Rejected |
+|---|---|---|
+| Editing the **date**, which moves money between reporting days | **Allowed**, audit-logged | "Same day only"; "void and re-record instead" |
+| **Who** may edit | **OWNER only, any sale, any age** | Manager same-day; a 30-day cut-off |
+| **Which fields** | Amount, payment, customer, staff, date/time, note, **and the shop** | — |
+| **Un-void** | **Yes**, owner only, its own reason | — |
+| **Where** | All three: the sale screen's recent strip, a new All Sales screen, and the report drill-downs | — |
+
+The owner was shown, in those words, that an edit can change a report they have
+already read, and chose it anyway: the correction being visible and explained is
+worth more than the report being frozen.
+
+#### What the code does with that
+
+`updateSale` and `unvoidSale` in `services/sales.ts`. Both check `actor.isOwner`
+**in the service**, not in the route handler, so every caller is covered and not
+only the HTTP one. A manager gets `FORBIDDEN` on both, at the API and at the
+page.
+
+Five rules inside the edit that are not obvious from the requirement:
+
+- **`businessDate` is never sent by the client.** It is recomputed from the new
+  `occurredAt` in the TARGET shop's timezone using the global 04:00 start hour
+  (§4.2, D-18). This is the one place the whole feature could have quietly gone
+  wrong: truncating the UTC timestamp instead puts every evening sale on the
+  previous day's report for any branch east of UTC. There is a test and a
+  verify-script check for exactly that instant (22:00 UTC = 05:00 Jakarta).
+- **A voided sale cannot be edited.** It must be restored first
+  (`SALE_NOT_EDITABLE`, a new error code, 409). Editing a reversed row would
+  produce a figure nobody took and no report counts.
+- **A sale moved to another branch drops its preset** but keeps its amount. A
+  preset belongs to one shop's price list (D-15); the figure the customer paid
+  is the fact, the preset is only how it was entered.
+- **The new staff member must hold a role at the target shop** — otherwise Sales
+  by Staff (§9) gains rows nobody can explain. The OWNER is exempt, because they
+  hold no `UserShop` row anywhere by design (D-122) and may well have rung the
+  sale up themselves.
+- **`allowCustomAmount` is deliberately NOT consulted on an edit.** That flag
+  governs what staff may key in at the till; a branch that has since switched it
+  off would otherwise be unable to correct its own history.
+
+`lastSeenAt` is refreshed for **both** the old and the new customer when the
+customer changes — the old one may have just lost their most recent visit and
+the new one gained one (D-12, in both directions at once).
+
+#### The un-void keeps the void
+
+`unvoidSale` clears `status`/`voidedAt`/`voidedById`/`voidReason`, but it does
+**not** delete the original `VOID` audit row. It writes an `UNVOID` row beside
+it. The sequence then reads as what actually happened — voided, then restored —
+rather than as a sale that was never reversed.
+
+#### Where the button is
+
+Three places, one shared dialog (`components/edit-sale-dialog.tsx`), because
+three copies would be three places for the date handling to drift:
+
+- **Sale screen recent strip**, next to Void. Same-day fixes, no navigation.
+- **`/sales` — All Sales**, a new owner-only register with shop, staff, payment
+  and status filters. This is the only route to a sale old enough to have left
+  the strip. It shows **voided rows too**, struck through: an owner on that
+  screen is usually hunting the mistake, and the most common one worth finding
+  is a void that should not have happened.
+- **The four §9 sales drill-downs**, as a trailing column that exists only for
+  the owner — a manager reading the same report sees no column at all rather
+  than a button that 403s.
+
+`/sales` is NOT in the bottom nav. That is full at six tabs (D-36) and Phase
+10's own note says the fix is a "More" tab, not a seventh. It is reached from
+the Reports index instead.
+
+#### Verification
+
+`scripts/verify-sale-edit.sh` — 30 checks against the real HTTP routes, with its
+own fixtures, re-runnable, cleans up after itself. **Its password comes from
+`VERIFY_PW` or `DEV_ACCOUNT_PASSWORD` in `.env`, never from source** — the repo
+is public, and a working credential in a committed file is a bad habit even
+when the database it opens is only ever local. `.env` is gitignored. `sale-edit.test.ts` — 22
+tests at the service.
+
+**Four deliberate mutations, four caught** (the CLAUDE.md rule, and it earned
+its keep): dropping the owner check, keeping a foreign preset across a shop
+move, and skipping the staff-works-here check were all caught immediately.
+**The fourth was not**, and that is the one worth recording: replacing
+`businessDateFor(...)` with a naive UTC-date truncation **passed all 21 tests**,
+because both of the cutoff cases then in the suite happened to fall on the same
+day either way. The test that catches it (22:00 UTC → 19 Sep in Jakarta) was
+written in response, and the verify script asserts it independently. A cutoff
+test that does not cross a timezone boundary proves nothing about timezones.
+
+```
+src/server/services/sales.ts                     updateSale, unvoidSale, saleEditOptions, +status filter, +canEdit.
+src/server/errors.ts                             +SALE_NOT_EDITABLE (409).
+src/app/api/sales/[id]/route.ts                  PATCH — the edit.
+src/app/api/sales/[id]/unvoid/route.ts           POST — the restore.
+src/components/edit-sale-dialog.tsx              The shared dialog, all three sites.
+src/app/(app)/sales/page.tsx                     All Sales — owner-only register.
+src/app/(app)/sales/all-sales-table.tsx          Its filters, rows and void/edit actions.
+src/app/(app)/sale/sale-form.tsx                 Edit button in the recent strip.
+src/app/(app)/reports/sales-detail-table.tsx     Owner-only edit column.
+src/server/services/reports.ts                   DetailSaleRow carries ids, not just names.
+scripts/verify-sale-edit.sh                      30 checks, end to end.
+src/server/services/__tests__/sale-edit.test.ts  22 tests.
 ```

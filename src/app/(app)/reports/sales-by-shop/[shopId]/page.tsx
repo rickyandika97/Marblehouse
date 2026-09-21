@@ -11,6 +11,7 @@ import {
   rangeFrom,
   filterPropsFor,
 } from "../../report-shell";
+import { saleEditOptions } from "@/server/services/sales";
 import { SalesDetailTable } from "../../sales-detail-table";
 
 export const metadata = { title: "Shop sales · Marblehouse" };
@@ -34,6 +35,8 @@ export default async function ShopSalesDetailPage({
   searchParams: Promise<{ from?: string; to?: string }>;
 }) {
   const actor = await requireManagerOrOwnerPage();
+  // Owner only (D-181); a manager reads the report but gets no Edit column.
+  const editOptions = actor.isOwner ? await saleEditOptions(actor) : null;
   const { shopId } = await params;
   const sp = await searchParams;
   const { from, to } = rangeFrom(sp, actor.businessDate);
@@ -89,6 +92,7 @@ export default async function ShopSalesDetailPage({
           truncated={detail.truncated}
           omit={["shop"]}
           empty="This branch recorded no sales in this period."
+          editOptions={editOptions}
         />
       </ReportShell>
     </div>

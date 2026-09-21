@@ -26,6 +26,10 @@ import { toast } from "sonner";
 import { Loader2, Search, UserRound, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ReasonDialog } from "@/components/reason-dialog";
+import {
+  EditSaleDialog,
+  type SaleEditOptions,
+} from "@/components/edit-sale-dialog";
 import { cn } from "@/lib/utils";
 import { formatMoney, parseAmount } from "@/lib/money";
 import { CustomerPicker, type PickedCustomer } from "./customer-picker";
@@ -45,6 +49,12 @@ export interface RecentSale {
   customer: { id: string; name: string } | null;
   /** The authenticated staff member who recorded the sale. */
   recordedBy: { id: string; displayName: string };
+  /** The rest of what the owner's edit dialog needs (D-181). */
+  shopId: string;
+  isCustomAmount: boolean;
+  note: string | null;
+  preset: { id: string; label: string } | null;
+  voidReason: string | null;
 }
 
 export interface Summary {
@@ -52,6 +62,7 @@ export interface Summary {
   total: string;
   recent: RecentSale[];
   canVoid: boolean;
+  canEdit: boolean;
 }
 
 type PaymentMethod = "CASH" | "EDC";
@@ -60,10 +71,13 @@ export function SaleForm({
   presets,
   allowCustomAmount,
   initialSummary,
+  editOptions,
 }: {
   presets: Preset[];
   allowCustomAmount: boolean;
   initialSummary: Summary;
+  /** Null for anyone who cannot edit — the server sends it only to the owner. */
+  editOptions: SaleEditOptions | null;
 }) {
   const router = useRouter();
 
@@ -288,7 +302,11 @@ export function SaleForm({
         )}
       </Button>
 
-      <TodayStrip summary={summary} onChanged={refreshSummary} />
+      <TodayStrip
+        summary={summary}
+        editOptions={editOptions}
+        onChanged={refreshSummary}
+      />
 
       <CustomerPicker
         open={pickerOpen}
@@ -311,9 +329,11 @@ export function SaleForm({
  */
 function TodayStrip({
   summary,
+  editOptions,
   onChanged,
 }: {
   summary: Summary;
+  editOptions: SaleEditOptions | null;
   onChanged: () => void;
 }) {
   const router = useRouter();
@@ -383,6 +403,18 @@ function TodayStrip({
                   minute: "2-digit",
                 })}
               </span>
+
+              {/*
+                The owner gets Edit on every row, including a voided one —
+                that is the path back from a void tapped by mistake (D-181).
+              */}
+              {summary.canEdit && editOptions && (
+                <EditSaleDialog
+                  sale={sale}
+                  options={editOptions}
+                  onDone={onChanged}
+                />
+              )}
 
               {summary.canVoid && sale.status === "COMPLETED" && (
                 <Button

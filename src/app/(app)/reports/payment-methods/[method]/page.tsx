@@ -12,6 +12,7 @@ import {
   rangeFrom,
   filterPropsFor,
 } from "../../report-shell";
+import { saleEditOptions } from "@/server/services/sales";
 import { SalesDetailTable } from "../../sales-detail-table";
 
 export const metadata = { title: "Payment method · Marblehouse" };
@@ -45,6 +46,8 @@ export default async function PaymentMethodDetailPage({
   searchParams: Promise<{ from?: string; to?: string; shopId?: string }>;
 }) {
   const actor = await requireManagerOrOwnerPage();
+  // Owner only (D-181); a manager reads the report but gets no Edit column.
+  const editOptions = actor.isOwner ? await saleEditOptions(actor) : null;
   const { method } = await params;
   const sp = await searchParams;
 
@@ -101,6 +104,7 @@ export default async function PaymentMethodDetailPage({
           // Every row here is the method that was drilled into.
           omit={["paid"]}
           empty={`No ${chosen.empty} sales in this period.`}
+          editOptions={editOptions}
         />
       </ReportShell>
     </div>

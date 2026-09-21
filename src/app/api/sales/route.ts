@@ -40,6 +40,7 @@ export async function GET(req: Request) {
       userId: searchParams.get("userId") ?? undefined,
       customerId: searchParams.get("customerId") ?? undefined,
       paymentMethod: searchParams.get("paymentMethod") ?? undefined,
+      status: searchParams.get("status") ?? undefined,
       cursor: searchParams.get("cursor") ?? undefined,
     });
 

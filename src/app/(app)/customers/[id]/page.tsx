@@ -1,3 +1,6 @@
+import { MembershipCard } from "@/components/membership-card";
+import { hasCustomerAccess } from "@/server/services/membership";
+import { MembershipScanner } from "@/components/membership-scanner";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft, Gift, MessageCircle } from "lucide-react";
@@ -51,6 +54,21 @@ export default async function CustomerDetailPage({
   const { id } = await params;
   const { ledgerCursor } = await searchParams;
 
+  if (!(await hasCustomerAccess(actor, id)))
+    return (
+      <div className="space-y-4">
+        <h1 className="text-xl font-bold">Verify membership</h1>
+        <p>
+          Scan this customer&apos;s card before opening their account. Lost
+          card? Ask the owner.
+        </p>
+        <MembershipScanner customerId={id} autoOpen />
+        <Button variant="ghost" render={<Link href="/customers" />}>
+          All customers
+        </Button>
+      </div>
+    );
+
   const customer = await getCustomerForActor(actor, id).catch((e) => {
     if (e instanceof AppError && e.code === "NOT_FOUND") notFound();
     throw e;
@@ -74,7 +92,7 @@ export default async function CustomerDetailPage({
   ]);
   const whatsappUrl = customerWhatsAppUrl(
     customer.phone,
-    renderCustomerWhatsAppReminder(whatsappReminderTemplate, customer)
+    renderCustomerWhatsAppReminder(whatsappReminderTemplate, customer),
   );
 
   return (
@@ -91,8 +109,11 @@ export default async function CustomerDetailPage({
             {customer.phoneDisplay}
           </p>
         </div>
+        <MembershipCard customerId={customer.id} />
         <EditCustomer customer={customer} />
-        {owner && <MergeCustomer winnerId={customer.id} winnerName={customer.name} />}
+        {owner && (
+          <MergeCustomer winnerId={customer.id} winnerName={customer.name} />
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-3">
@@ -127,9 +148,7 @@ export default async function CustomerDetailPage({
         variant="outline"
         size="lg"
         className="w-full"
-        render={
-          <a href={whatsappUrl} target="_blank" rel="noreferrer" />
-        }
+        render={<a href={whatsappUrl} target="_blank" rel="noreferrer" />}
       >
         <MessageCircle className="size-5" />
         Send WhatsApp reminder
@@ -159,17 +178,23 @@ export default async function CustomerDetailPage({
         </CardHeader>
         <CardContent>
           {ledger.entries.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No balance activity yet.</p>
+            <p className="text-sm text-muted-foreground">
+              No balance activity yet.
+            </p>
           ) : (
             <ul className="divide-y text-sm">
               {ledger.entries.map((entry) => (
-                <li key={`${entry.kind}:${entry.id}`} className="flex gap-3 py-3">
+                <li
+                  key={`${entry.kind}:${entry.id}`}
+                  className="flex gap-3 py-3"
+                >
                   <span
                     className={`min-w-16 font-bold tabular-nums ${
                       entry.delta > 0 ? "text-emerald-700" : "text-destructive"
                     }`}
                   >
-                    {entry.delta > 0 ? "+" : ""}{entry.delta.toLocaleString("id-ID")}
+                    {entry.delta > 0 ? "+" : ""}
+                    {entry.delta.toLocaleString("id-ID")}
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="block font-medium">
@@ -184,15 +209,19 @@ export default async function CustomerDetailPage({
                         {entry.redeemedItems
                           .map(
                             (item) =>
-                              `${item.qty}× ${item.name} · ${item.ticketCostTotal.toLocaleString("id-ID")} tickets`
+                              `${item.qty}× ${item.name} · ${item.ticketCostTotal.toLocaleString("id-ID")} tickets`,
                           )
                           .join(", ")}
                       </span>
                     )}
                   </span>
                   <span className="text-right text-xs text-muted-foreground">
-                    <span className="block tabular-nums">Balance {entry.balanceAfter.toLocaleString("id-ID")}</span>
-                    <span className="block tabular-nums">{entry.businessDate}</span>
+                    <span className="block tabular-nums">
+                      Balance {entry.balanceAfter.toLocaleString("id-ID")}
+                    </span>
+                    <span className="block tabular-nums">
+                      {entry.businessDate}
+                    </span>
                   </span>
                 </li>
               ))}
@@ -202,7 +231,11 @@ export default async function CustomerDetailPage({
             <Button
               className="mt-4"
               variant="outline"
-              render={<Link href={`/customers/${id}?ledgerCursor=${encodeURIComponent(ledger.nextCursor)}`} />}
+              render={
+                <Link
+                  href={`/customers/${id}?ledgerCursor=${encodeURIComponent(ledger.nextCursor)}`}
+                />
+              }
             >
               Older activity
             </Button>
@@ -216,7 +249,9 @@ export default async function CustomerDetailPage({
         </CardHeader>
         <CardContent>
           {redemptions.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No prizes redeemed yet.</p>
+            <p className="text-sm text-muted-foreground">
+              No prizes redeemed yet.
+            </p>
           ) : (
             <ul className="divide-y text-sm">
               {redemptions.map((redemption) => (
@@ -229,7 +264,9 @@ export default async function CustomerDetailPage({
                           : "font-medium"
                       }
                     >
-                      {redemption.isVoided ? "Tickets restored" : "Tickets spent"}
+                      {redemption.isVoided
+                        ? "Tickets restored"
+                        : "Tickets spent"}
                     </span>
                     <span className="font-bold tabular-nums">
                       {redemption.isVoided ? "+" : "-"}
@@ -243,7 +280,7 @@ export default async function CustomerDetailPage({
                     {redemption.lines
                       .map(
                         (line) =>
-                          `${line.qty}× ${line.prizeName} · ${line.ticketCostTotal.toLocaleString("id-ID")} tickets`
+                          `${line.qty}× ${line.prizeName} · ${line.ticketCostTotal.toLocaleString("id-ID")} tickets`,
                       )
                       .join(", ")}
                   </p>
@@ -264,7 +301,9 @@ export default async function CustomerDetailPage({
             <Stat label="Sales" value={String(owner.saleCount)} />
             <Stat
               label="Average sale"
-              value={owner.saleCount > 0 ? formatMoney(owner.averageSpend) : "—"}
+              value={
+                owner.saleCount > 0 ? formatMoney(owner.averageSpend) : "—"
+              }
             />
             <Stat label="Active days" value={String(owner.activeDays)} />
             <Stat

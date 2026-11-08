@@ -65,6 +65,10 @@ export function middleware(req: NextRequest) {
 function isPublicPath(pathname: string): boolean {
   return (
     pathname === "/login" ||
+    // Public card downloads authenticate with a short-lived signed capability.
+    // Only these exact routes are public; customer/account APIs stay protected.
+    pathname === "/membership/download" ||
+    pathname === "/api/membership-download" ||
     // Every Better Auth endpoint, plus our own login route. Sign-in must be
     // reachable without a session, and redirecting an API call to an HTML
     // login page would give the client an unparseable response.

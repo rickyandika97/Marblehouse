@@ -206,9 +206,9 @@ model User {
   /// creation, including the seed's owner bootstrap.
   ///
   /// This is NOT our access control — `adminRoles` is deliberately unused
-  /// (D-4) and nothing in this codebase ever reads this column. `isOwner`
-  /// above and `UserShop.role` remain the only roles that matter. Never wire
-  /// permission checks to this field.
+  /// (D-4). Business permissions never read this column. `isOwner`
+  /// above and `UserShop.role` remain the business roles. D-186 reserves
+  /// `technician` here solely as a persistent support-account marker.
   role String?
 
   // ── Domain fields (user.additionalFields in auth.ts) ─────────────────
@@ -286,8 +286,7 @@ model Session {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  /// Set by the admin plugin's impersonation. Impersonation is not enabled in
-  /// Phase 1 — §5.4 permits it only if audit-logged.
+  /// Used by technician-only support sessions (BUILD-LOG D-186).
   impersonatedBy String?
 
   @@index([userId])
@@ -402,6 +401,8 @@ model Sale {
 
 model Customer {
   id              String  @id @default(cuid())
+  membershipToken String @unique @default(dbgenerated("gen_random_uuid()::text"))
+  verifications CustomerVerification[]
   name            String
   phoneRaw        String
   phoneNormalized String  @unique
@@ -1037,4 +1038,16 @@ model AppSetting {
   key       String   @id
   value     Json
   updatedAt DateTime @updatedAt
+}
+
+/// One short customer verification per login session; switching customer replaces it.
+model CustomerVerification {
+  sessionId String @id
+  userId String
+  shopId String?
+  customerId String
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  membershipToken String
+  expiresAt DateTime
+  @@index([expiresAt])
 }

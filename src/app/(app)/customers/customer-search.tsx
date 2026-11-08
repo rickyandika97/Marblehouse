@@ -47,9 +47,11 @@ const SORTS: { value: Sort; label: string }[] = [
 
 export function CustomerSearch({
   initial,
+  isOwner,
   whatsappReminderTemplate,
 }: {
   initial: CustomerRow[];
+  isOwner: boolean;
   whatsappReminderTemplate: string;
 }) {
   const [query, setQuery] = useState("");
@@ -135,7 +137,7 @@ export function CustomerSearch({
           {rows.map((customer) => (
             <li key={customer.id} className="flex items-center hover:bg-muted">
               <Link
-                href={`/customers/${customer.id}`}
+                href={isOwner ? `/customers/${customer.id}` : `/customers/scan?customerId=${encodeURIComponent(customer.id)}`}
                 className="flex min-w-0 flex-1 items-center gap-3 px-4 py-4"
               >
                 <UserRound className="size-5 shrink-0 text-muted-foreground" />

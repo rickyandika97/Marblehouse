@@ -19,6 +19,7 @@ import { username as usernamePlugin, admin as adminPlugin } from "better-auth/pl
 import { nextCookies } from "better-auth/next-js";
 import { prisma } from "@/lib/prisma";
 import { hashPassword, verifyPassword } from "./password";
+import { technicianPlugin } from "@/server/services/technician";
 
 /** Rolling 12-hour session (§5.4). */
 const SESSION_TTL_SECONDS = (() => {
@@ -28,6 +29,7 @@ const SESSION_TTL_SECONDS = (() => {
 
 export const auth = betterAuth({
   appName: "Marblehouse",
+  disabledPaths: ["/admin/impersonate-user", "/admin/stop-impersonating"],
   baseURL: process.env.APP_URL ?? "http://localhost:5050",
   secret: process.env.SESSION_SECRET,
 
@@ -193,9 +195,7 @@ export const auth = betterAuth({
      * Owner-side user management, password setting, and ban/unban — which is
      * what backs our `isActive` concept.
      *
-     * Impersonation is DISABLED. §5.4 permits it only if audit-logged; until
-     * that audit wiring exists, the safer default is off — an un-logged
-     * impersonation of an owner account would be invisible in the audit trail.
+     * Technician impersonation is separate from business-owner access (D-186).
      */
     /**
      * NOTE ON adminRoles: the plugin has its own access-control system with a
@@ -210,6 +210,7 @@ export const auth = betterAuth({
      * services, which enforce the real check first.
      */
     adminPlugin(),
+    technicianPlugin(),
 
     // Must be last: lets route handlers set auth cookies in Next.js.
     nextCookies(),

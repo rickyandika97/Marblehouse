@@ -204,6 +204,23 @@ These are the rules the agent must get right. Everything else is UI.
 - **Walk-ins cannot store marbles or tickets.** If staff try to deposit for a walk-in, the app prompts to capture a phone number first. This is the single reason the phone number matters — say so in the UI copy.
 - Duplicate handling: phone number uniqueness prevents most duplicates. Owner has a merge tool that moves all ledger entries, sales and redemptions from a losing record to a winning one inside one transaction, then soft-deletes the loser.
 
+### 4.4.1 Membership QR verification (8 Nov 2026)
+- Each customer, including existing customers, has a globally unique random QR credential, separate from phone/name/customer ID. QR payloads contain no personal details or balances.
+- Both registration flows display a Red Light Pinball membership card using the supplied logo, with a downloadable PNG and a screenshot option. Registration grants the creating session access to issue that new card.
+- Staff/managers selecting an existing customer must scan that customer's card; a different customer's QR is refused. A standalone scanner opens the account identified by the QR.
+- Verification is server-enforced on customer detail/edit, ledger, card display, marble deposit/withdraw/correction, ticket award/correction and redemption. It lasts five minutes, is bound to login session, user and current shop, and is replaced when another customer is scanned. Direct links/API calls do not bypass it. Existing sale attribution remains a lookup flow.
+- Only OWNER bypasses scanning. Staff/managers can display a card only after verification; only OWNER handles lost cards, verifies identity independently and replaces the credential with a required reason. Replacement is audited without credential values, invalidates the old QR and revokes all verification grants. Merged/inactive cards fail verification.
+- A card is a bearer credential: anyone with a copy can present it. This closes name/phone guessing; it does not prevent deliberate card sharing or copying. Initial card distribution to existing customers must be handled by the owner after checking identity.
+- Camera access requires HTTPS (localhost also works). Denied/unavailable cameras fail closed with retry instructions; no manual name/phone bypass exists for managers/staff.
+
+### 4.4.2 Customer card download links (8 Nov 2026)
+- Membership card details includes **Download link untuk customer** below Save card image. The same existing verification permits issuing the link: no additional scan is required while that verification remains valid. The server rechecks it on issuance and replay; OWNER alone bypasses verification.
+- The button displays a separate download QR with a ten-minute signed capability for exactly that customer's current card. The QR opens `/membership/download#<token>` on the public HTTPS origin (`MEMBERSHIP_DOWNLOAD_ORIGIN`, falling back to `APP_URL`). The owner's domain is `https://admin.redlight.click`; `/login` is not part of the origin. Local development and production have separate data/signing keys, so local QR links are not production download links.
+- The customer page requires no staff login, renders the existing shared card artwork, and offers **Simpan kartu**, file sharing where supported, and image-saving instructions. Refresh/retry is supported until link expiry. The downloaded membership QR remains unchanged and valid until card replacement.
+- Tokens are HMAC-signed with a dedicated purpose using existing SESSION_SECRET. They bind customer ID, a SHA-256 fingerprint of the current membership credential, issuer, expiry and random nonce. The permanent membership credential never appears in the link. The signature and live customer/version/issuer state are checked on every public card retrieval; expired, forged, merged/inactive, replaced-card or deactivated-issuer links fail. Rotating SESSION_SECRET invalidates outstanding links.
+- The signed token stays in the URL fragment and is sent to `/api/membership-download` only in a JSON POST body. Responses are private/no-store, with no-referrer/noindex protections. The public response physically contains only name, member number and the QR image; it cannot read profiles, balances, change a balance or grant staff verification. These two exact public routes are an explicit capability-authenticated exception to staff Actor authentication. Other customer routes remain protected.
+- Creation is idempotent and audited. Only unsigned grant metadata is stored in the idempotency row, and the audit contains expiry/customer attribution; neither stores the bearer signature, signed URL, QR image or permanent card credential. No new database table or image storage is required.
+
 ### 4.5 Marble balances
 - The sale records **money only** (§4.3). Marbles are handed over physically and are not counted by the system at point of sale.
 - The marble balance therefore represents exactly one thing: **marbles a customer physically handed back to the counter for safekeeping.** There is no derived or expected balance to reconcile against, which is what makes this simple.
@@ -541,7 +558,14 @@ patterns will be familiar.
   identifier. Unique, case-insensitive. Email is not collected at all.
 - **`admin` plugin** — gives owner-side user management, password setting, and
   ban/unban (which backs our `isActive` flag). Impersonation is useful for
-  supporting a confused staff member; if enabled it **must** be audit-logged.
+  supporting a confused staff member; business-owner impersonation is not enabled.
+  **Technician exception (8 Nov 2026, BUILD-LOG D-186):** a server-provisioned
+  account opens `/technician` and may impersonate any active business user,
+  including the owner. At the owner's explicit request, technician login and
+  impersonation create no audit events or last-login updates. The account is
+  excluded from business-facing employee/staff lists and cannot be edited or
+  reset through business APIs. Normal business transactions keep their existing
+  records and audit behavior; temporary authentication session state is required.
 - **Password hashing: argon2id** (`@node-rs/argon2`) configured explicitly.
   Minimum 8 characters, blocklist the 100 most common passwords.
 - **Session:** `HttpOnly; Secure; SameSite=Lax` cookie, **rolling 12-hour
@@ -945,8 +969,7 @@ model Session {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  /// Set by the admin plugin's impersonation, which is NOT enabled — §5.4
-  /// permits it only if audit-logged.
+  /// Used by technician-only support sessions (BUILD-LOG D-186).
   impersonatedBy String?
 
   @@index([userId])
@@ -1059,6 +1082,8 @@ model Sale {
 
 model Customer {
   id              String   @id @default(cuid())
+  membershipToken String @unique @default(dbgenerated("gen_random_uuid()::text"))
+  verifications CustomerVerification[]
   name            String
   phoneRaw        String
   phoneNormalized String   @unique             // "+628123456789"
@@ -1082,6 +1107,17 @@ model Customer {
 
   @@index([name])
   @@index([lastSeenAt])
+}
+
+model CustomerVerification {
+  sessionId String @id
+  userId String
+  shopId String?
+  customerId String
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  membershipToken String
+  expiresAt DateTime
+  @@index([expiresAt])
 }
 
 model MarbleLedger {
@@ -1621,6 +1657,11 @@ Error codes to define: `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `VALIDATION_
 | GET | `/api/sales/today-summary` | any | Count, total, split by payment method, for the current work-session shop. |
 
 ### 7.3 Customers, marbles, tickets
+
+Customer download endpoints: authenticated `POST /api/customers/:id/membership/download-link` issues a temporary QR after current customer verification (or owner bypass). Public `POST /api/membership-download` accepts `{token}` and returns only card artwork data after signature/expiry/version validation. Public `/membership/download` is the mobile saving page. See §4.4.2.
+
+Membership endpoints: `POST /api/customers/scan` accepts `{code, customerId?}`; `GET /api/customers/:id/membership` returns a private, uncached QR card after verification; owner-only `POST /api/customers/:id/membership` replaces a lost card with `{reason}`. `MEMBERSHIP_REQUIRED` is HTTP 403. See §4.4.1.
+
 
 | Method | Path | Role | Purpose |
 |---|---|---|---|

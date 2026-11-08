@@ -9,6 +9,7 @@
  */
 
 export const ERROR_CODES = [
+  "MEMBERSHIP_REQUIRED",
   "UNAUTHENTICATED",
   "FORBIDDEN",
   "NOT_FOUND",
@@ -31,6 +32,7 @@ export const ERROR_CODES = [
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
 const STATUS_BY_CODE: Record<ErrorCode, number> = {
+  MEMBERSHIP_REQUIRED: 403,
   UNAUTHENTICATED: 401,
   FORBIDDEN: 403,
   NOT_FOUND: 404,

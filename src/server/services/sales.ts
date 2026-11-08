@@ -1,3 +1,4 @@
+import { isTechnicianAccount } from "@/server/auth/technician";
 /**
  * Sales (PRD §4.3, §7.2, §8.2).
  *
@@ -886,12 +887,13 @@ async function resolveRecordedBy(
     select: {
       id: true,
       banned: true,
+      role: true,
       isOwner: true,
       userShops: { where: { shopId }, select: { shopId: true } },
     },
   });
 
-  if (!user || user.banned) {
+  if (!user || user.banned || isTechnicianAccount(user)) {
     throw notFound("That staff member no longer exists.");
   }
   if (!user.isOwner && user.userShops.length === 0) {

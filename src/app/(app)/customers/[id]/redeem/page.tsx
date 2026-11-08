@@ -1,3 +1,5 @@
+import { hasCustomerAccess } from "@/server/services/membership";
+import { MembershipScanner } from "@/components/membership-scanner";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
@@ -37,6 +39,21 @@ export default async function RedeemPage({
   const { session } = await resolveWorkSession(actor);
   if (!session) redirect("/select-shop");
 
+  if (!(await hasCustomerAccess(actor, id)))
+    return (
+      <div className="space-y-4">
+        <h1 className="text-xl font-bold">Verify membership</h1>
+        <p>
+          Scan this customer&apos;s card before opening their account. Lost
+          card? Ask the owner.
+        </p>
+        <MembershipScanner customerId={id} autoOpen />
+        <Button variant="ghost" render={<Link href="/customers" />}>
+          All customers
+        </Button>
+      </div>
+    );
+
   const customer = await getCustomerForActor(actor, id).catch((e) => {
     if (e instanceof AppError && e.code === "NOT_FOUND") notFound();
     throw e;
@@ -66,14 +83,20 @@ export default async function RedeemPage({
 
   return (
     <div className="space-y-5">
-      <Button variant="ghost" size="sm" render={<Link href={`/customers/${id}`} />}>
+      <Button
+        variant="ghost"
+        size="sm"
+        render={<Link href={`/customers/${id}`} />}
+      >
         <ArrowLeft className="size-4" />
         {customer.name}
       </Button>
 
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Redeem prizes</h1>
-        <p className="mt-1 text-sm text-muted-foreground">{session.shop.name}</p>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {session.shop.name}
+        </p>
       </div>
 
       <RedeemCart

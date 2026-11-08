@@ -20,6 +20,7 @@ export const dynamic = "force-dynamic";
 export default async function IndexPage() {
   const actor = await getActor();
   if (!actor) redirect("/login");
+  if (actor.isTechnician) redirect("/technician");
 
   if (actor.mustChangePassword) redirect("/change-password");
 

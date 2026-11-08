@@ -8111,3 +8111,369 @@ src/server/services/reports.ts                   DetailSaleRow carries ids, not 
 scripts/verify-sale-edit.sh                      30 checks, end to end.
 src/server/services/__tests__/sale-edit.test.ts  22 tests.
 ```
+
+
+### D-186 · Separate technician account and private support screen
+
+**Owner request, 8 Nov 2026.** The previously proposed business-owner
+impersonation implementation was fully removed before this change. The desired
+feature is a separate technician login, username **admin**, that can select any
+active owner, manager or staff account. This is a retroactive auth feature,
+not a new numbered build phase. **Explicit owner override of §5.4:** no
+technician login/impersonation audit events, no support-attribution additions
+to business audit snapshots, and no technician `lastLoginAt` updates. Ordinary
+business writes retain their existing history and audit behavior. Temporary
+Better Auth sessions and the signed return cookie are authentication state,
+not a new activity log; infrastructure access/database logs are outside this
+application's control. Do not promise invisible filesystem/database backups.
+
+Authority is **TECHNICIAN_USER_ID** in server configuration, an immutable user
+ID, rather than a role or username comparison. Unset disables access. The
+`admin` username does not grant Better Auth's admin role: the account has
+`isOwner=false`, no shop memberships, and the reserved plugin role `technician` (which has no Better Auth admin permissions). Business
+owners/managers/staff cannot create, promote, reset, edit, deactivate or assign
+the configured technician through business endpoints. Its ID and persistent technician marker are excluded from
+both Employees and shop staff lists; timetable assignment and transaction
+re-attribution also refuse it. Other staff-name lookups only resolve users
+already referenced by business rows, which the technician never creates under
+its own identity. Business APIs reject the unborrowed support identity at
+`requireActor`; business pages send it to `/technician` before shop selection.
+
+The regular login opens `/technician`: a searchable list showing display name,
+username, global Owner or per-shop Manager/Staff roles. Deactivated users are
+listed but cannot be impersonated. Selecting a user creates a separate Better
+Auth session with `impersonatedBy`; their actual business permissions, shop
+assignments and password-change gate remain intact. A root-level banner names
+the borrowed identity and offers Return to technician or Sign out even on the
+shop picker or after expiry. Borrowed credential changes through the app are
+refused. Start/return use full navigation to discard identity-specific client
+caches. The default Better Auth admin impersonation routes remain disabled.
+
+`services/technician.ts` owns the plugin endpoints. Start requires a live,
+settled, server-configured technician and refuses self/nesting. The signed,
+HttpOnly backup cookie binds the original token to the borrowed session ID.
+Domain session resolution validates this binding, original session expiry,
+current technician configuration/account status, and a hard one-hour age cap
+that Better Auth rolling refresh cannot extend. Return works after borrowed
+session expiry/revocation and deletes that session. Fresh login and logout
+clear the backup cookie. No secondary audit-based parent-session lookup exists.
+No database migration: existing User/Account/Session fields suffice; Prisma and
+PRD comments were reconciled.
+
+Provision/rotate privately **on the server**:
+`npm run technician:setup -- admin` prompts for a hidden password and confirmation.
+`--generate` instead writes random credentials to a mode-0600 file in a private
+temporary directory. The service refuses to take over an existing business
+username, hashes with the configured argon2id implementation, creates no audit
+row, revokes existing support/borrowed sessions on rotation, and the CLI sets
+TECHNICIAN_USER_ID in .env. Restart the app afterward. Do not commit credentials
+or .env. Locally provisioned admin for this request; no production change.
+No technician sessions are left active after verification.
+
+New files (under src unless scripts/):
+- `server/auth/technician.ts`: pure server-configured authorization.
+- `server/services/technician.ts`: session validation, list, start and return.
+- `server/services/technician-setup.ts` and `scripts/setup-technician.ts`:
+  private server provisioning/rotation.
+- `app/technician/page.tsx`, `components/technician-controls.tsx`, and
+  `components/technician-status.tsx`: support screen and return control.
+- `server/services/__tests__/technician.test.ts` and
+  `scripts/verify-technician.ts`: permission checks and real HTTP proof.
+
+Validation: typecheck and lint pass. Full Vitest suite: 575/576 pass across 33
+files; the sole failure is the existing sale-edit test's fixed September 2026
+business date, which now makes its setup void fail the same-day rule. New
+technician permission cases pass; deliberately removing the configured-ID guard
+makes them fail, then restoring it passes. The HTTP verifier on :5051 uses a
+dev/test DB, temporary business fixtures, and a private credential-file path.
+It passes rendered user/role selection, all three target roles, rejection of
+ordinary business users/direct APIs, hidden account/edit/reset/assignment
+protection, CSRF rejection, nested/self/deactivated target rejection, hard
+expiry/return/parent revocation, no support audit or last-login writes, and
+fresh-login/sign-out cleanup. Fixtures and sessions are cleaned up.
+
+The existing Better Auth `User.role` string additionally stores the reserved
+`technician` marker, with no privileged admin-plugin role registered. Unlike
+business roles this is only a support-account marker. It permanently hides and
+protects the account even when TECHNICIAN_USER_ID is unset. Both the marker and
+the configured immutable ID are required to authorize support access. This is
+a deliberate narrow exception to the old schema comment that nothing reads
+`User.role`; OWNER/MANAGER/STAFF still use only isOwner and UserShop.role.
+
+Final verification: native production `npm run build`, typecheck and lint pass;
+the real HTTP verifier also passes against `next start`, including the stored
+technician marker. Four new permission/visibility tests pass. Docker build
+could not connect to the daemon (socket absent). No deployment or push.
+The local database now has one server-provisioned `admin` support account,
+with the reserved marker, no shop assignments, no business rows, no last-login
+stamp, and no active sessions after verification. Its generated credential is
+only in a private temporary file; the setup command rotates it without exposing
+it through business account management. Existing users and owner credentials
+were not changed.
+
+### D-187 · Recover a borrowed session revisiting the technician page
+
+8 Nov 2026: the owner reported a 403 on `/technician` with the banner already
+showing “Support session: Owner”. A borrowed session can revisit this URL by
+refreshing or from another tab. The technician page now redirects validated
+borrowed sessions to `/`, whose existing server router applies password-change,
+shop selection and role landing rules. Ordinary business sessions still receive
+403 and never load the technician user list. No permission was expanded.
+
+Validation: five page regression cases cover borrowed owner/manager/staff,
+ordinary business access, and expired login. All pass alongside the four
+technician authority tests; removing the redirect makes all three borrowed-role
+cases fail. Typecheck and lint pass. Browser automation is unavailable in this
+session; the screenshot is the evidence of the reported state, not a completed
+browser acceptance check. No production build was run against the active dev
+server (doing so earlier replaced its JavaScript chunks and caused 404s; a
+restart restored them).
+
+### D-188 · QR membership cards and server-side customer verification
+
+8 Nov 2026: the owner reported a customer impersonating another same-name
+customer by agreeing to a phone number read aloud. Names and phone numbers
+remain lookup keys, but no longer authorize access to an existing customer's
+account for managers/staff. This is an explicitly requested cross-phase feature.
+
+Each Customer has a unique, database-generated random UUID membershipToken.
+Migration `20261108080000_customer_membership_qr` backfills existing customers
+without changing customer IDs or balances. The QR contains only
+`redlight:<credential>`, never a phone/name/balance or a predictable customer ID.
+The supplied Red Light Pinball logo is stored at `public/redlight-pinball.png`.
+Both registration flows show the branded membership card before continuing;
+it can be saved as a PNG or screenshotted. Credentials stay out of ordinary
+customer DTOs, audit values and idempotency response bodies. Card responses are
+private/no-store and QR generation/decoding is local, without an external service.
+
+Customer list selection opens a camera scanner for managers/staff and requires
+the selected customer's exact QR. The standalone Scan membership action resolves
+the customer directly from their QR. OWNER alone can bypass scanning. A scan
+creates a five-minute CustomerVerification tied to the login session, user,
+shop, customer and current card credential. Scanning another customer replaces
+the session's prior verification. Existing tabs do not gain access to another
+customer; expired or replaced credentials fail server checks. Registration
+creates a temporary grant for that newly created customer so staff can issue
+the first card. Existing sale attribution remains lookup-only, since it records
+money received and cannot spend a customer's tickets/marbles.
+
+The service guard protects customer detail/edit, ledger, card retrieval, marble
+changes, ticket awards/corrections and redemption, including direct API calls.
+Balance/redemption transactions lock the customer before checking verification,
+serializing with card replacement. Redemption void restoration retains its
+existing manager/owner authorization and does not require the customer present
+just to reverse an incorrect transaction. Initial card distribution to existing
+customers must be done by the owner after independent identity verification.
+
+Owner explicitly chose: staff/managers can display a membership card only after
+scanning it; the owner handles lost cards. Owner replacement requires a reason,
+is idempotent, invalidates the old QR and deletes all that customer's grants;
+it records an audit event without old/new credentials. No phone/name fallback
+exists for staff/managers. A QR proves possession, not personal identity: copied
+or deliberately shared cards still work until replaced. Card UI states this.
+Cameras require HTTPS or localhost; denial/unavailability fails closed with
+restart instructions. Camera streams are stopped on closure/unmount.
+
+New files: `server/services/membership.ts`, `components/membership-card.tsx`,
+`components/membership-scanner.tsx`, `/customers/scan`, `/api/customers/scan`,
+`/api/customers/[id]/membership`, the migration, membership integration tests,
+and `scripts/verify-membership.ts`. Expired verification rows are reclaimed by
+the existing maintenance job. Prisma and PRD §6/§4.4.1/§7.3 are reconciled.
+
+Packaging: balances are also excluded from the Edge instrumentation graph,
+following the existing reports/maintenance pattern; the scheduler's balance
+reconciliation import otherwise pulled Node crypto/PNG generation into Edge
+and made the app fail to boot. NEXT_BUILD_DIR optionally isolates build output
+from the running development server; normal .next output is unchanged.
+
+Local database note: the initial `migrate dev` attempt also applied the already
+pending `20260821213000_prevent_overlapping_attendance` migration. Prisma then
+refused to auto-add the required credential column to populated customers.
+The QR-only migration was generated from before/after datamodels, given a DB
+UUID default for safe backfill, and applied using migrate deploy. No reset,
+seed, customer balance edit or production migration was performed. Prisma also
+reported an unrelated Attendance timestamp-type drift during migration planning;
+this QR migration deliberately does not rewrite that column.
+
+Validation: typecheck and lint pass; native production build passes. New
+membership tests and existing redemption tests pass (16 tests). Deliberately
+removing the verification guard makes the new tests fail, then restoring it
+passes. Full Vitest run: 585/586 pass across 35 files; the only failure is the
+already-documented sale-edit fixed historical date setup (D-186), unrelated to
+QR access. The redemption fixture now scans its card before exercising FIFO
+and concurrency, preserving those tests' original purpose.
+
+The HTTP verifier passes on both the local development app and isolated
+production server for owner/manager/staff:
+rendered customer/scanner/detail/redeem pages, registration card, direct URL/API
+protection, wrong-card rejection, matching scan, private card response, generated
+PNG QR decoding back to the exact credential, owner replacement and old-card
+invalidation. Temporary accounts/customers/sessions are cleaned afterward.
+Browser/native automation is unavailable (browser host unavailable/native pipe
+startup failure), so camera permissions, real camera scanning, PNG download and
+responsive visual acceptance still require the actual tablet/phone check.
+Docker compose build could not connect to the daemon (socket absent); native
+build is separate evidence, not a Docker pass. No commit, push or deployment.
+
+
+### D-189 · Cancel membership scanning back to Customers
+
+8 Nov 2026: closing the staff scanner left the user on the full-page Verify
+membership placeholder. Auto-opened scanners now replace that route with
+`/customers` on Cancel, close button, Escape or backdrop dismissal. This applies
+to `/customers/scan` and the customer/redeem verification gates. Inline scanning
+from Customers still just closes the dialog. Successful verification retains
+its existing account navigation, and camera cleanup remains in the effect.
+A synchronous cancellation flag also ignores a late scan response after the
+user cancels, so it cannot navigate them back into an account.
+
+Validation: typecheck and lint pass. Browser automation remains unavailable;
+actual Safari interaction is not claimed as verified. No permission, balance,
+schema or deployment changes.
+
+### D-190 · Cleaner membership card artwork shared by preview and download
+
+8 Nov 2026: owner requested a cleaner, more modern membership card with rounded
+QR corners. Replaced the black/yellow layout with ivory/white surfaces, a slim
+red accent, balanced logo sizing, clearer name typography, a muted member-number
+pill and a rounded white QR frame with a subtle border/shadow. The exported PNG
+also has transparent outer corners. QR modules and their white quiet zone are
+preserved; only the surrounding frame is rounded.
+
+`src/lib/membership-card-image.ts` draws one shared canvas image used by both
+the dialog preview and Save card image, preventing the two designs from
+drifting. Long names wrap and extend the canvas rather than clipping or
+shrinking the QR. No membership credential or authorization behavior changed.
+
+Validation: typecheck, lint, native production build and diff whitespace checks
+pass. Rendered and
+visually inspected regular-name and 120-character-name PNGs using the actual
+shared renderer, with a temporary native canvas adapter outside the repo.
+Both complete card images decode back to their exact test QR credential.
+The preview QR is synthetic, not a real customer's card. Browser automation
+remains unavailable, so actual Safari display/download is not claimed as
+verified. No new production dependency, schema change, commit or deployment.
+
+
+### D-191 · Robot-inspired QR corner markers; remove top red line
+
+8 Nov 2026: owner clarified that the robot should restyle the three QR corner
+squares, rather than move the QR or add a central logo. The shared card renderer
+now adds a small silver/yellow robot-helmet motif inside each black finder
+center. The black outer locating rings, white separators, central black cross,
+diagonal locator runs and the surrounding quiet zone remain readable. The
+header's red top stripe is removed. Both displayed and downloaded cards use
+this artwork; no membership credential or authorization changes.
+
+An initial icon interfered with finder detection and was discarded. The final
+art preserves the black diagonal runs as well as the horizontal/vertical cross.
+Rendered normal/120-character-name cards were visually inspected and both decode
+their synthetic test credential. A fixed set of 32 random synthetic credentials
+was compared with the original undecorated design at four sizes (128 full-card
+and 128 QR-frame attempts per design). The final artwork introduces no new
+failures against that baseline: full-card failures were 6 versus 7 originally;
+QR-frame failures were the same 11 cases in both designs. These are software
+image-decoder comparisons, not a claim that every size or physical camera
+scans successfully. Actual shop-device scanning remains an acceptance check.
+Typecheck, lint, native production build and whitespace checks pass. No new
+dependency, schema change,
+commit or deployment.
+
+### D-192 · Member number inside the QR panel
+
+8 Nov 2026: owner requested the member-number pill below the QR, inside its
+white panel. The shared canvas renderer moves the pill into a taller panel and
+brings that panel closer to the customer name. QR dimensions, robot markers,
+quiet zone, rounded corners and footer spacing are preserved. On-screen and
+saved cards both use the updated artwork; long-name height expansion is retained.
+
+Validation: rendered and visually inspected the updated card; normal-name and
+120-character-name PNGs both decode to the exact synthetic QR credential.
+Typecheck, lint and whitespace checks pass. No permission, data, dependency
+or deployment changes.
+
+### D-193 · Expand the membership card with a PWA-safe close control
+
+8 Nov 2026: tapping the card preview now opens a separate, almost-full-screen
+Base UI dialog. The full card fits inside the available space without cropping
+its QR or stretching its proportions. An explicit 44px X button sits in a
+separate header row and returns to the card-details dialog. Safe-area insets on
+all four sides keep the viewer and close control away from PWA notches and the
+home indicator. The preview says “Tap card to enlarge” and supports keyboard
+activation, Escape and normal dialog focus restoration. Closing the parent or
+loading a replacement card resets the expanded view. Existing save/replace
+controls remain in the details view, without requiring browser navigation.
+
+Validation: typecheck, lint and whitespace checks pass; the local app responds
+successfully. Browser automation remains unavailable, so actual on-device PWA
+interaction and visual fit are still a manual acceptance check. No QR, balance,
+permission, schema or deployment changes.
+
+### D-194 · Temporary customer-facing membership card download QR
+
+8 Nov 2026: owner requested Download link untuk customer below Save card image,
+so customers can scan a second QR and save a clean card instead of photographing
+the counter screen. Owner confirmed the existing ability to display the card
+already establishes verification; no second scan was added. Issuance still
+rechecks the same server permission, including idempotent replay after its
+five-minute grant expires. OWNER keeps the existing bypass.
+
+Owner supplied `https://admin.redlight.click/login`. The origin is
+`https://admin.redlight.click`; local .env now uses that value for the optional
+MEMBERSHIP_DOWNLOAD_ORIGIN while leaving local APP_URL/login unchanged.
+Production defaults to APP_URL unless the override is set. Only configured
+HTTPS origins are accepted, never a request Host header or a /login path.
+These links must be issued on the deployed app with its own database/signing
+key; a link issued locally is not usable against a different production state.
+
+The new button creates a ten-minute signed capability, displayed as a separate
+QR with a countdown and retry/regenerate controls. `/membership/download#token`
+opens an Indonesian phone page, with no login, and retrieves the card through
+JSON POST `/api/membership-download`. The phone renders the existing shared
+artwork and offers Simpan kartu, native file sharing where supported, and an
+image-save fallback instruction. Refresh/retry is supported during validity;
+reads do not consume the link. The download QR never verifies a customer at the
+counter, and reading the public endpoint never creates a staff grant.
+
+Design decision: a purpose-separated HMAC using the existing SESSION_SECRET,
+not a new token/image table. Payload binds customer ID, SHA-256 fingerprint of
+the current membership credential, issuer, expiry and a random nonce. The raw
+membership credential is absent. Signature, expiry, active/unmerged customer,
+current credential version and issuer access status are checked before serving
+artwork. Card replacement, deactivation/merge, issuer deactivation and signing
+key rotation invalidate the appropriate old links. No schema migration or new
+secret/dependency is required for this download feature.
+
+Idempotency stores unsigned metadata only; signing happens after replay's
+permission/version/expiry checks. Audit records creation attribution and expiry,
+never the signed token, URL, QR image or permanent credential. The token is in
+the URL fragment so it does not enter HTTP access logs; it is posted in the body
+for retrieval. Card responses are private/no-store with no-referrer/noindex;
+unexpected public-service errors are sanitized before the shared route logger.
+Public responses use the physically restricted shared artwork builder: name,
+member number and QR only. These two exact middleware exemptions are a narrow,
+explicit capability-authenticated exception to the staff Actor rule; no account,
+search, balance, minting or unrelated API was made public.
+
+New files: `server/services/membership-download.ts`,
+`components/membership-download-link.tsx`,
+`app/api/customers/[id]/membership/download-link/route.ts`,
+`app/api/membership-download/route.ts`, `app/membership/download/{page.tsx,download-card.tsx}`,
+and `server/services/__tests__/membership-download.test.ts`.
+The existing HTTP verifier now covers issuance, guest page/API access, replay,
+expiry gates, replacement and absence of bearer credentials in stored metadata.
+The temporary link QR uses whole-pixel modules; generated flat PNGs are decoded
+with the pure-barcode hint for deterministic encoded-URL checks, not camera
+perspective evidence. Fractional source scaling failed that check and was fixed.
+
+Validation: typecheck, lint, native production build and new membership/download
+integration tests pass (10 tests). Deliberately removing issuance verification
+makes the new suite fail; restoring it passes. Full Vitest: 590/591 across 36
+files; the sole failure remains D-186's historical-date sale-edit setup.
+The HTTP verifier passes against both the local dev app and an isolated
+production server for owner, manager, staff and an anonymous customer, including generated URL QR decoding, unsigned-only
+idempotency storage, retries and replacement invalidation. Browser automation
+was retried and remains unavailable (native pipe/browser host errors), so actual
+phone camera, download/share behavior and interactive layout remain a device
+acceptance check. Docker compose build was attempted but the Docker daemon socket is absent.
+No commit, push or deployment; no production data was changed.

@@ -1,3 +1,4 @@
+import { assertCustomerAccess } from "./membership";
 /** Ticket balance ledger and Phase 3 anti-fraud controls (PRD §4.6). */
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
@@ -126,6 +127,7 @@ async function changeTickets(
   tx: Prisma.TransactionClient,
   redemptionId?: string
 ): Promise<BalanceMutationDTO> {
+  if (type !== "VOID_RESTORE") await assertCustomerAccess(actor, customerId, tx);
   const changed = await tx.customer.updateMany({
     where: {
       id: customerId,

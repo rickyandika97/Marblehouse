@@ -16,6 +16,7 @@
  * (§4.4). Staff who do not know that will not bother collecting it.
  */
 
+import { MembershipCard } from "@/components/membership-card";
 import { useEffect, useRef, useState } from "react";
 import { Loader2, Plus, Search, UserRound } from "lucide-react";
 import {
@@ -108,7 +109,9 @@ export function CustomerPicker({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>{creating ? "New customer" : "Find customer"}</DialogTitle>
+          <DialogTitle>
+            {creating ? "New customer" : "Find customer"}
+          </DialogTitle>
           <DialogDescription>
             {creating
               ? "A phone number is what lets stored marbles and tickets follow them to any branch."
@@ -149,9 +152,7 @@ export function CustomerPicker({
 
               {hasLoaded && !loading && results.length === 0 && (
                 <p className="py-6 text-center text-sm text-muted-foreground">
-                  {query
-                    ? "Nobody matches that."
-                    : "No customers yet."}
+                  {query ? "Nobody matches that." : "No customers yet."}
                 </p>
               )}
 
@@ -185,7 +186,11 @@ export function CustomerPicker({
             </div>
 
             <div className="grid gap-2">
-              <Button variant="outline" size="lg" onClick={() => setCreating(true)}>
+              <Button
+                variant="outline"
+                size="lg"
+                onClick={() => setCreating(true)}
+              >
                 <Plus className="size-5" />
                 New customer
               </Button>
@@ -216,8 +221,10 @@ function NewCustomerForm({
   // If they typed digits into the search, it was almost certainly the phone
   // number they were looking for — carry it across rather than making them
   // type it twice.
-  const looksNumeric = /^[\d+\-\s]+$/.test(initialQuery) && initialQuery.length > 3;
+  const looksNumeric =
+    /^[\d+\-\s]+$/.test(initialQuery) && initialQuery.length > 3;
 
+  const [created, setCreated] = useState<PickedCustomer | null>(null);
   const [name, setName] = useState(looksNumeric ? "" : initialQuery);
   const [phone, setPhone] = useState(looksNumeric ? initialQuery : "");
   const [error, setError] = useState<string | null>(null);
@@ -249,7 +256,7 @@ function NewCustomerForm({
         return;
       }
 
-      onCreated(body);
+      setCreated(body);
     } catch {
       setError("No connection. Check the wifi and try again.");
       idempotencyKey.current = crypto.randomUUID();
@@ -257,6 +264,15 @@ function NewCustomerForm({
       setSaving(false);
     }
   }
+
+  if (created)
+    return (
+      <MembershipCard
+        customerId={created.id}
+        autoOpen
+        onDone={() => onCreated(created)}
+      />
+    );
 
   return (
     <div className="space-y-3">
@@ -294,7 +310,11 @@ function NewCustomerForm({
           disabled={!name.trim() || !phone.trim() || saving}
           onClick={save}
         >
-          {saving ? <Loader2 className="size-5 animate-spin" /> : "Save and use"}
+          {saving ? (
+            <Loader2 className="size-5 animate-spin" />
+          ) : (
+            "Save and use"
+          )}
         </Button>
         <Button variant="ghost" size="lg" onClick={onCancel}>
           Back

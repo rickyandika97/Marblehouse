@@ -24,6 +24,7 @@ export async function requireActorPage(
 ): Promise<Actor> {
   const actor = await getActor();
   if (!actor) redirect("/login");
+  if (actor.isTechnician) redirect("/technician");
 
   if (actor.mustChangePassword && !opts.allowUnsettled) {
     redirect("/change-password");

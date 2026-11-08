@@ -236,3 +236,21 @@ They are gitignored deliberately — keep them out of GitHub.
 - Every sale endpoint is idempotent — staff double-tap on slow wifi.
 - Back up off-machine. A backup that lives only on the machine that broke is
   not a backup.
+
+### Customer membership card downloads
+
+The membership card's **Download link untuk customer** button displays a
+separate QR for a ten-minute customer download page. It uses the same customer
+verification as showing the card; the customer does not need a staff login.
+
+Set production `APP_URL=https://admin.redlight.click`. Optionally set
+`MEMBERSHIP_DOWNLOAD_ORIGIN=https://admin.redlight.click` to override the public
+link origin (omit `/login`). The existing `SESSION_SECRET` signs the temporary
+links; the page and API must run with the same database/signing key as the app
+that issued them. Test links created on localhost do not work against a separate
+production deployment. Deploy this version before using live-domain download QRs.
+
+Only `/membership/download` and `/api/membership-download` are public. Card data
+requires the signed token and exposes no balance/profile operations. Replacing
+a card invalidates its old download links. No extra image storage or database
+migration is needed for the download pipeline itself.

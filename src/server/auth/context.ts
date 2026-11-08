@@ -10,6 +10,7 @@
  * wanting a service that takes no context, you are about to write a
  * permission hole.
  */
+import { isTechnician } from "./technician";
 import { cache } from "react";
 import type { Shop, WorkSession } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -25,6 +26,8 @@ export interface ShopRole {
 
 export interface Actor {
   sessionId: string;
+  isTechnician?: boolean;
+  impersonatedBy?: string | null;
   userId: string;
   username: string;
   displayName: string;
@@ -169,6 +172,8 @@ export const getActor = cache(async (): Promise<Actor | null> => {
 
   return {
     sessionId: session.id,
+    isTechnician: !session.impersonatedBy && isTechnician(user),
+    impersonatedBy: session.impersonatedBy,
     userId: user.id,
     // `username` is nullable in Better Auth's schema but is always set by our
     // creation path; fall back to the synthetic-email local part rather than

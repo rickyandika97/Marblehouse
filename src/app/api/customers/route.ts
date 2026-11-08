@@ -41,8 +41,8 @@ export async function POST(req: Request) {
     const key = parseIdempotencyKey(req);
     const input = await parseJson(req, createCustomerSchema);
 
-    return runIdempotent(actor, key, "POST /api/customers", () =>
-      createCustomer(actor, input)
+    return runIdempotent(actor, key, "POST /api/customers", (tx) =>
+      createCustomer(actor, input, tx)
     );
   });
 }

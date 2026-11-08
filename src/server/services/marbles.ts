@@ -1,3 +1,4 @@
+import { assertCustomerAccess } from "./membership";
 /** Marble balance ledger (PRD §4.5, §7.3). */
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
@@ -96,6 +97,7 @@ async function changeMarbles(
   reason: string | undefined,
   tx: Prisma.TransactionClient
 ): Promise<BalanceMutationDTO> {
+  await assertCustomerAccess(actor, customerId, tx);
   const changed = await tx.customer.updateMany({
     where: {
       id: customerId,

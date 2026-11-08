@@ -1,3 +1,4 @@
+import { assertCustomerAccess } from "./membership";
 /**
  * Prize redemption (PRD §4.9, §7.4).
  *
@@ -110,6 +111,7 @@ export async function createRedemption(
   tx: Prisma.TransactionClient,
   meta: { ipAddress?: string | null } = {}
 ): Promise<RedemptionReceiptDTO | RedemptionReceiptCostDTO> {
+  await assertCustomerAccess(actor, input.customerId, tx);
   const shopId = actor.workSession.shopId;
 
   const merged = new Map<string, number>();

@@ -110,7 +110,9 @@ export async function cleanupExpiredData(now: Date = new Date()): Promise<{
     now.getTime() - IDEMPOTENCY_KEY_TTL_HOURS * 3_600_000
   );
 
-  const [sessions, keys] = await Promise.all([
+  const [, sessions, keys] = await Promise.all([
+    // Verification already fails at expiry; reclaim its short-lived credential copy.
+    prisma.customerVerification.deleteMany({ where: { expiresAt: { lt: now } } }),
     prisma.session.deleteMany({ where: { expiresAt: { lt: now } } }),
     prisma.idempotencyKey.deleteMany({ where: { createdAt: { lt: keyCutoff } } }),
   ]);

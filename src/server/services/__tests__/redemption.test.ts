@@ -9,6 +9,7 @@
  * Like the concurrency suite these write real rows and clean up afterwards,
  * because two racing transactions cannot share a rollback.
  */
+import { scanMembership } from "../membership";
 import { describe, expect, test, afterAll, afterEach } from "vitest";
 import { Prisma } from "@prisma/client";
 import { prisma, makeShop, makePrize, makeBatch, uniq } from "./helpers";
@@ -85,6 +86,8 @@ async function fixture(opts: {
       shop,
     },
   } as unknown as Actor & { workSession: NonNullable<Actor["workSession"]> };
+
+  await prisma.$transaction(tx => scanMembership(actor, { code: `redlight:${customer.membershipToken}` }, tx));
 
   return {
     shopId: shop.id,

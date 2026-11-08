@@ -1,3 +1,4 @@
+import { isTechnicianAccount } from "@/server/auth/technician";
 /**
  * The staff timetable (PRD §4.14.1).
  *
@@ -125,7 +126,7 @@ async function assertRosterable(userId: string, shopId: string): Promise<void> {
   const [user, link] = await Promise.all([
     prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, banned: true, displayName: true },
+      select: { id: true, role: true, banned: true, displayName: true },
     }),
     prisma.userShop.findUnique({
       where: { userId_shopId: { userId, shopId } },
@@ -133,7 +134,7 @@ async function assertRosterable(userId: string, shopId: string): Promise<void> {
     }),
   ]);
 
-  if (!user) throw notFound("That employee no longer exists.");
+  if (!user || isTechnicianAccount(user)) throw notFound("That employee no longer exists.");
   if (user.banned) {
     throw new AppError(
       "VALIDATION_FAILED",

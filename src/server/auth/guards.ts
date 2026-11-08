@@ -17,6 +17,7 @@ import { AppError, forbidden, unauthenticated } from "@/server/errors";
 export async function requireActor(): Promise<Actor> {
   const actor = await getActor();
   if (!actor) throw unauthenticated();
+  if (actor.isTechnician) throw forbidden("Select a user from the technician screen first.");
   return actor;
 }
 

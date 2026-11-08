@@ -8,8 +8,9 @@
  * Route handlers under app/api/auth/* authenticate, validate with Zod, and
  * call in here — nothing more.
  */
+import { isTechnician } from "@/server/auth/technician";
 import { z } from "zod";
-import { headers } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { APIError } from "better-auth/api";
 import { auth } from "@/server/auth/auth";
 import { prisma } from "@/lib/prisma";
@@ -87,13 +88,16 @@ export async function login(input: LoginInput): Promise<LoginResult> {
     select: {
       id: true,
       isOwner: true,
+      role: true,
       mustChangePassword: true,
     },
   });
 
   if (!user) throw genericFailure;
 
-  await prisma.user.update({
+  await clearTechnicianBackup();
+
+  if (!isTechnician(user)) await prisma.user.update({
     where: { id: user.id },
     data: { lastLoginAt: new Date() },
   });
@@ -101,17 +105,24 @@ export async function login(input: LoginInput): Promise<LoginResult> {
   // The following request resolves the timetable before deciding whether the
   // picker is needed. Keep this conservative login hint rather than re-create
   // roster logic beside the day-start service.
-  const needsWorkSession = true;
+  const needsWorkSession = !isTechnician(user);
 
   return {
     mustChangePassword: user.mustChangePassword,
     needsWorkSession,
-    landingPath: landingPathFor(user.isOwner),
+    landingPath: isTechnician(user) ? "/technician" : landingPathFor(user.isOwner),
   };
+}
+
+async function clearTechnicianBackup() {
+  const context = await auth.$context;
+  const cookie = context.createAuthCookie("technician_session");
+  (await cookies()).set(cookie.name, "", { ...cookie.attributes, sameSite: "lax", maxAge: 0 });
 }
 
 export async function logout(): Promise<void> {
   await signOutCurrent();
+  await clearTechnicianBackup();
 }
 
 // ─────────────────────────── Change password ───────────────────────────
@@ -127,6 +138,7 @@ export async function changePassword(
   actor: Actor,
   input: ChangePasswordInput
 ): Promise<void> {
+  if (actor.impersonatedBy || actor.isTechnician) throw new AppError("FORBIDDEN", "End the support session before changing credentials.");
   const policy = checkPasswordPolicy(input.newPassword);
   if (!policy.ok) {
     throw new AppError("VALIDATION_FAILED", policy.message, {

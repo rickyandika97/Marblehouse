@@ -2,6 +2,8 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // Isolate verification/build output from a running development server.
+  distDir: process.env.NEXT_BUILD_DIR ?? ".next",
 
   // Background jobs run only in the Node server runtime. Keep node-cron's
   // child_process/path imports out of Next's browser/edge webpack graph.
@@ -50,6 +52,9 @@ const nextConfig: NextConfig = {
         "services/reports",
         "services/backup",
         "services/maintenance",
+        // Balance services now import QR credentials (Node crypto + PNG generation).
+        "services/membership",
+        "services/balances",
       ];
 
       config.externals.push(

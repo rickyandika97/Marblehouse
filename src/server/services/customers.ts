@@ -1,3 +1,4 @@
+import { assertCustomerAccess, grantCustomerAccess } from "./membership";
 /**
  * Customers (PRD §4.4, §7.3, §8.5).
  *
@@ -168,12 +169,13 @@ export async function searchCustomers(
 
 export async function createCustomer(
   actor: Actor,
-  input: CreateCustomerInput
+  input: CreateCustomerInput,
+  tx: Prisma.TransactionClient = prisma
 ): Promise<CustomerDTO> {
   const phoneNormalized = normalizePhone(input.phone);
 
   try {
-    const customer = await prisma.customer.create({
+    const customer = await tx.customer.create({
       data: {
         name: input.name,
         phoneRaw: input.phone,
@@ -182,6 +184,7 @@ export async function createCustomer(
       },
     });
 
+    await grantCustomerAccess(actor, customer.id, customer.membershipToken, tx);
     return toCustomerDTO(customer);
   } catch (e) {
     if (
@@ -211,6 +214,7 @@ export async function updateCustomer(
   id: string,
   input: UpdateCustomerInput
 ): Promise<CustomerDTO> {
+  await assertCustomerAccess(actor, id);
   const existing = await prisma.customer.findUnique({ where: { id } });
   if (!existing || existing.mergedIntoId) {
     throw notFound("That customer no longer exists.");
@@ -282,6 +286,7 @@ export async function getCustomerForActor(
   actor: Actor,
   id: string
 ): Promise<CustomerDTO | CustomerOwnerDTO> {
+  await assertCustomerAccess(actor, id);
   const customer = await getCustomer(id);
 
   if (!actor.isOwner) {

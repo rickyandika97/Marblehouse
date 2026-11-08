@@ -1,3 +1,4 @@
+import { isTechnicianAccount, businessUsersWhere } from "@/server/auth/technician";
 /**
  * Employee administration (PRD §7.9, §3.4 Admin rows; D-122).
  *
@@ -236,6 +237,7 @@ export async function listEmployees(actor: Actor) {
   if (!actor.isOwner) throw forbidden("Only the owner can manage employees.");
 
   const users = await prisma.user.findMany({
+    where: businessUsersWhere(),
     include: userShopsInclude,
     // Active users first: `banned` ascending puts false (and null) above true.
     orderBy: [{ banned: "asc" }, { isOwner: "desc" }, { displayName: "asc" }],
@@ -455,7 +457,7 @@ export async function updateEmployee(
     where: { id: userId },
     include: userShopsInclude,
   });
-  if (!existing) throw notFound("That employee no longer exists.");
+  if (!existing || isTechnicianAccount(existing)) throw notFound("That employee no longer exists.");
 
   // An owner must not be able to lock themselves out of their own system.
   if (existing.id === actor.userId) {
@@ -620,7 +622,7 @@ export async function resetEmployeePassword(
   }
 
   const target = await prisma.user.findUnique({ where: { id: userId } });
-  if (!target) throw notFound("That employee no longer exists.");
+  if (!target || isTechnicianAccount(target)) throw notFound("That employee no longer exists.");
 
   const policy = checkPasswordPolicy(newPassword);
   if (!policy.ok) {
@@ -688,7 +690,7 @@ export async function listShopStaff(actor: Actor, shopId: string) {
   if (!shop) throw notFound("That shop no longer exists.");
 
   const users = await prisma.user.findMany({
-    where: { isOwner: false },
+    where: { isOwner: false, ...businessUsersWhere() },
     include: userShopsInclude,
     orderBy: [{ banned: "asc" }, { displayName: "asc" }],
   });
@@ -751,7 +753,7 @@ export async function setShopAssignment(
   ]);
 
   if (!shop) throw notFound("That shop no longer exists.");
-  if (!user) throw notFound("That employee no longer exists.");
+  if (!user || isTechnicianAccount(user)) throw notFound("That employee no longer exists.");
 
   // An OWNER reaches every shop without an assignment (§3.1). Creating one
   // would be a no-op row that later reads as meaningful, and the DB CHECK

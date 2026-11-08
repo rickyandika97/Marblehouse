@@ -7,6 +7,7 @@
  * you: straight to their new record, since there's no cart waiting.
  */
 
+import { MembershipCard } from "@/components/membership-card";
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
@@ -24,11 +25,15 @@ import {
 
 export function AddCustomer() {
   const router = useRouter();
+  const [createdId, setCreatedId] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [duplicateOf, setDuplicateOf] = useState<{ id: string; name: string } | null>(null);
+  const [duplicateOf, setDuplicateOf] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
   const [saving, setSaving] = useState(false);
   const idempotencyKey = useRef<string>(crypto.randomUUID());
 
@@ -59,7 +64,10 @@ export function AddCustomer() {
       const body = await res.json().catch(() => null);
 
       if (!res.ok) {
-        if (body?.error?.code === "DUPLICATE_PHONE" && body.error.details?.customerId) {
+        if (
+          body?.error?.code === "DUPLICATE_PHONE" &&
+          body.error.details?.customerId
+        ) {
           setDuplicateOf({
             id: body.error.details.customerId,
             name: body.error.details.name ?? "That customer",
@@ -73,7 +81,7 @@ export function AddCustomer() {
 
       setOpen(false);
       reset();
-      router.push(`/customers/${body.id}`);
+      setCreatedId(body.id);
     } catch {
       setError("No connection. Check the wifi and try again.");
       idempotencyKey.current = crypto.randomUUID();
@@ -84,6 +92,17 @@ export function AddCustomer() {
 
   return (
     <>
+      {createdId && (
+        <MembershipCard
+          key={createdId}
+          customerId={createdId}
+          autoOpen
+          onDone={() => {
+            router.push(`/customers/${createdId}`);
+            setCreatedId(null);
+          }}
+        />
+      )}
       <Button onClick={() => setOpen(true)}>
         <UserRoundPlus className="size-4" />
         Add customer
@@ -100,8 +119,8 @@ export function AddCustomer() {
           <DialogHeader>
             <DialogTitle>New customer</DialogTitle>
             <DialogDescription>
-              A phone number is what lets stored marbles and tickets follow
-              them to any branch.
+              A phone number is what lets stored marbles and tickets follow them
+              to any branch.
             </DialogDescription>
           </DialogHeader>
 
@@ -113,7 +132,10 @@ export function AddCustomer() {
             }}
           >
             <div className="space-y-1.5">
-              <label htmlFor="new-customer-name" className="text-sm font-medium">
+              <label
+                htmlFor="new-customer-name"
+                className="text-sm font-medium"
+              >
                 Name
               </label>
               <Input
@@ -126,7 +148,10 @@ export function AddCustomer() {
             </div>
 
             <div className="space-y-1.5">
-              <label htmlFor="new-customer-phone" className="text-sm font-medium">
+              <label
+                htmlFor="new-customer-phone"
+                className="text-sm font-medium"
+              >
                 Phone
               </label>
               <Input
@@ -143,7 +168,10 @@ export function AddCustomer() {
             {duplicateOf && (
               <p className="text-sm text-destructive">
                 {duplicateOf.name} already uses that number.{" "}
-                <Link href={`/customers/${duplicateOf.id}`} className="underline">
+                <Link
+                  href={`/customers/${duplicateOf.id}`}
+                  className="underline"
+                >
                   Open their record
                 </Link>{" "}
                 instead.
@@ -159,7 +187,10 @@ export function AddCustomer() {
               >
                 Cancel
               </Button>
-              <Button type="submit" disabled={!name.trim() || !phone.trim() || saving}>
+              <Button
+                type="submit"
+                disabled={!name.trim() || !phone.trim() || saving}
+              >
                 {saving && <Loader2 className="size-4 animate-spin" />}
                 Save customer
               </Button>

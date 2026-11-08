@@ -26,6 +26,7 @@ export interface AuthUserFields {
   banned: boolean | null;
   displayName: string;
   isOwner: boolean | null;
+  role: string | null;
   defaultShopId: string | null;
   mustChangePassword: boolean | null;
 }
@@ -34,6 +35,7 @@ export interface AuthSessionFields {
   id: string;
   userId: string;
   expiresAt: Date;
+  impersonatedBy?: string | null;
 }
 
 export interface ResolvedSession {
@@ -59,6 +61,10 @@ export async function getAuthSession(): Promise<ResolvedSession | null> {
   const user = result.user as unknown as AuthUserFields;
   const session = result.session as unknown as AuthSessionFields;
 
+  if (session.impersonatedBy) {
+    const status = await auth.api.technicianSessionStatus({ headers: await headers() }).catch(() => ({ valid: false }));
+    if (!status.valid) return null;
+  }
   return { user, session };
 }
 

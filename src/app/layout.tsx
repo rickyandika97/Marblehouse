@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import { TechnicianStatus } from "@/components/technician-status";
 import { Providers } from "./providers";
 import { Toaster } from "@/components/ui/sonner";
 
@@ -77,6 +78,7 @@ export default function RootLayout({
     >
       <body className="min-h-full subpixel-antialiased">
         <Providers>
+          <TechnicianStatus />
           {children}
           <Toaster position="top-center" richColors />
         </Providers>

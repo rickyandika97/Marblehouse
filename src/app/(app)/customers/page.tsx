@@ -1,3 +1,4 @@
+import { MembershipScanner } from "@/components/membership-scanner";
 import { requireActorPage } from "@/server/auth/page-guard";
 import { searchCustomers } from "@/server/services/customers";
 import { getCustomerWhatsAppReminderTemplate } from "@/server/services/settings";
@@ -36,7 +37,9 @@ export default async function CustomersPage() {
         <AddCustomer />
       </div>
 
+      <MembershipScanner />
       <CustomerSearch
+        isOwner={actor.isOwner}
         initial={customers}
         whatsappReminderTemplate={whatsappReminderTemplate}
       />

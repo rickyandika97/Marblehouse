@@ -9,6 +9,7 @@
  */
 
 export const ERROR_CODES = [
+  "MEMBERSHIP_ACTIVATION_REQUIRED",
   "MEMBERSHIP_REQUIRED",
   "UNAUTHENTICATED",
   "FORBIDDEN",
@@ -32,6 +33,7 @@ export const ERROR_CODES = [
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
 const STATUS_BY_CODE: Record<ErrorCode, number> = {
+  MEMBERSHIP_ACTIVATION_REQUIRED: 403,
   MEMBERSHIP_REQUIRED: 403,
   UNAUTHENTICATED: 401,
   FORBIDDEN: 403,
@@ -63,7 +65,7 @@ export class AppError extends Error {
   constructor(
     code: ErrorCode,
     message: string,
-    details: Record<string, unknown> = {}
+    details: Record<string, unknown> = {},
   ) {
     super(message);
     this.name = "AppError";

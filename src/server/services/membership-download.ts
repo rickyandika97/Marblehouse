@@ -11,7 +11,7 @@ import { prisma } from "@/lib/prisma";
 import type { Actor } from "@/server/auth/context";
 import { AppError, forbidden, notFound } from "@/server/errors";
 import { writeAudit } from "@/server/audit";
-import { assertCustomerAccess, membershipCardData } from "./membership";
+import { assertCustomerProfileAccess, membershipCardData } from "./membership";
 
 export const DOWNLOAD_TTL_MS = 10 * 60 * 1000;
 const payloadSchema = z
@@ -82,7 +82,7 @@ export async function createMembershipDownload(
 ): Promise<DownloadGrant> {
   membershipDownloadOrigin();
   signature(""); // Fail before writing an audit if the signing key is missing.
-  await assertCustomerAccess(actor, id, tx);
+  await assertCustomerProfileAccess(actor, id, tx);
   const customer = await tx.customer.findUnique({ where: { id } });
   if (!customer || !customer.isActive || customer.mergedIntoId)
     throw notFound();
@@ -114,7 +114,7 @@ export async function presentMembershipDownload(
   tx: Prisma.TransactionClient = prisma,
 ) {
   const grant = payloadSchema.parse(raw);
-  await assertCustomerAccess(actor, grant.c, tx);
+  await assertCustomerProfileAccess(actor, grant.c, tx);
   if (grant.u !== actor.userId) throw forbidden();
   if (grant.e <= Date.now()) throw invalidLink();
   const customer = await tx.customer.findUnique({ where: { id: grant.c } });

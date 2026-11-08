@@ -221,6 +221,16 @@ These are the rules the agent must get right. Everything else is UI.
 - The signed token stays in the URL fragment and is sent to `/api/membership-download` only in a JSON POST body. Responses are private/no-store, with no-referrer/noindex protections. The public response physically contains only name, member number and the QR image; it cannot read profiles, balances, change a balance or grant staff verification. These two exact public routes are an explicit capability-authenticated exception to staff Actor authentication. Other customer routes remain protected.
 - Creation is idempotent and audited. Only unsigned grant metadata is stored in the idempotency row, and the audit contains expiry/customer attribution; neither stores the bearer signature, signed URL, QR image or permanent card credential. No new database table or image storage is required.
 
+### 4.4.3 One-time membership activation (8 Nov 2026; supersedes first-issuance restrictions above)
+- The owner explicitly chose to start **all customers already in the database as unactivated**, including previously issued/verified cards. The migration adds nullable `Customer.membershipActivatedAt`, without backfill or changes to existing IDs, tokens, balances or history. New registrations also start unactivated and no longer receive a bootstrap transaction grant.
+- Managers/staff can open normal unactivated customer profiles, edit their ordinary contact fields, read ledger/redemption history and issue the first membership card/download link without scanning. Existing role restrictions remain: this does not expose owner analytics or cost fields.
+- Clicking Deposit, Withdraw or Redeem on an unactivated profile opens the existing card/download flow as **Activate membership**. Staff confirms **Customer has saved the card — activate membership** only after handing over the first card. Closing/downloading/viewing alone does not activate. Ticket awards and manager balance corrections use the same activation/scan gate.
+- Confirmation is an idempotent, audited, one-time server transition. It clears all existing verification grants for that customer and grants no access itself. Staff must then scan the saved QR before proceeding. Direct transaction APIs enforce activation and QR verification too. All subsequent staff/manager profile and card access requires the QR, including lost-card situations; only OWNER retains bypass/replacement authority. Activation cannot be reset through profile edits or repeated activation calls.
+- A customer already holding their card can activate by presenting that exact QR: successful scanning activates once and creates the genuine verification grant. Wrong-customer, inactive and merged-away cards cannot activate the selected account.
+- First-issuance download links remain usable for their original ten-minute lifetime after activation so the customer can finish saving; issuing another link after activation requires verification. The permanent QR is unchanged by activation.
+- Owner card replacement never reopens enrollment. Owner merges preserve activation if either input was activated and revoke both customers' old verification grants. Money/stock rules and ordinary owner bypass are unchanged.
+- This is a staff-confirmed first-issuance rollout, as explicitly requested; no OTP/provider/owner approval was added. Once activated, the previous owner-only lost-card process remains in force.
+
 ### 4.5 Marble balances
 - The sale records **money only** (§4.3). Marbles are handed over physically and are not counted by the system at point of sale.
 - The marble balance therefore represents exactly one thing: **marbles a customer physically handed back to the counter for safekeeping.** There is no derived or expected balance to reconcile against, which is what makes this simple.
@@ -1083,6 +1093,7 @@ model Sale {
 model Customer {
   id              String   @id @default(cuid())
   membershipToken String @unique @default(dbgenerated("gen_random_uuid()::text"))
+  membershipActivatedAt DateTime?
   verifications CustomerVerification[]
   name            String
   phoneRaw        String
@@ -1657,6 +1668,8 @@ Error codes to define: `UNAUTHENTICATED`, `FORBIDDEN`, `NOT_FOUND`, `VALIDATION_
 | GET | `/api/sales/today-summary` | any | Count, total, split by payment method, for the current work-session shop. |
 
 ### 7.3 Customers, marbles, tickets
+
+Activation endpoints: authenticated `GET /api/customers/:id/membership/status` returns only activated/verified flags; authenticated `POST /api/customers/:id/membership/activate` requires `{cardSaved: true}` and a one-time unactivated account. `MEMBERSHIP_ACTIVATION_REQUIRED` is HTTP 403. See §4.4.3.
 
 Customer download endpoints: authenticated `POST /api/customers/:id/membership/download-link` issues a temporary QR after current customer verification (or owner bypass). Public `POST /api/membership-download` accepts `{token}` and returns only card artwork data after signature/expiry/version validation. Public `/membership/download` is the mobile saving page. See §4.4.2.
 

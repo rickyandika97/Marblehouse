@@ -1,5 +1,6 @@
 "use client";
 
+import { useMembershipOperationGate } from "@/components/membership-operation-gate";
 import { useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Check, ImageIcon, Loader2, Minus, Plus } from "lucide-react";
@@ -47,6 +48,7 @@ export function RedeemCart({
   prizes: RedeemablePrize[];
 }) {
   const router = useRouter();
+  const membership = useMembershipOperationGate(customerId);
   const [cart, setCart] = useState<Record<string, number>>({});
   const [submitting, setSubmitting] = useState(false);
   const key = useRef(crypto.randomUUID());
@@ -60,7 +62,7 @@ export function RedeemCart({
 
   const totalTickets = lines.reduce(
     (sum, l) => sum + l.prize.ticketCost * l.qty,
-    0
+    0,
   );
   const remaining = ticketBalance - totalTickets;
 
@@ -105,7 +107,21 @@ export function RedeemCart({
       const result = await response.json().catch(() => null);
 
       if (!response.ok) {
-        toast.error(result?.error?.message ?? "Could not complete that redemption.");
+        if (
+          ["MEMBERSHIP_REQUIRED", "MEMBERSHIP_ACTIVATION_REQUIRED"].includes(
+            result?.error?.code,
+          )
+        ) {
+          void membership.authorize(() =>
+            toast.success(
+              "Membership verified. Confirm your redemption again.",
+            ),
+          );
+          return;
+        }
+        toast.error(
+          result?.error?.message ?? "Could not complete that redemption.",
+        );
         return;
       }
 
@@ -114,7 +130,9 @@ export function RedeemCart({
       toast.success("Redemption complete", {
         description: `Hand over: ${lines
           .map((l) => `${l.qty} × ${l.prize.name}`)
-          .join(", ")} · New balance ${result.ticketBalanceAfter.toLocaleString("id-ID")} tickets`,
+          .join(
+            ", ",
+          )} · New balance ${result.ticketBalanceAfter.toLocaleString("id-ID")} tickets`,
         duration: 10_000,
       });
 
@@ -131,6 +149,7 @@ export function RedeemCart({
 
   return (
     <div className="space-y-5">
+      {membership.dialog}
       {/* Pinned header: the balance staff are spending, decrementing live. */}
       <div className="sticky top-14 z-30 -mx-4 border-b bg-background px-4 py-3">
         <div className="flex items-baseline gap-3">
@@ -146,7 +165,7 @@ export function RedeemCart({
             <p
               className={cn(
                 "text-2xl font-bold tabular-nums",
-                remaining < 0 && "text-destructive"
+                remaining < 0 && "text-destructive",
               )}
             >
               {remaining.toLocaleString("id-ID")}
@@ -158,8 +177,8 @@ export function RedeemCart({
 
       {prizes.length === 0 ? (
         <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
-          This shop has no prizes stocked yet. A manager adds items in
-          Settings → Prizes, then brings quantity in from Stock → Receive.
+          This shop has no prizes stocked yet. A manager adds items in Settings
+          → Prizes, then brings quantity in from Stock → Receive.
         </div>
       ) : (
         <ul className="grid gap-3 sm:grid-cols-2">
@@ -176,7 +195,7 @@ export function RedeemCart({
                 key={prize.id}
                 className={cn(
                   "rounded-xl border p-4",
-                  disabled && "bg-muted/40 opacity-60"
+                  disabled && "bg-muted/40 opacity-60",
                 )}
               >
                 <div className="flex items-start gap-3">
@@ -246,7 +265,9 @@ export function RedeemCart({
                       size="icon"
                       variant={qty > 0 ? "outline" : "default"}
                       aria-label={`Add one ${prize.name}`}
-                      disabled={disabled || atStockLimit || prize.ticketCost > remaining}
+                      disabled={
+                        disabled || atStockLimit || prize.ticketCost > remaining
+                      }
                       onClick={() => add(prize)}
                     >
                       <Plus className="size-4" />

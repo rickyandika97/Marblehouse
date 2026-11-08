@@ -1,9 +1,10 @@
+import { RedeemMembershipButton } from "@/components/membership-operation-gate";
 import { MembershipCard } from "@/components/membership-card";
-import { hasCustomerAccess } from "@/server/services/membership";
+import { hasCustomerProfileAccess } from "@/server/services/membership";
 import { MembershipScanner } from "@/components/membership-scanner";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, Gift, MessageCircle } from "lucide-react";
+import { ArrowLeft, MessageCircle } from "lucide-react";
 import { requireActorPage } from "@/server/auth/page-guard";
 import { getCustomerForActor } from "@/server/services/customers";
 import { listSales } from "@/server/services/sales";
@@ -54,7 +55,13 @@ export default async function CustomerDetailPage({
   const { id } = await params;
   const { ledgerCursor } = await searchParams;
 
-  if (!(await hasCustomerAccess(actor, id)))
+  const canOpenProfile = await hasCustomerProfileAccess(actor, id).catch(
+    (error) => {
+      if (error instanceof AppError && error.code === "NOT_FOUND") notFound();
+      throw error;
+    },
+  );
+  if (!canOpenProfile)
     return (
       <div className="space-y-4">
         <h1 className="text-xl font-bold">Verify membership</h1>
@@ -154,14 +161,7 @@ export default async function CustomerDetailPage({
         Send WhatsApp reminder
       </Button>
 
-      <Button
-        size="xl"
-        className="w-full"
-        render={<Link href={`/customers/${customer.id}/redeem`} />}
-      >
-        <Gift className="size-5" />
-        Redeem prizes
-      </Button>
+      <RedeemMembershipButton customerId={customer.id} />
 
       <BalanceActions
         customerId={customer.id}

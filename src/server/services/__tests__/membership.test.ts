@@ -21,7 +21,12 @@ import type { Actor } from "@/server/auth/context";
 async function customer(tx: Parameters<Parameters<typeof withRollback>[0]>[0]) {
   const suffix = uniq();
   return tx.customer.create({
-    data: { name: "Kevin", phoneRaw: suffix, phoneNormalized: suffix },
+    data: {
+      name: "Kevin",
+      phoneRaw: suffix,
+      phoneNormalized: suffix,
+      membershipActivatedAt: new Date(),
+    },
   });
 }
 afterAll(() => prisma.$disconnect());

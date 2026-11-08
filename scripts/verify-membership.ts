@@ -41,6 +41,7 @@ class Browser {
     const response = await fetch(base + path, {
       method: method ?? (body ? "POST" : "GET"),
       redirect: "manual",
+      signal: AbortSignal.timeout(30000),
       headers: {
         Origin: base,
         "Content-Type": "application/json",
@@ -159,7 +160,7 @@ async function main() {
       (await guest.call("/api/membership-download", {})).status,
       422,
     );
-    // Registration's grant suffices; there is no second scan just to issue a download link.
+    // Unactivated first-card issuance is permitted without granting transaction access.
     const initialLink = await staff.call(
       `/api/customers/${row.id}/membership/download-link`,
       {},
@@ -171,6 +172,126 @@ async function main() {
       (await guest.call("/api/membership-download", { token: initialToken }))
         .status,
       200,
+    );
+
+    for (const browser of [manager, staff]) {
+      assert.equal(
+        (await browser.call("/customers/nonexistent-activation-fixture"))
+          .status,
+        404,
+      );
+      assert.equal(
+        (await browser.call("/customers/nonexistent-activation-fixture/redeem"))
+          .status,
+        404,
+      );
+      const profile = await browser.call(`/api/customers/${row.id}`);
+      assert.equal(profile.status, 200, "unactivated profiles remain visible");
+      const data = await profile.json();
+      assert.equal(data.membershipActivated, false);
+      assert.ok(
+        !("totalSpend" in data),
+        "staff permissions do not expand to owner analytics",
+      );
+      assert.equal(
+        (await browser.call(`/api/customers/${row.id}/ledger`)).status,
+        200,
+      );
+      assert.equal(
+        (await browser.call(`/api/customers/${row.id}/membership`)).status,
+        200,
+      );
+      const page = await browser.call(`/customers/${row.id}`);
+      assert.equal(page.status, 200);
+      assert.ok((await page.text()).includes("Redeem prizes"));
+      const redeem = await browser.call(`/customers/${row.id}/redeem`);
+      assert.equal(redeem.status, 200);
+      assert.ok((await redeem.text()).includes("Activate membership"));
+    }
+    assert.equal(
+      (await db.customer.findUniqueOrThrow({ where: { id: row.id } }))
+        .membershipActivatedAt,
+      null,
+      "viewing/downloading a first card does not activate or verify it",
+    );
+    for (const [path, body] of [
+      ["/api/marbles/deposit", { customerId: row.id, qty: 1 }],
+      ["/api/marbles/withdraw", { customerId: row.id, qty: 1 }],
+      [
+        "/api/tickets/award",
+        { customerId: row.id, qty: 1, ticketsCollected: true },
+      ],
+      [
+        "/api/redemptions",
+        { customerId: row.id, lines: [{ prizeItemId: "fake", qty: 1 }] },
+      ],
+    ] as const) {
+      const denied = await staff.call(path, body);
+      assert.equal(denied.status, 403);
+      assert.equal(
+        (await denied.json()).error.code,
+        "MEMBERSHIP_ACTIVATION_REQUIRED",
+      );
+    }
+    assert.equal(
+      (await staff.call(`/api/customers/${row.id}/membership/activate`, {}))
+        .status,
+      422,
+    );
+    assert.equal(
+      (
+        await staff.call(`/api/customers/${row.id}/membership/activate`, {
+          cardSaved: false,
+        })
+      ).status,
+      422,
+    );
+    const activationKey = randomUUID();
+    const activated = await staff.call(
+      `/api/customers/${row.id}/membership/activate`,
+      { cardSaved: true },
+      "POST",
+      { "Idempotency-Key": activationKey },
+    );
+    assert.equal(activated.status, 200);
+    const activationReceipt = await activated.json();
+    const replayActivation = await staff.call(
+      `/api/customers/${row.id}/membership/activate`,
+      { cardSaved: true },
+      "POST",
+      { "Idempotency-Key": activationKey },
+    );
+    assert.deepEqual(await replayActivation.json(), activationReceipt);
+    assert.equal(
+      await db.auditLog.count({
+        where: { entityId: row.id, action: "ACTIVATE_MEMBERSHIP" },
+      }),
+      1,
+    );
+    assert.equal(
+      await db.customerVerification.count({ where: { customerId: row.id } }),
+      0,
+    );
+    assert.deepEqual(
+      await (
+        await staff.call(`/api/customers/${row.id}/membership/status`)
+      ).json(),
+      { activated: true, verified: false },
+    );
+    assert.equal(
+      (
+        await staff.call(`/api/customers/${row.id}/membership/activate`, {
+          cardSaved: true,
+        })
+      ).status,
+      409,
+      "activation cannot reset a protected account",
+    );
+    assert.equal(
+      (await guest.call("/api/membership-download", { token: initialToken }))
+        .status,
+      200,
+      "the first download link survives activation for customer handoff",
     );
 
     for (const browser of [manager, staff]) {
@@ -254,6 +375,18 @@ async function main() {
         "Generated QR round-trips to the exact credential",
       );
       assert.equal(card.canReplace, false);
+      assert.equal(card.membershipActivated, true);
+      const resetAttempt = await browser.call(
+        `/api/customers/${row.id}`,
+        { membershipActivated: false, membershipActivatedAt: null },
+        "PATCH",
+      );
+      assert.equal(resetAttempt.status, 200);
+      assert.equal(
+        (await resetAttempt.json()).membershipActivated,
+        true,
+        "profile edits cannot reset activation",
+      );
       const key = randomUUID();
       const linkResponse = await browser.call(
         `/api/customers/${row.id}/membership/download-link`,
@@ -373,7 +506,7 @@ async function main() {
         "lost-card replacement invalidates all earlier download links",
       );
     console.log(
-      "PASS: rendered pages for owner, manager, staff; registration card; direct URL/API protection; wrong card; matching scan; card privacy; owner replacement; old QR invalidation; public download page and capability API; issuance permission/replay; generated link QR; expiry gates; replacement invalidation",
+      "PASS: rendered pages for owner, manager, staff; registration card; direct URL/API protection; wrong card; matching scan; card privacy; owner replacement; old QR invalidation; public download page and capability API; issuance permission/replay; generated link QR; expiry gates; replacement invalidation; unactivated profiles; activation confirmation/idempotency; mandatory post-activation scan",
     );
   } finally {
     await db.customerVerification.deleteMany({

@@ -1,4 +1,4 @@
-import { assertCustomerAccess } from "./membership";
+import { assertCustomerProfileAccess } from "./membership";
 /**
  * Combined balance history and ledger/cache reconciliation (PRD §4.5–4.6).
  */
@@ -37,7 +37,7 @@ export async function listCustomerLedger(
   customerId: string,
   cursorValue?: string
 ): Promise<{ entries: LedgerEntryDTO[]; nextCursor: string | null }> {
-  await assertCustomerAccess(actor, customerId);
+  await assertCustomerProfileAccess(actor, customerId);
   const customer = await prisma.customer.findUnique({
     where: { id: customerId },
     select: { isActive: true, mergedIntoId: true },

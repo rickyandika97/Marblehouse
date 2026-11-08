@@ -13,10 +13,14 @@ export function MembershipScanner({
   customerId,
   autoOpen = false,
   onVerified,
+  onCancel,
+  hideTrigger = false,
 }: {
   customerId?: string;
   autoOpen?: boolean;
   onVerified?: (id: string) => void;
+  onCancel?: () => void;
+  hideTrigger?: boolean;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(autoOpen);
@@ -32,7 +36,10 @@ export function MembershipScanner({
     setOpen(next);
     // Full-page verification has no useful destination after cancellation.
     // Inline scanning on the customer list simply closes its dialog.
-    if (!next && autoOpen) router.replace("/customers");
+    if (!next) {
+      if (onCancel) onCancel();
+      else if (autoOpen) router.replace("/customers");
+    }
   }
 
   useEffect(() => {
@@ -97,9 +104,11 @@ export function MembershipScanner({
   }, [open, customerId, attempt, router, video]);
   return (
     <>
-      <Button variant="outline" onClick={() => handleOpenChange(true)}>
-        Scan membership
-      </Button>
+      {!hideTrigger && (
+        <Button variant="outline" onClick={() => handleOpenChange(true)}>
+          Scan membership
+        </Button>
+      )}
       <Dialog open={open} onOpenChange={handleOpenChange}>
         <DialogContent className="max-w-md">
           <DialogTitle>Scan membership card</DialogTitle>

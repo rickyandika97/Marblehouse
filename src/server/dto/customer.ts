@@ -32,6 +32,7 @@ export interface CustomerDTO {
   marbleBalance: number;
   ticketBalance: number;
   isActive: boolean;
+  membershipActivated: boolean;
 }
 
 /** Owner-only analytics, additive on top of CustomerDTO (§8.5). */
@@ -61,6 +62,7 @@ export function toCustomerDTO(c: Customer): CustomerDTO {
     marbleBalance: c.marbleBalance,
     ticketBalance: c.ticketBalance,
     isActive: c.isActive,
+    membershipActivated: c.membershipActivatedAt !== null,
   };
 }
 
@@ -81,7 +83,7 @@ export interface CustomerStats {
  */
 export function toCustomerOwnerDTO(
   c: Customer,
-  stats: CustomerStats
+  stats: CustomerStats,
 ): CustomerOwnerDTO {
   const spend = Number(stats.totalSpend);
   const average = stats.saleCount > 0 ? spend / stats.saleCount : 0;

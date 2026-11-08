@@ -29,6 +29,7 @@ interface CustomerRow {
   phoneDisplay: string;
   marbleBalance: number;
   ticketBalance: number;
+  membershipActivated: boolean;
 }
 
 type Sort = "recent" | "marbles" | "tickets";
@@ -67,7 +68,7 @@ export function CustomerSearch({
       try {
         const res = await fetch(
           `/api/customers?q=${encodeURIComponent(query)}&sort=${sort}`,
-          { cache: "no-store" }
+          { cache: "no-store" },
         );
         if (!res.ok || cancelled) return;
         const body = await res.json();
@@ -106,7 +107,11 @@ export function CustomerSearch({
 
       <div className="flex items-center gap-2">
         <span className="shrink-0 text-sm text-muted-foreground">Sort</span>
-        <div className="flex flex-wrap gap-2" role="group" aria-label="Sort customers">
+        <div
+          className="flex flex-wrap gap-2"
+          role="group"
+          aria-label="Sort customers"
+        >
           {SORTS.map((option) => {
             const active = sort === option.value;
             return (
@@ -137,7 +142,11 @@ export function CustomerSearch({
           {rows.map((customer) => (
             <li key={customer.id} className="flex items-center hover:bg-muted">
               <Link
-                href={isOwner ? `/customers/${customer.id}` : `/customers/scan?customerId=${encodeURIComponent(customer.id)}`}
+                href={
+                  isOwner || !customer.membershipActivated
+                    ? `/customers/${customer.id}`
+                    : `/customers/scan?customerId=${encodeURIComponent(customer.id)}`
+                }
                 className="flex min-w-0 flex-1 items-center gap-3 px-4 py-4"
               >
                 <UserRound className="size-5 shrink-0 text-muted-foreground" />
@@ -169,8 +178,8 @@ export function CustomerSearch({
                       customer.phone,
                       renderCustomerWhatsAppReminder(
                         whatsappReminderTemplate,
-                        customer
-                      )
+                        customer,
+                      ),
                     )}
                     target="_blank"
                     rel="noreferrer"

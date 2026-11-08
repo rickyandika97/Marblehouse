@@ -14,6 +14,9 @@ export const scanMembershipSchema = z.object({
 export const replaceMembershipSchema = z.object({
   reason: z.string().trim().min(3).max(500),
 });
+export const activateMembershipSchema = z.object({
+  cardSaved: z.literal(true),
+});
 export const VERIFICATION_MS = 5 * 60 * 1000;
 
 export async function grantCustomerAccess(
@@ -52,9 +55,108 @@ export async function hasCustomerAccess(
     grant.shopId === (actor.workSession?.shopId ?? null) &&
     grant.customerId === customerId &&
     grant.expiresAt.getTime() > Date.now() &&
+    grant.customer.membershipActivatedAt !== null &&
     grant.customer.isActive &&
     !grant.customer.mergedIntoId &&
     grant.membershipToken === grant.customer.membershipToken
+  );
+}
+
+/** Unactivated profiles can be read and their first card issued, but never transact. */
+export async function hasCustomerProfileAccess(
+  actor: Actor,
+  id: string,
+  tx: Prisma.TransactionClient = prisma,
+) {
+  if (actor.isOwner) return true;
+  const customer = await tx.customer.findUnique({
+    where: { id },
+    select: { isActive: true, mergedIntoId: true, membershipActivatedAt: true },
+  });
+  if (!customer || !customer.isActive || customer.mergedIntoId)
+    throw notFound();
+  return (
+    customer.membershipActivatedAt === null || hasCustomerAccess(actor, id, tx)
+  );
+}
+
+export async function assertCustomerProfileAccess(
+  actor: Actor,
+  id: string,
+  tx: Prisma.TransactionClient = prisma,
+) {
+  if (tx !== prisma)
+    await tx.$queryRaw`SELECT id FROM "Customer" WHERE id = ${id} FOR UPDATE`;
+  if (!(await hasCustomerProfileAccess(actor, id, tx)))
+    throw new AppError(
+      "MEMBERSHIP_REQUIRED",
+      "Scan this customer's membership QR to continue. Only the owner can bypass scanning.",
+    );
+}
+
+export async function membershipStatus(
+  actor: Actor,
+  id: string,
+  tx: Prisma.TransactionClient = prisma,
+) {
+  const customer = await tx.customer.findUnique({
+    where: { id },
+    select: { isActive: true, mergedIntoId: true, membershipActivatedAt: true },
+  });
+  if (!customer || !customer.isActive || customer.mergedIntoId)
+    throw notFound();
+  return {
+    activated: customer.membershipActivatedAt !== null,
+    verified: await hasCustomerAccess(actor, id, tx),
+  };
+}
+
+async function activateRecord(
+  actor: Actor,
+  id: string,
+  tx: Prisma.TransactionClient,
+  reason: string,
+) {
+  const activatedAt = new Date();
+  await tx.customer.update({
+    where: { id },
+    data: { membershipActivatedAt: activatedAt },
+  });
+  // First-card issuance must never leave an old bootstrap/scan grant usable.
+  await tx.customerVerification.deleteMany({ where: { customerId: id } });
+  await writeAudit(
+    actor,
+    {
+      entity: "Customer",
+      entityId: id,
+      action: "ACTIVATE_MEMBERSHIP",
+      after: { activatedAt: activatedAt.toISOString() },
+      reason,
+    },
+    tx,
+  );
+  return { activated: true, activatedAt: activatedAt.toISOString() };
+}
+
+export async function activateMembership(
+  actor: Actor,
+  id: string,
+  tx: Prisma.TransactionClient,
+) {
+  await tx.$queryRaw`SELECT id FROM "Customer" WHERE id = ${id} FOR UPDATE`;
+  const customer = await tx.customer.findUnique({ where: { id } });
+  if (!customer || !customer.isActive || customer.mergedIntoId)
+    throw notFound();
+  if (customer.membershipActivatedAt !== null)
+    throw new AppError(
+      "CONFLICT",
+      "This membership is already activated. Scan the customer's card; only the owner can replace a lost card.",
+    );
+  return activateRecord(
+    actor,
+    id,
+    tx,
+    "Staff confirmed the customer has saved their first membership card.",
   );
 }
 
@@ -65,6 +167,23 @@ export async function assertCustomerAccess(
 ) {
   if (tx !== prisma)
     await tx.$queryRaw`SELECT id FROM "Customer" WHERE id = ${customerId} FOR UPDATE`;
+  if (!actor.isOwner) {
+    const customer = await tx.customer.findUnique({
+      where: { id: customerId },
+      select: {
+        membershipActivatedAt: true,
+        isActive: true,
+        mergedIntoId: true,
+      },
+    });
+    if (!customer || !customer.isActive || customer.mergedIntoId)
+      throw notFound();
+    if (customer.membershipActivatedAt === null)
+      throw new AppError(
+        "MEMBERSHIP_ACTIVATION_REQUIRED",
+        "Give the customer their membership card and activate it, then scan their QR before changing balances or redeeming prizes.",
+      );
+  }
   if (!(await hasCustomerAccess(actor, customerId, tx)))
     throw new AppError(
       "MEMBERSHIP_REQUIRED",
@@ -91,18 +210,29 @@ export async function scanMembership(
     throw forbidden(
       "This card belongs to a different customer. Scan the selected customer's card, or return to Scan membership.",
     );
+  if (customer.membershipActivatedAt === null)
+    await activateRecord(
+      actor,
+      customer.id,
+      tx,
+      "Customer presented their membership QR at the counter.",
+    );
   await grantCustomerAccess(actor, customer.id, token, tx);
   return { customerId: customer.id };
 }
 
 export async function getMembershipCard(actor: Actor, id: string) {
   const customer = await prisma.$transaction(async (tx) => {
-    await assertCustomerAccess(actor, id, tx);
+    await assertCustomerProfileAccess(actor, id, tx);
     return tx.customer.findUnique({ where: { id } });
   });
   if (!customer || !customer.isActive || customer.mergedIntoId)
     throw notFound();
-  return { ...(await membershipCardData(customer)), canReplace: actor.isOwner };
+  return {
+    ...(await membershipCardData(customer)),
+    canReplace: actor.isOwner,
+    membershipActivated: customer.membershipActivatedAt !== null,
+  };
 }
 
 /** Shared artwork input; never includes phone, balances or privileged fields. */
@@ -135,7 +265,10 @@ export async function replaceMembershipCard(
     throw notFound();
   await tx.customer.update({
     where: { id },
-    data: { membershipToken: randomUUID() },
+    data: {
+      membershipToken: randomUUID(),
+      membershipActivatedAt: customer.membershipActivatedAt ?? new Date(),
+    },
   });
   await tx.customerVerification.deleteMany({ where: { customerId: id } });
   await writeAudit(

@@ -1,5 +1,6 @@
 "use client";
 
+import { useMembershipOperationGate } from "@/components/membership-operation-gate";
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
@@ -22,7 +23,10 @@ type Action =
   | "marble-adjust"
   | "ticket-adjust";
 
-const DETAILS: Record<Action, { title: string; endpoint: string; success: string }> = {
+const DETAILS: Record<
+  Action,
+  { title: string; endpoint: string; success: string }
+> = {
   "marble-deposit": {
     title: "Deposit marbles",
     endpoint: "/api/marbles/deposit",
@@ -60,6 +64,7 @@ export function BalanceActions({
   awardReasonThreshold: number;
 }) {
   const router = useRouter();
+  const membership = useMembershipOperationGate(customerId);
   const [action, setAction] = useState<Action | null>(null);
   const [quantity, setQuantity] = useState("");
   const [reason, setReason] = useState("");
@@ -67,7 +72,7 @@ export function BalanceActions({
   const [submitting, setSubmitting] = useState(false);
   const key = useRef(crypto.randomUUID());
 
-  function open(next: Action) {
+  function showAction(next: Action) {
     setAction(next);
     setQuantity("");
     setReason("");
@@ -75,9 +80,14 @@ export function BalanceActions({
     key.current = crypto.randomUUID();
   }
 
+  function open(next: Action) {
+    void membership.authorize(() => showAction(next));
+  }
+
   const parsed = Number(quantity);
   const isAdjust = action === "marble-adjust" || action === "ticket-adjust";
-  const needsAwardReason = action === "ticket-award" && parsed > awardReasonThreshold;
+  const needsAwardReason =
+    action === "ticket-award" && parsed > awardReasonThreshold;
   const canSubmit =
     !submitting &&
     Number.isInteger(parsed) &&
@@ -110,6 +120,15 @@ export function BalanceActions({
       });
       const result = await response.json().catch(() => null);
       if (!response.ok) {
+        if (
+          ["MEMBERSHIP_REQUIRED", "MEMBERSHIP_ACTIVATION_REQUIRED"].includes(
+            result?.error?.code,
+          )
+        ) {
+          setAction(null);
+          void membership.authorize(() => setAction(action));
+          return;
+        }
         toast.error(result?.error?.message ?? "Could not update that balance.");
         return;
       }
@@ -129,12 +148,23 @@ export function BalanceActions({
 
   return (
     <>
+      {membership.dialog}
       <div className="grid gap-3 sm:grid-cols-3">
-        <Button size="lg" onClick={() => open("marble-deposit")}>Deposit marbles</Button>
-        <Button size="lg" variant="outline" onClick={() => open("marble-withdraw")}>
+        <Button size="lg" onClick={() => open("marble-deposit")}>
+          Deposit marbles
+        </Button>
+        <Button
+          size="lg"
+          variant="outline"
+          onClick={() => open("marble-withdraw")}
+        >
           Withdraw marbles
         </Button>
-        <Button size="lg" variant="secondary" onClick={() => open("ticket-award")}>
+        <Button
+          size="lg"
+          variant="secondary"
+          onClick={() => open("ticket-award")}
+        >
           Award tickets
         </Button>
       </div>
@@ -150,7 +180,10 @@ export function BalanceActions({
         </div>
       )}
 
-      <Dialog open={action !== null} onOpenChange={(openState) => !openState && setAction(null)}>
+      <Dialog
+        open={action !== null}
+        onOpenChange={(openState) => !openState && setAction(null)}
+      >
         <DialogContent>
           {action && (
             <>
@@ -170,7 +203,14 @@ export function BalanceActions({
                   inputMode={isAdjust ? "text" : "numeric"}
                   autoFocus
                   value={quantity}
-                  onChange={(event) => setQuantity(event.target.value.replace(isAdjust ? /[^\d-]/g : /\D/g, ""))}
+                  onChange={(event) =>
+                    setQuantity(
+                      event.target.value.replace(
+                        isAdjust ? /[^\d-]/g : /\D/g,
+                        "",
+                      ),
+                    )
+                  }
                   placeholder={isAdjust ? "+50 or -25" : "0"}
                 />
               </label>
@@ -183,7 +223,9 @@ export function BalanceActions({
                       type="button"
                       variant="outline"
                       size="sm"
-                      onClick={() => setQuantity(String((Number(quantity) || 0) + amount))}
+                      onClick={() =>
+                        setQuantity(String((Number(quantity) || 0) + amount))
+                      }
                     >
                       +{amount}
                     </Button>
@@ -216,14 +258,18 @@ export function BalanceActions({
                     type="checkbox"
                     className="size-6 shrink-0"
                     checked={ticketsCollected}
-                    onChange={(event) => setTicketsCollected(event.target.checked)}
+                    onChange={(event) =>
+                      setTicketsCollected(event.target.checked)
+                    }
                   />
                   Tickets counted and collected?
                 </label>
               )}
 
               <DialogFooter>
-                <Button variant="outline" onClick={() => setAction(null)}>Cancel</Button>
+                <Button variant="outline" onClick={() => setAction(null)}>
+                  Cancel
+                </Button>
                 <Button disabled={!canSubmit} onClick={submit}>
                   {submitting && <Loader2 className="size-4 animate-spin" />}
                   Confirm
@@ -236,4 +282,3 @@ export function BalanceActions({
     </>
   );
 }
-

@@ -254,3 +254,19 @@ Only `/membership/download` and `/api/membership-download` are public. Card data
 requires the signed token and exposes no balance/profile operations. Replacing
 a card invalidates its old download links. No extra image storage or database
 migration is needed for the download pipeline itself.
+
+### First-time membership activation
+
+The activation migration starts all existing customers as unactivated. Staff
+can open their ordinary profiles and hand over the first card using the card
+image or customer download QR. Deposit, Withdraw and Redeem prompt staff to
+confirm the customer has saved the card, then scan its QR before proceeding.
+Ticket awards and corrections use the same gate. New customers follow the same
+first-card confirmation process. A customer already holding their card can
+present it to activate by scanning directly.
+
+Activation is one-time: it does not itself verify a transaction. Afterward,
+staff/managers need the card QR to reopen the profile or reprint the card;
+only the owner handles lost-card replacement. Closing the popup without
+confirming leaves the account unactivated. Deploy the new migration with this
+version; never reset activation flags to handle a lost card.

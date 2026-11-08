@@ -8477,3 +8477,89 @@ was retried and remains unavailable (native pipe/browser host errors), so actual
 phone camera, download/share behavior and interactive layout remain a device
 acceptance check. Docker compose build was attempted but the Docker daemon socket is absent.
 No commit, push or deployment; no production data was changed.
+
+### D-195 · One-time staff-confirmed membership activation
+
+8 Nov 2026: owner replaced the owner/OTP-assisted first-card proposal with an
+explicitly simpler rollout: staff can open unactivated profiles normally, but
+Deposit/Withdraw/Redeem must show an Activate membership popup, hand over the
+existing card/download flow, confirm the card has been saved, then scan it
+before proceeding. Owner answered the rollout question explicitly: **start all
+existing customers as unactivated**, even if a card was previously issued.
+
+Migration `20261108095000_membership_activation` adds nullable
+Customer.membershipActivatedAt with no backfill. It was applied to local dev;
+all existing IDs, membership tokens, balances and histories are preserved.
+New registrations also start unactivated. The old registration bootstrap
+verification grant is removed, so issuing a first card cannot authorize funds.
+Prisma schema and PRD §6/§4.4.3/§7.3 are reconciled.
+
+The server now separates profile/first-card access from transaction access.
+Unactivated profiles and ordinary histories/contact editing remain available
+within existing role DTO restrictions; owner analytics/costs are not expanded.
+First-card display and customer download link issuance also work without a
+scan while unactivated. Deposits, withdrawals, ticket awards, manager balance
+corrections and redemption remain blocked, including direct API requests.
+
+Explicit activation requires cardSaved=true, locks the customer, accepts the
+transition only once, audits it, and deletes ALL prior verification grants.
+It does not create a new grant. Staff must scan the customer's QR after that
+confirmation. A customer who already possesses their card can instead present
+the matching QR: scanning activates once and grants the real verification in
+the same transaction. A mismatched card does not activate either selection.
+Viewing/downloading/canceling alone does not change activation state.
+
+Activated profiles, card reprints and download-link issuance return to the
+existing matching-QR requirement; only the owner bypasses/replaces lost cards.
+Neither another activation request nor editing profile fields can reset that
+state. A first-issuance download link keeps its ten-minute validity after
+activation so the customer can finish saving. Replacement preserves/establishes
+activation and invalidates old cards/links. Merging preserves activation from
+either customer and clears both sets of old grants, with activation state in
+the existing merge audit. This prevents a protected record being merged into
+an unactivated record to reopen first issuance.
+
+UI: customer rows route unactivated customers directly to their profile.
+Balance and redeem buttons use a shared operation gate which checks live
+status, opens the existing card/download popup for activation, then the camera,
+and continues the selected action only after verification. Direct redemption
+URLs have the same activation/scanning sequence. Open forms/carts receiving an
+expired-grant error prompt for a scan while preserving entered values/cart.
+Canceling the activation popup leaves the profile unactivated and makes no
+transaction. The activation button wraps on narrow phones; its parent popup's
+close button is anchored within the popup. Missing profiles/redemption URLs
+retain real 404 responses rather than surfacing an unhandled AppError.
+
+New files: `components/membership-operation-gate.tsx`,
+`app/api/customers/[id]/membership/{activate,status}/route.ts`, the migration,
+and `server/services/__tests__/membership-activation.test.ts`.
+Membership/download fixtures now explicitly create activated records when
+proving the existing activated-account security contract. The existing HTTP
+verifier adds first-card/profile access for staff and managers, direct-API
+blocks, explicit confirmation, activation idempotency, no automatic grant,
+mandatory post-activation scanning, state-reset rejection and true 404s.
+
+Validation so far: typecheck/lint pass; 28 focused membership/activation/download/
+redemption tests pass. An isolated copied module deliberately retaining old
+grants makes the activation tests fail; the restored production module passes.
+No running application's permission guard was edited for this mutation check.
+Full Vitest run: 597/598 across 37 files; only D-186's existing historical-date
+sale-edit setup fails. Local dev and isolated production HTTP role/download verification pass,
+including the new activation flow and real 404 checks. Native production build
+passes. The dev server required a reload after regenerating Prisma, and later
+became unresponsive during build checks; it was restarted with polling after
+the isolated production checks. The HTTP verifier now has a per-request timeout.
+Docker packaging was attempted but the Docker daemon socket is absent. Browser automation remains unavailable, so real phone
+activation/camera/download/PWA layout is still a device acceptance check.
+No commit, push or production deployment has been performed for this change.
+
+### D-196 · Activation dialog button colors and cancel label
+
+8 Nov 2026: owner confirmed unactivated profile access applies to managers as
+well as staff (already implemented/tested in D-195). Save card image now uses a
+white outlined button with dark text in both themes. The previous Done button
+is renamed Cancel and uses a solid red fill with white text. It retains the
+existing close handler: cancellation never activates a membership.
+
+Validation: typecheck, lint and whitespace checks pass. Presentation only; no
+permission, activation-state, transaction or deployment changes.

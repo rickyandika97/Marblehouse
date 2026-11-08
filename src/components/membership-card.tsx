@@ -1,4 +1,5 @@
 "use client";
+import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { MembershipDownloadLink } from "@/components/membership-download-link";
 import { Expand, X } from "lucide-react";
@@ -19,16 +20,22 @@ type Card = {
   memberNumber: string;
   qr: string;
   canReplace: boolean;
+  membershipActivated: boolean;
 };
 export function MembershipCard({
   customerId,
   autoOpen = false,
   onDone,
+  onActivated,
+  hideTrigger = false,
 }: {
   customerId: string;
   autoOpen?: boolean;
   onDone?: () => void;
+  onActivated?: () => void;
+  hideTrigger?: boolean;
 }) {
+  const router = useRouter();
   const [open, setOpen] = useState(autoOpen);
   const [expanded, setExpanded] = useState(false);
   const [card, setCard] = useState<Card | null>(null);
@@ -38,6 +45,14 @@ export function MembershipCard({
   const [busy, setBusy] = useState(false);
   const [version, setVersion] = useState(0);
   const replacementKey = useRef(crypto.randomUUID());
+  const activationKey = useRef(crypto.randomUUID());
+  const activationAttempt = useRef(0);
+  useEffect(
+    () => () => {
+      activationAttempt.current++;
+    },
+    [],
+  );
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -65,6 +80,7 @@ export function MembershipCard({
     };
   }, [open, customerId, version]);
   function close() {
+    activationAttempt.current++;
     setExpanded(false);
     setOpen(false);
     setCard(null);
@@ -96,6 +112,44 @@ export function MembershipCard({
       setBusy(false);
     }
   }
+  async function activate() {
+    if (busy) return;
+    const attempt = ++activationAttempt.current;
+    setBusy(true);
+    setError("");
+    try {
+      const response = await fetch(
+        `/api/customers/${customerId}/membership/activate`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Idempotency-Key": activationKey.current,
+          },
+          body: JSON.stringify({ cardSaved: true }),
+        },
+      );
+      const body = await response.json();
+      if (attempt !== activationAttempt.current) return;
+      if (!response.ok) {
+        setError(body?.error?.message ?? "Could not activate membership.");
+        return;
+      }
+      setExpanded(false);
+      setOpen(false);
+      setCard(null);
+      if (onActivated) onActivated();
+      else {
+        onDone?.();
+        router.refresh();
+      }
+    } catch {
+      if (attempt === activationAttempt.current)
+        setError("No connection. Try again.");
+    } finally {
+      if (attempt === activationAttempt.current) setBusy(false);
+    }
+  }
   function download() {
     if (!card || !cardImage) return;
     const anchor = document.createElement("a");
@@ -105,9 +159,11 @@ export function MembershipCard({
   }
   return (
     <>
-      <Button variant="outline" onClick={() => setOpen(true)}>
-        Membership card
-      </Button>
+      {!hideTrigger && (
+        <Button variant="outline" onClick={() => setOpen(true)}>
+          Membership card
+        </Button>
+      )}
       <Dialog
         open={open}
         onOpenChange={(next) => {
@@ -115,9 +171,20 @@ export function MembershipCard({
           else setOpen(true);
         }}
       >
-        <DialogContent className="max-h-[90dvh] max-w-md overflow-y-auto">
-          <DialogTitle>Membership card</DialogTitle>
+        <DialogContent className="relative max-h-[90dvh] max-w-md overflow-y-auto">
+          <DialogTitle>
+            {card && !card.membershipActivated
+              ? "Activate membership"
+              : "Membership card"}
+          </DialogTitle>
           <DialogDescription>
+            {card && !card.membershipActivated && (
+              <>
+                Give the customer their first card using the download link
+                below. Confirm only after they have saved it, then scan their QR
+                before any balance change or redemption.{" "}
+              </>
+            )}
             Save this card on the customer&apos;s phone. Keep the QR private:
             anyone with a copy can use it.
           </DialogDescription>
@@ -175,10 +242,24 @@ export function MembershipCard({
                   />
                 </DialogContent>
               </Dialog>
-              <Button onClick={download} disabled={!cardImage}>
+              <Button
+                variant="outline"
+                className="border-neutral-200 bg-white text-neutral-950 hover:bg-neutral-50 dark:border-neutral-200 dark:bg-white dark:text-neutral-950 dark:hover:bg-neutral-50"
+                onClick={download}
+                disabled={!cardImage}
+              >
                 Save card image
               </Button>
               <MembershipDownloadLink customerId={customerId} />
+              {!card.membershipActivated && (
+                <Button
+                  className="h-auto min-h-14 whitespace-normal px-3 py-3 text-center"
+                  disabled={busy}
+                  onClick={activate}
+                >
+                  Customer has saved the card — activate membership
+                </Button>
+              )}
               {card.canReplace && (
                 <div className="space-y-2 rounded-lg border p-3">
                   <p className="text-sm">
@@ -204,8 +285,12 @@ export function MembershipCard({
           ) : (
             !error && <p>Loading card…</p>
           )}
-          <Button variant="ghost" onClick={close}>
-            Done
+          <Button
+            variant="destructive"
+            className="bg-red-600 text-white hover:bg-red-700 dark:bg-red-600 dark:hover:bg-red-700"
+            onClick={close}
+          >
+            Cancel
           </Button>
         </DialogContent>
       </Dialog>

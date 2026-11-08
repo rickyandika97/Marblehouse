@@ -1,4 +1,4 @@
-import { assertCustomerAccess, grantCustomerAccess } from "./membership";
+import { assertCustomerProfileAccess } from "./membership";
 /**
  * Customers (PRD §4.4, §7.3, §8.5).
  *
@@ -112,7 +112,7 @@ export type MergeCustomersInput = z.infer<typeof mergeCustomersSchema>;
  */
 export async function searchCustomers(
   actor: Actor,
-  input: SearchCustomersInput
+  input: SearchCustomersInput,
 ): Promise<{ customers: CustomerDTO[]; nextCursor: string | null }> {
   const q = input.q?.trim() ?? "";
   const digits = q.replace(/\D/g, "");
@@ -170,7 +170,7 @@ export async function searchCustomers(
 export async function createCustomer(
   actor: Actor,
   input: CreateCustomerInput,
-  tx: Prisma.TransactionClient = prisma
+  tx: Prisma.TransactionClient = prisma,
 ): Promise<CustomerDTO> {
   const phoneNormalized = normalizePhone(input.phone);
 
@@ -184,7 +184,6 @@ export async function createCustomer(
       },
     });
 
-    await grantCustomerAccess(actor, customer.id, customer.membershipToken, tx);
     return toCustomerDTO(customer);
   } catch (e) {
     if (
@@ -202,7 +201,7 @@ export async function createCustomer(
         existing
           ? `${existing.name} already uses ${formatPhoneLocal(phoneNormalized)}.`
           : "That phone number is already registered.",
-        existing ? { customerId: existing.id, name: existing.name } : {}
+        existing ? { customerId: existing.id, name: existing.name } : {},
       );
     }
     throw e;
@@ -212,17 +211,15 @@ export async function createCustomer(
 export async function updateCustomer(
   actor: Actor,
   id: string,
-  input: UpdateCustomerInput
+  input: UpdateCustomerInput,
 ): Promise<CustomerDTO> {
-  await assertCustomerAccess(actor, id);
+  await assertCustomerProfileAccess(actor, id);
   const existing = await prisma.customer.findUnique({ where: { id } });
   if (!existing || existing.mergedIntoId) {
     throw notFound("That customer no longer exists.");
   }
 
-  const phoneNormalized = input.phone
-    ? normalizePhone(input.phone)
-    : undefined;
+  const phoneNormalized = input.phone ? normalizePhone(input.phone) : undefined;
 
   try {
     const updated = await prisma.customer.update({
@@ -260,7 +257,7 @@ export async function updateCustomer(
     ) {
       throw new AppError(
         "DUPLICATE_PHONE",
-        "Another customer already uses that phone number."
+        "Another customer already uses that phone number.",
       );
     }
     throw e;
@@ -284,9 +281,9 @@ export async function getCustomer(id: string): Promise<Customer> {
  */
 export async function getCustomerForActor(
   actor: Actor,
-  id: string
+  id: string,
 ): Promise<CustomerDTO | CustomerOwnerDTO> {
-  await assertCustomerAccess(actor, id);
+  await assertCustomerProfileAccess(actor, id);
   const customer = await getCustomer(id);
 
   if (!actor.isOwner) {
@@ -330,7 +327,10 @@ async function customerStats(customerId: string): Promise<CustomerStats> {
       where: completed,
       _count: { _all: true },
       _max: { occurredAt: true },
-      orderBy: [{ _count: { shopId: "desc" } }, { _max: { occurredAt: "desc" } }],
+      orderBy: [
+        { _count: { shopId: "desc" } },
+        { _max: { occurredAt: "desc" } },
+      ],
       take: 1,
     }),
   ]);
@@ -363,7 +363,7 @@ async function customerStats(customerId: string): Promise<CustomerStats> {
  */
 export async function refreshLastSeenAt(
   tx: Prisma.TransactionClient,
-  customerId: string
+  customerId: string,
 ): Promise<void> {
   const latest = await tx.sale.aggregate({
     where: { customerId, status: "COMPLETED" },
@@ -393,7 +393,7 @@ export async function mergeCustomers(
   actor: Actor,
   input: MergeCustomersInput,
   tx: Prisma.TransactionClient,
-  meta: { ipAddress?: string | null } = {}
+  meta: { ipAddress?: string | null } = {},
 ): Promise<CustomerDTO> {
   if (!actor.isOwner) {
     throw forbidden("Only the owner can merge customer records.");
@@ -452,6 +452,8 @@ export async function mergeCustomers(
   const merged = await tx.customer.update({
     where: { id: winner.id },
     data: {
+      membershipActivatedAt:
+        winner.membershipActivatedAt ?? loser.membershipActivatedAt,
       marbleBalance: marbles._sum.delta ?? 0,
       ticketBalance: tickets._sum.delta ?? 0,
       firstSeenAt:
@@ -474,6 +476,11 @@ export async function mergeCustomers(
     },
   });
 
+  // A merge must not reopen enrollment or retain pre-merge verification grants.
+  await tx.customerVerification.deleteMany({
+    where: { customerId: { in: ids } },
+  });
+
   await writeAudit(
     actor,
     {
@@ -487,16 +494,22 @@ export async function mergeCustomers(
         loserMarbles: loser.marbleBalance,
         winnerTickets: winner.ticketBalance,
         loserTickets: loser.ticketBalance,
+        winnerMembershipActivatedAt:
+          winner.membershipActivatedAt?.toISOString() ?? null,
+        loserMembershipActivatedAt:
+          loser.membershipActivatedAt?.toISOString() ?? null,
       },
       after: {
         marbleBalance: merged.marbleBalance,
         ticketBalance: merged.ticketBalance,
         loserMergedIntoId: winner.id,
+        membershipActivatedAt:
+          merged.membershipActivatedAt?.toISOString() ?? null,
       },
       reason: `Merged duplicate customer ${loser.name}.`,
       ipAddress: meta.ipAddress ?? null,
     },
-    tx
+    tx,
   );
 
   return toCustomerDTO(merged);

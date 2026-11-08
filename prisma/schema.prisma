@@ -402,6 +402,7 @@ model Sale {
 model Customer {
   id              String  @id @default(cuid())
   membershipToken String @unique @default(dbgenerated("gen_random_uuid()::text"))
+  membershipActivatedAt DateTime?
   verifications CustomerVerification[]
   name            String
   phoneRaw        String

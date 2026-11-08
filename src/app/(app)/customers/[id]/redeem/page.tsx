@@ -1,5 +1,5 @@
-import { hasCustomerAccess } from "@/server/services/membership";
-import { MembershipScanner } from "@/components/membership-scanner";
+import { membershipStatus } from "@/server/services/membership";
+import { MembershipRequired } from "@/components/membership-operation-gate";
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
@@ -39,19 +39,16 @@ export default async function RedeemPage({
   const { session } = await resolveWorkSession(actor);
   if (!session) redirect("/select-shop");
 
-  if (!(await hasCustomerAccess(actor, id)))
+  const membership = await membershipStatus(actor, id).catch((error) => {
+    if (error instanceof AppError && error.code === "NOT_FOUND") notFound();
+    throw error;
+  });
+  if (!membership.verified)
     return (
-      <div className="space-y-4">
-        <h1 className="text-xl font-bold">Verify membership</h1>
-        <p>
-          Scan this customer&apos;s card before opening their account. Lost
-          card? Ask the owner.
-        </p>
-        <MembershipScanner customerId={id} autoOpen />
-        <Button variant="ghost" render={<Link href="/customers" />}>
-          All customers
-        </Button>
-      </div>
+      <MembershipRequired
+        customerId={id}
+        needsActivation={!membership.activated}
+      />
     );
 
   const customer = await getCustomerForActor(actor, id).catch((e) => {

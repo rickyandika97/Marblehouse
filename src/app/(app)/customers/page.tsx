@@ -31,7 +31,7 @@ export default async function CustomersPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Customers</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Search by phone number or name.
+            Search by phone number, name or member ID.
           </p>
         </div>
         <AddCustomer />

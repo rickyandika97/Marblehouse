@@ -8,7 +8,7 @@ import {
   searchCustomersSchema,
 } from "@/server/services/customers";
 
-/** Search by partial phone digits or name (§7.3). Every role may look up. */
+/** Search by phone, name or card member ID (§7.3). Every role may look up. */
 export async function GET(req: Request) {
   return handleRoute(async () => {
     const actor = await requireSettledActor();

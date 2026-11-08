@@ -99,7 +99,7 @@ export type SearchCustomersInput = z.infer<typeof searchCustomersSchema>;
 export type MergeCustomersInput = z.infer<typeof mergeCustomersSchema>;
 
 /**
- * Search by partial phone digits or name (§7.3, §8.5).
+ * Search by partial phone digits, name or full card member number (§7.3, §8.5).
  *
  * Staff type digits far more often than letters, so a digits-only query is
  * matched against the normalised number. Filtering happens in SQL (§5.6) —
@@ -118,8 +118,20 @@ export async function searchCustomers(
   const digits = q.replace(/\D/g, "");
   const phoneTerms = phoneSearchCandidates(q);
 
-  // A query of pure digits is a phone lookup; anything else is a name search.
-  // When both are plausible (e.g. "0812") the phone match is what staff mean.
+  // Match phone/name, and also check the full eight-character
+  // display ID from the card. Mixed IDs like F865PQUC must not become only a
+  // phone lookup for "865". This is lookup only, never QR verification.
+  const matches: Prisma.CustomerWhereInput[] = [
+    { name: { contains: q, mode: "insensitive" } },
+  ];
+  if (digits.length >= 3 && /^[+\d\s().-]+$/.test(q)) {
+    matches.push(
+      ...phoneTerms.map((term) => ({ phoneNormalized: { contains: term } })),
+    );
+  }
+  if (/^[a-z0-9]{8}$/i.test(q)) {
+    matches.push({ id: { endsWith: q, mode: "insensitive" } });
+  }
   const where: Prisma.CustomerWhereInput = {
     isActive: true,
     mergedIntoId: null,
@@ -128,13 +140,7 @@ export async function searchCustomers(
         input.shopId
         ? { sales: { some: { shopId: input.shopId, status: "COMPLETED" } } }
         : {}
-      : digits.length >= 3
-        ? {
-            OR: phoneTerms.map((term) => ({
-              phoneNormalized: { contains: term },
-            })),
-          }
-        : { name: { contains: q, mode: "insensitive" } }),
+      : { OR: matches }),
   };
 
   /**

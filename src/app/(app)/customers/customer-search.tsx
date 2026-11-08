@@ -17,6 +17,7 @@ import Link from "next/link";
 import { Loader2, MessageCircle, Search, UserRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { memberNumber } from "@/lib/member-number";
 import {
   customerWhatsAppUrl,
   renderCustomerWhatsAppReminder,
@@ -97,7 +98,8 @@ export function CustomerSearch({
           inputMode="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Phone number or name"
+          placeholder="Phone, name or member ID"
+          aria-label="Search customers by phone, name or member ID"
           className="h-14 pl-11 text-lg"
         />
         {loading && (
@@ -156,6 +158,9 @@ export function CustomerSearch({
                   </span>
                   <span className="block truncate text-sm text-muted-foreground">
                     {customer.phoneDisplay}
+                  </span>
+                  <span className="block truncate text-xs text-muted-foreground">
+                    Member {memberNumber(customer.id)}
                   </span>
                 </span>
                 <span className="shrink-0 text-right text-sm">

@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { Customer, Prisma } from "@prisma/client";
 import QRCode from "qrcode";
 import { prisma } from "@/lib/prisma";
+import { memberNumber } from "@/lib/member-number";
 import type { Actor } from "@/server/auth/context";
 import { AppError, forbidden, notFound } from "@/server/errors";
 import { writeAudit } from "@/server/audit";
@@ -246,7 +247,7 @@ export async function membershipCardData(
   });
   return {
     name: customer.name,
-    memberNumber: customer.id.slice(-8).toUpperCase(),
+    memberNumber: memberNumber(customer.id),
     qr,
   };
 }

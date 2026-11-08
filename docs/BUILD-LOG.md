@@ -8563,3 +8563,30 @@ existing close handler: cancellation never activates a membership.
 
 Validation: typecheck, lint and whitespace checks pass. Presentation only; no
 permission, activation-state, transaction or deployment changes.
+
+### D-197 · Search customers by the member ID printed on their card
+
+8 Nov 2026: owner requested member ID lookup from the Customers tab. The card's
+existing member number is the final eight characters of Customer.id, uppercased.
+It stays fixed for the same customer record, including contact edits and QR
+replacement. A merge retains the surviving record's ID. No IDs, tokens or
+stored data were changed; the shared member-number formatter now serves both
+card generation and customer list rows.
+
+Customer search accepts the full eight-character ID case-insensitively alongside
+existing name and partial-phone lookups. Mixed alphanumeric input is no longer
+reduced to phone digits (F865PQUC must not return phones merely containing 865).
+Names containing digits can also match by name. All filtering remains in SQL,
+with existing active/unmerged restrictions, sort and pagination. Member IDs are
+display labels, not independently unique credentials: if suffixes collide,
+search returns matching records under normal pagination. Existing QR access
+checks remain required for activated accounts; no verification is granted by
+search. Search responses still exclude membership credentials.
+
+Validation: nine new database-backed search tests first reproduced missing ID
+lookup, then passed with the implementation. Search, sort, membership and
+activation suites pass together (25 tests); typecheck, lint and whitespace
+checks pass. Extended scripts/verify-membership.ts passes against the running
+local app, checking member ID API lookup and rendered customer list labels for
+owner/manager/staff, plus existing activation and QR access protections. No
+device/browser visual acceptance, production deployment or commit is claimed.

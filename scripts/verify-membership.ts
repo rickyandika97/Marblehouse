@@ -140,6 +140,18 @@ async function main() {
     const row = await db.customer.findUniqueOrThrow({
       where: { id: created.id },
     });
+    for (const browser of clients) {
+      const found = await browser.call(`/api/customers?q=${row.id.slice(-8)}`);
+      assert.equal(found.status, 200);
+      const result = await found.json();
+      assert.ok(result.customers.some((c: { id: string }) => c.id === row.id));
+      assert.ok(!JSON.stringify(result).includes("membershipToken"));
+      const page = await browser.call("/customers");
+      assert.equal(page.status, 200);
+      const html = await page.text();
+      assert.ok(html.includes("Phone, name or member ID"));
+      assert.ok(html.includes(row.id.slice(-8).toUpperCase()));
+    }
     const code = `redlight:${row.membershipToken}`;
     const guest = new Browser();
     const tokens: string[] = [];

@@ -1678,7 +1678,7 @@ Membership endpoints: `POST /api/customers/scan` accepts `{code, customerId?}`; 
 
 | Method | Path | Role | Purpose |
 |---|---|---|---|
-| GET | `/api/customers?q=` | any | Search by phone (partial, digits-only match) or name. Returns role-shaped DTO. |
+| GET | `/api/customers?q=` | any | Search by partial phone, name or full eight-character member ID (case-insensitive). Returns role-shaped DTO. Lookup never grants membership verification. |
 | POST | `/api/customers` | any | `{ name, phone, note? }`. |
 | GET | `/api/customers/:id` | any | Full profile for OWNER; minimal profile for MANAGER/STAFF (§7.5). |
 | PATCH | `/api/customers/:id` | any | Name, phone, note. |
@@ -1908,7 +1908,7 @@ Same layout, minus every cost, profit and liability-value figure, and **locked t
 
 ### 8.5 `/customers`
 
-- Search-first screen: a single large input, keyboard defaults to numeric, matches partial phone or name.
+- Search-first screen: a single large text input matches partial phone, name or full member ID from the membership card. Result rows also show the member ID.
 - Result rows show **name · phone · 🔵 marbles · 🎟 tickets** — the four things staff need most.
 - **Customer detail:**
   - *All roles:* name, phone, marble balance, ticket balance, and four big action buttons — `Deposit marbles`, `Withdraw marbles`, `Award tickets`, `Redeem prize`.

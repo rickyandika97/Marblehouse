@@ -21,10 +21,10 @@ import { prisma } from "@/lib/prisma";
 import { hashPassword, verifyPassword } from "./password";
 import { technicianPlugin } from "@/server/services/technician";
 
-/** Rolling 12-hour session (§5.4). */
+/** Rolling three-day session (§5.4). */
 const SESSION_TTL_SECONDS = (() => {
   const hours = Number(process.env.SESSION_TTL_HOURS);
-  return (Number.isFinite(hours) && hours > 0 ? Math.min(hours, 24 * 7) : 12) * 60 * 60;
+  return (Number.isFinite(hours) && hours > 0 ? Math.min(hours, 24 * 7) : 72) * 60 * 60;
 })();
 
 export const auth = betterAuth({
@@ -66,8 +66,8 @@ export const auth = betterAuth({
   session: {
     expiresIn: SESSION_TTL_SECONDS,
     // Refresh on use — this is the "rolling" half of the rolling window.
-    // A tablet in active use stays signed in; one left overnight does not.
-    updateAge: 60 * 60,
+    // Renew on the first use at least 24 hours after creation/last renewal.
+    updateAge: 60 * 60 * 24,
   },
 
   user: {

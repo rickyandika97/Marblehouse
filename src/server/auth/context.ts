@@ -136,7 +136,7 @@ export const getActor = cache(async (): Promise<Actor | null> => {
   const { user, session } = resolved;
 
   // A deactivated user's session must stop working immediately — without this
-  // check, deactivating someone would leave them signed in for up to 12 hours
+  // check, deactivating someone would leave them signed in for up to three days
   // (R-9). Better Auth also blocks new sign-ins for a banned user; this closes
   // the window on sessions that already exist.
   if (user.banned) return null;

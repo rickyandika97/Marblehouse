@@ -594,7 +594,7 @@ export async function updateEmployee(
     return user;
   });
 
-  // Revoking access must take effect now, not in up to 12 hours (R-9).
+  // Revoking access must take effect now, not in up to three days (R-9).
   // Historical rows — sales, ledger entries, attendance — are untouched and
   // still attribute to this user. Deactivation is never a delete.
   if (input.isActive === false || roleChanged) {
@@ -855,7 +855,7 @@ export async function setShopAssignment(
 
   /**
    * Revoking a branch (or changing its role) must take effect now, not in up
-   * to 12 hours — the same reasoning as R-9's deactivation rule. Their work
+   * to three days — the same reasoning as R-9's deactivation rule. Their work
    * session for today may point at a shop they no longer have, or their
    * permissions there may have just changed, and `hasShopAccess`/role checks
    * are read from the session-loaded actor.

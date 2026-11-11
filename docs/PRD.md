@@ -578,9 +578,9 @@ patterns will be familiar.
   records and audit behavior; temporary authentication session state is required.
 - **Password hashing: argon2id** (`@node-rs/argon2`) configured explicitly.
   Minimum 8 characters, blocklist the 100 most common passwords.
-- **Session:** `HttpOnly; Secure; SameSite=Lax` cookie, **rolling 12-hour
-  expiry** — long enough for a shift, short enough that a tablet left at a shop
-  overnight logs out.
+- **Session:** `HttpOnly; Secure; SameSite=Lax` cookie, **rolling three-day
+  expiry**, renewed on use at most once every 24 hours. Owner decision,
+  11 Nov 2026: keep phone/PWA users signed in across overnight breaks.
 - **Rate limiting:** Better Auth's built-in limiter, tuned to 5 failed attempts
   per username per 15 minutes → 15-minute lockout, written to the audit log.
 - **No email flows.** No verification, no magic links, no email password reset
@@ -2121,7 +2121,7 @@ NODE_ENV=production
 TZ=Asia/Jakarta
 APP_URL=https://arcade.yourdomain.com
 SESSION_SECRET=               # generate, 64 hex chars
-SESSION_TTL_HOURS=12
+SESSION_TTL_HOURS=72
 TRUST_PROXY=true
 
 # Seed (required on first boot)
@@ -2225,7 +2225,7 @@ Backups contain customer names, phone numbers and password hashes. If they leave
 | R-6 | **Ledger cache drift** between `Customer.marbleBalance` and the ledger. | High | Same-transaction writes, nightly reconciliation with a critical alert, and `balanceAfter` snapshots on every ledger row for forensic replay. |
 | R-7 | **FIFO bugs silently corrupt cost accounting.** | High | The FIFO engine is one file with a comprehensive unit test suite (§15). Never let the agent inline FIFO logic into a route handler. |
 | R-8 | **Uncosted batches understate prize expense** (§7.5). | Medium | Owner queue, dashboard warning, weekly nag job, retroactive backfill with audit trail. |
-| R-9 | **Tablets left logged in at shops overnight.** | Medium | 12-hour rolling session, auto-logout, forced shop re-selection each business day, optional Cloudflare Access IP allowlist. |
+| R-9 | **Tablets left logged in at shops overnight.** | Medium | Owner accepted a three-day rolling session with renewal on use every 24 hours (11 Nov 2026). Explicit sign-out on shared devices, expiry after inactivity, forced shop re-selection each business day, optional Cloudflare Access IP allowlist. |
 | R-10 | **Raspberry Pi SD card death.** | High | SSD only. See §12.3. |
 | R-11 | **Customers dispute a marble or ticket balance.** | Medium | Full append-only ledger with staff attribution, plus a printable balance receipt after every deposit/award. Print or show a QR the customer can screenshot. |
 | R-12 | **Scope creep during vibe coding** — the agent builds phase 6 while phase 2 is untested. | High | Follow §16 strictly. Do not start a phase until the previous phase's acceptance checks pass. |

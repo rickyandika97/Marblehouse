@@ -8590,3 +8590,22 @@ checks pass. Extended scripts/verify-membership.ts passes against the running
 local app, checking member ID API lookup and rendered customer list labels for
 owner/manager/staff, plus existing activation and QR access protections. No
 device/browser visual acceptance, production deployment or commit is claimed.
+
+### D-198 · Three-day login sessions with daily renewal
+
+11 Nov 2026: owner requested extending Marblehouse login sessions to three days
+and renewing on use once every 24 hours, to avoid daily phone/PWA logins. Better
+Auth now defaults to 72 hours with `updateAge` of 86,400 seconds. The existing
+`SESSION_TTL_HOURS` override (maximum seven days) remains; the local development
+`.env`, `.env.example`, and PRD example now use 72. All business roles use this
+policy. Technician impersonation keeps its separate bounded lifetime.
+
+Existing sessions are not bulk-extended: a still-valid session receives the new
+duration when eligible for renewal; an expired session requires login again.
+Daily shop selection and immediate account/access revocation remain enforced.
+The live server must have `SESSION_TTL_HOURS=72` and run the updated app for
+this to affect the installed phone PWA; no production environment was edited
+and no deployment was performed here.
+
+Validation: `npm run typecheck`, `npm run lint`, and `git diff --check` pass.
+This is a configuration change; no database schema or session records changed.
